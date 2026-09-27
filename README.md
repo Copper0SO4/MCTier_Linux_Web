@@ -6,7 +6,7 @@
   **虚拟局域网通用组网工具**
 
   <p>
-    <img src="https://img.shields.io/badge/version-3.6.0-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-3.7.0-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-2ea44f?style=flat-square" alt="Windows 10/11">
     <img src="https://img.shields.io/badge/Android-supported-3ddc84?style=flat-square" alt="Android">
     <img src="https://img.shields.io/badge/license-Custom-orange?style=flat-square" alt="License">
@@ -297,6 +297,21 @@ MCTier 会持续维护桌面端和手机端体验。如果它帮你完成了组�
     </tr>
   </table>
 </div>
+
+### **赞助者名单（按时间排序）**
+
+| 序号 | 赞助者 | 赞助日期 | 赞助金额 |
+| --- | --- | ---: | --- |
+| 1 | ＂Tyler    | 2026-05-02 11:55:19 | 1000.00  |
+| 2 | /dp长乐/dp | 2026-08-09 13:36:43 | 10.00    |
+| 3 | cutemiku | 2026-08-29 17:14:58 | 1.00 |
+| 4 | cutemiku | 2026-09-06 17:12:39 | 8.10 |
+| 5 | cutemiku | 2026-09-13 09:40:57 | 1.00 |
+| 6 | cutemiku | 2026-09-18 00:30:35 | 1.00 |
+| 7 | cutemiku | 2026-09-20 22:08:03 | 6.00 |
+| 8 | 乐天-晨曦 | 2026-09-23 11:34:11 | 20.00 |
+| 9 | wdz | 2026-09-27 11:25:45 | 3.00 |
+| 10 | Forever | 2026-09-27 13:04:21 | 10.00 |
 
 ## 许可协议
 

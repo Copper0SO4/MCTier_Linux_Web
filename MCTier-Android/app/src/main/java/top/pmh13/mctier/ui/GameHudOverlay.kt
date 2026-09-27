@@ -244,7 +244,7 @@ object GameHudOverlay {
                     text = "—"; setTextColor(Color.parseColor("#9AA0A6"))
                 } else {
                     val lat = r.latencyMs
-                    text = if (lat == null) L("离线", "off") else "${lat}ms"
+                    text = if (lat == null) L("不可达", "unreachable") else "${lat}ms"
                     setTextColor(
                         when {
                             lat == null -> Color.parseColor("#FF5A5A")

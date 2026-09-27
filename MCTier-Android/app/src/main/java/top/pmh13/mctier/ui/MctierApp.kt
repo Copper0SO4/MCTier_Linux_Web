@@ -1647,11 +1647,17 @@ private fun LobbyCard(state: MctierUiState, repository: MctierRepository) {
             title = { Text(L("无法联机？", "Cannot connect?"), color = TextPrimary) },
             text = {
                 Column {
-                    Text(L("1. 确认手机与电脑用了相同的大厅名称和密码", "1. Make sure phone and PC use the same lobby name and password"), color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp)
+                    Text(L("联机方式说明：", "How to connect:"), color = GrassGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Spacer(Modifier.height(8.dp))
-                    Text(L("2. Minecraft 中对局域网开放后，用「您的虚拟IP + 端口」连接", "2. After Open to LAN in Minecraft, connect with your virtual IP + port"), color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp)
+                    Text(L("1. 双方都是正版：房主对局域网开放后，其他玩家在多人游戏中使用「房主虚拟IP:端口号」加入", "1. Both have a licensed copy: after the host opens to LAN, others join Multiplayer with Host Virtual IP:Port"), color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp)
                     Spacer(Modifier.height(8.dp))
-                    Text(L("3. 若语音/聊天不通，退出大厅重进一次", "3. If voice/chat fails, leave and rejoin the lobby"), color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp)
+                    Text(L("2. 房主离线模式，加入者正版：加入者在多人游戏中使用「房主虚拟IP:端口号」加入", "2. Host offline mode, joiner licensed: the joiner uses Host Virtual IP:Port in Multiplayer"), color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text(L("3. 房主正版，加入者离线模式：房主安装 mcwifipnp 模组关闭正版验证", "3. Host licensed, joiner offline mode: the host installs the mcwifipnp mod to disable license verification"), color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text(L("4. 双方都是离线模式：房主安装 mcwifipnp 模组关闭正版验证", "4. Both in offline mode: the host installs the mcwifipnp mod to disable license verification"), color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text(L("提示：虚拟IP显示在大厅信息中，端口号由房主在游戏内对局域网开放时显示。若语音/聊天不通，退出大厅重进一次。", "Tip: the virtual IP is shown in lobby info and the port appears when the host opens to LAN. If voice/chat fails, leave and rejoin once."), color = TextPrimary.copy(alpha = 0.72f), fontSize = 12.sp)
                 }
             },
             confirmButton = { TextButton(onClick = { showHelp = false }) { Text(L("知道了", "Got it"), color = GrassGreen) } },

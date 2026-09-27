@@ -10,12 +10,12 @@ interface HudPeer {
   playerId: string;
   name: string;
   ping: number | null; // ms，null=不可达
-  loss: number;        // 丢包率 0~100
+  loss: number; // 丢包率 0~100
   speaking: boolean;
   self: boolean;
   muted?: boolean;
   down?: number; // 下行 KB/s
-  up?: number;   // 上行 KB/s
+  up?: number; // 上行 KB/s
 }
 
 interface HudPayload {
@@ -33,17 +33,19 @@ function normalizeHudPeers(value: unknown): HudPeer[] {
     if (!playerId) return [];
     const numberOrNull = (input: unknown): number | null =>
       typeof input === 'number' && Number.isFinite(input) ? input : null;
-    return [{
-      playerId,
-      name: sanitizeUntrustedText(peer.name, 64).trim() || tl('未知玩家', 'Unknown player'),
-      ping: numberOrNull(peer.ping),
-      loss: Math.max(0, Math.min(100, numberOrNull(peer.loss) ?? 0)),
-      speaking: peer.speaking === true,
-      self: peer.self === true,
-      muted: peer.muted === true,
-      down: Math.max(0, Math.min(1_000_000, numberOrNull(peer.down) ?? 0)),
-      up: Math.max(0, Math.min(1_000_000, numberOrNull(peer.up) ?? 0)),
-    }];
+    return [
+      {
+        playerId,
+        name: sanitizeUntrustedText(peer.name, 64).trim() || tl('未知玩家', 'Unknown player'),
+        ping: numberOrNull(peer.ping),
+        loss: Math.max(0, Math.min(100, numberOrNull(peer.loss) ?? 0)),
+        speaking: peer.speaking === true,
+        self: peer.self === true,
+        muted: peer.muted === true,
+        down: Math.max(0, Math.min(1_000_000, numberOrNull(peer.down) ?? 0)),
+        up: Math.max(0, Math.min(1_000_000, numberOrNull(peer.up) ?? 0)),
+      },
+    ];
   });
 }
 
@@ -69,35 +71,58 @@ export const GameHudOverlay: React.FC = () => {
     body.style.pointerEvents = 'none';
     body.style.userSelect = 'none';
     const root = document.getElementById('root');
-    if (root) { root.style.background = 'transparent'; root.style.pointerEvents = 'none'; }
+    if (root) {
+      root.style.background = 'transparent';
+      root.style.pointerEvents = 'none';
+    }
 
     let un: (() => void) | undefined;
     listen<HudPayload>('hud-update', (e) => {
       if (e.payload && Array.isArray(e.payload.peers)) setPeers(normalizeHudPeers(e.payload.peers));
-      if (e.payload && typeof e.payload.opacity === 'number' && Number.isFinite(e.payload.opacity)) {
+      if (
+        e.payload &&
+        typeof e.payload.opacity === 'number' &&
+        Number.isFinite(e.payload.opacity)
+      ) {
         setOpacity(Math.max(0, Math.min(1, e.payload.opacity)));
       }
       if (e.payload && typeof e.payload.scale === 'number' && Number.isFinite(e.payload.scale)) {
         setScale(Math.max(0.5, Math.min(2, e.payload.scale)));
       }
-    }).then((fn) => { un = fn; });
+    }).then((fn) => {
+      un = fn;
+    });
     // 透明度/尺寸实时变更（设置界面拖动滑块时）
     let unCfg: (() => void) | undefined;
     listen<{ opacity?: number; scale?: number }>('hud-config', (e) => {
-      if (e.payload && typeof e.payload.opacity === 'number' && Number.isFinite(e.payload.opacity)) {
+      if (
+        e.payload &&
+        typeof e.payload.opacity === 'number' &&
+        Number.isFinite(e.payload.opacity)
+      ) {
         setOpacity(Math.max(0, Math.min(1, e.payload.opacity)));
       }
       if (e.payload && typeof e.payload.scale === 'number' && Number.isFinite(e.payload.scale)) {
         setScale(Math.max(0.5, Math.min(2, e.payload.scale)));
       }
-    }).then((fn) => { unCfg = fn; });
+    }).then((fn) => {
+      unCfg = fn;
+    });
     let unLang: (() => void) | undefined;
     listen<string>('mctier-lang-changed', (e) => {
       const lang = e.payload === 'en' ? 'en' : 'zh';
-      void import('../../i18n').then(({ applyLanguageLocal }) => { applyLanguageLocal(lang); });
+      void import('../../i18n').then(({ applyLanguageLocal }) => {
+        applyLanguageLocal(lang);
+      });
       setLangTick((t) => t + 1);
-    }).then((fn) => { unLang = fn; });
-    return () => { if (un) un(); if (unCfg) unCfg(); if (unLang) unLang(); };
+    }).then((fn) => {
+      unLang = fn;
+    });
+    return () => {
+      if (un) un();
+      if (unCfg) unCfg();
+      if (unLang) unLang();
+    };
   }, []);
 
   // 光标轮询：悬停到 HUD 卡片上时关闭穿透以便拖动，移开恢复穿透不挡游戏
@@ -122,19 +147,26 @@ export const GameHudOverlay: React.FC = () => {
             const r = el.getBoundingClientRect();
             setIgnore(!(cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom));
           }
-        } catch { /* ignore */ }
+        } catch {
+          /* ignore */
+        }
         busy = false;
       }
       timer = window.setTimeout(tick, 120) as unknown as number;
     };
     tick();
-    return () => { stopped = true; window.clearTimeout(timer); };
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
   }, []);
 
   const onDragStart = (e: React.MouseEvent) => {
     // 仅左键、且不在按钮等元素上时拖动整窗
     if (e.button !== 0) return;
-    void getCurrentWindow().startDragging().catch(() => {});
+    void getCurrentWindow()
+      .startDragging()
+      .catch(() => {});
   };
 
   const sendAction = (action: string, playerId: string) => {
@@ -149,14 +181,24 @@ export const GameHudOverlay: React.FC = () => {
   };
 
   const pingColor = (p: number | null) => {
-    if (p == null) return '#ff5a5a';
+    if (p === null || p === undefined) return '#ff5a5a';
     if (p < 80) return '#7ccf00';
     if (p < 200) return '#ffcc00';
     return '#ff8a3d';
   };
 
   return (
-    <div className="hud-root" ref={cardRef} style={{ pointerEvents: 'auto', opacity, transform: `scale(${scale})`, transformOrigin: 'top right' }} onMouseDown={onDragStart}>
+    <div
+      className="hud-root"
+      ref={cardRef}
+      style={{
+        pointerEvents: 'auto',
+        opacity,
+        transform: `scale(${scale})`,
+        transformOrigin: 'top right',
+      }}
+      onMouseDown={onDragStart}
+    >
       <div className="hud-title">MCTier · {tl('大厅状态（可拖动）', 'Lobby (drag to move)')}</div>
       {peers.length === 0 ? (
         <div className="hud-empty">{tl('暂无队友数据', 'No teammates yet')}</div>
@@ -164,20 +206,34 @@ export const GameHudOverlay: React.FC = () => {
         peers.map((p, i) => (
           <div className="hud-row" key={i} onMouseDown={(e) => e.stopPropagation()}>
             <span className={`hud-dot${p.speaking ? ' speaking' : ''}`} />
-            <span className="hud-name">{p.name}{p.self ? tl('（我）', ' (me)') : ''}</span>
+            <span className="hud-name">
+              {p.name}
+              {p.self ? tl('（我）', ' (me)') : ''}
+            </span>
             {p.self ? (
-              <span className="hud-ping" style={{ color: '#9aa0a6' }}>—</span>
+              <span className="hud-ping" style={{ color: '#9aa0a6' }}>
+                —
+              </span>
             ) : (
               <>
-                {(p.down || p.up) ? (
-                  <span className="hud-rate">↓{p.down || 0} ↑{p.up || 0}</span>
+                {p.down || p.up ? (
+                  <span className="hud-rate">
+                    ↓{p.down || 0} ↑{p.up || 0}
+                  </span>
                 ) : null}
                 <span className="hud-ping" style={{ color: pingColor(p.ping) }}>
-                  {p.ping == null ? tl('离线', 'off') : `${p.ping}ms`}{p.loss > 0 && p.ping != null ? ` · ${p.loss}%` : ''}
+                  {p.ping === null || p.ping === undefined
+                    ? tl('不可达', 'unreachable')
+                    : `${p.ping}ms`}
+                  {p.loss > 0 && typeof p.ping === 'number' ? ` · ${p.loss}%` : ''}
                 </span>
                 <button
                   className={`hud-btn${p.muted ? ' on' : ''}`}
-                  title={p.muted ? tl('已静音 · 点击取消', 'Muted · click to unmute') : tl('点击静音', 'Click to mute')}
+                  title={
+                    p.muted
+                      ? tl('已静音 · 点击取消', 'Muted · click to unmute')
+                      : tl('点击静音', 'Click to mute')
+                  }
                   onClick={() => toggleMute(p.playerId)}
                 >
                   {p.muted ? '🔇' : '🔊'}

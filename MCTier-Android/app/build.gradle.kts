@@ -21,8 +21,8 @@ android {
         testInstrumentationRunner = "top.pmh13.mctier.PeerUiInstrumentation"
         minSdk = 26
         targetSdk = 36
-        versionCode = 86
-        versionName = "3.6.0-android"
+        versionCode = 89
+        versionName = "3.7.0-android"
         ndk {
             // The bundled LocalVQE engine is currently built for the primary
             // Android ABI; unsupported ABIs retain the WebRTC hardware AEC/NS path.
