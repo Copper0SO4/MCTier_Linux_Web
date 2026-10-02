@@ -10,11 +10,7 @@ pub async fn open_log_folder() -> Result<(), String> {
     log::info!("打开日志文件夹");
 
     // 获取日志文件路径
-    let log_path = if let Some(data_dir) = dirs::data_local_dir() {
-        data_dir.join("MCTier")
-    } else {
-        std::env::current_dir().map_err(|e| format!("获取当前目录失败: {}", e))?
-    };
+    let log_path = crate::modules::app_paths::data_root().map_err(|e| e.to_string())?;
 
     log::info!("日志文件夹路径: {:?}", log_path);
 
@@ -58,11 +54,7 @@ pub async fn open_log_file() -> Result<(), String> {
     log::info!("打开日志文件");
 
     // 获取日志文件路径
-    let log_path = if let Some(data_dir) = dirs::data_local_dir() {
-        data_dir.join("MCTier").join("mctier.log")
-    } else {
-        std::path::PathBuf::from("mctier.log")
-    };
+    let log_path = crate::modules::app_paths::log_path().map_err(|e| e.to_string())?;
 
     log::info!("日志文件路径: {:?}", log_path);
 
@@ -104,11 +96,7 @@ pub async fn open_log_file() -> Result<(), String> {
 /// * `Err(String)` - 错误信息
 #[tauri::command]
 pub async fn get_log_file_path() -> Result<String, String> {
-    let log_path = if let Some(data_dir) = dirs::data_local_dir() {
-        data_dir.join("MCTier").join("mctier.log")
-    } else {
-        std::path::PathBuf::from("mctier.log")
-    };
+    let log_path = crate::modules::app_paths::log_path().map_err(|e| e.to_string())?;
 
     Ok(log_path.to_string_lossy().to_string())
 }
@@ -116,11 +104,7 @@ pub async fn get_log_file_path() -> Result<String, String> {
 /// 读取最近的运行日志，供设置页内查看。仅返回末尾内容，避免日志过大阻塞界面。
 #[tauri::command]
 pub async fn read_log_file() -> Result<String, String> {
-    let log_path = if let Some(data_dir) = dirs::data_local_dir() {
-        data_dir.join("MCTier").join("mctier.log")
-    } else {
-        std::path::PathBuf::from("mctier.log")
-    };
+    let log_path = crate::modules::app_paths::log_path().map_err(|e| e.to_string())?;
 
     let bytes = tokio::fs::read(&log_path)
         .await

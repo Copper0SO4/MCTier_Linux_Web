@@ -465,7 +465,8 @@ impl NetworkService {
 
         // ========== 私有模式 ==========
         if config.private_mode {
-            cmd.arg("--private-mode");
+            // Unlike optional boolean switches, EasyTier requires an explicit value here.
+            cmd.arg("--private-mode").arg("true");
             log::info!("  ✅ 启用私有模式");
         }
 
@@ -1051,7 +1052,11 @@ impl NetworkService {
             let current_status = self.status.lock().await.clone();
             if let ConnectionStatus::Error(err_msg) = current_status {
                 log::error!("❌ 检测到错误状态: {}", err_msg);
-                self.stop_easytier().await?;
+                // The helper may have exited with EasyTier. Cleanup must not replace
+                // the original startup error with a secondary connection reset.
+                if let Err(cleanup_error) = self.stop_easytier().await {
+                    log::warn!("EasyTier 启动失败后的清理失败: {}", cleanup_error);
+                }
                 return Err(AppError::NetworkError(err_msg));
             }
 
@@ -1814,6 +1819,7 @@ impl NetworkService {
     /// * `Ok(())` - 成功停止
     /// * `Err(AppError)` - 停止失败
     pub async fn stop_easytier(&self) -> Result<(), AppError> {
+        crate::modules::voice_ice::stop();
         log::info!("========================================");
         log::info!("🛑 [StopEasyTier] 开始停止 EasyTier 服务...");
         log::info!("========================================");
@@ -2178,6 +2184,49 @@ mod tests {
             args.get(dev_name_index + 1).map(String::as_str),
             Some("MCTier_Net")
         );
+    }
+
+    #[test]
+    fn test_private_mode_arguments() {
+        for enabled in [false, true] {
+            let config = crate::modules::config_manager::EasyTierAdvancedConfig {
+                private_mode: enabled,
+                ..Default::default()
+            };
+            let mut command = Command::new("easytier-core");
+            NetworkService::apply_advanced_config(&mut command, &config);
+            let args: Vec<_> = command.as_std().get_args().collect();
+            let index = args.iter().position(|arg| *arg == "--private-mode");
+            if enabled {
+                assert_eq!(args[index.expect("private mode must be enabled") + 1], "true");
+            } else {
+                assert!(index.is_none(), "disabled private mode must use EasyTier's default");
+            }
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn test_private_mode_arguments_accepted_by_bundled_easytier() {
+        let core = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../binaries/easytier-core.exe");
+        let config_file = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(config_file.path(), "[flags]\nprivate_mode = false\n").unwrap();
+        for enabled in [false, true] {
+            let config = crate::modules::config_manager::EasyTierAdvancedConfig {
+                private_mode: enabled,
+                ..Default::default()
+            };
+            let mut command = Command::new(&core);
+            NetworkService::apply_advanced_config(&mut command, &config);
+            // Validate the real CLI without creating a TUN device or joining a network.
+            let output = command.as_std_mut()
+                .args(["--check-config", "--config-file"])
+                .arg(config_file.path())
+                .output().expect("run bundled EasyTier CLI");
+            assert!(output.status.success(), "private_mode={enabled}: {}",
+                String::from_utf8_lossy(&output.stderr));
+        }
     }
 
     // ========== 创建大厅流程 - EasyTier 启动测试 ==========

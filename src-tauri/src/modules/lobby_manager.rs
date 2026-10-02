@@ -279,7 +279,7 @@ impl LobbyManager {
             || trimmed == "ws://test.pmhs.top"
             || trimmed == "wss://test.pmhs.top"
         {
-            return "udp://us01.225284.xyz:11010".to_string();
+            return "tcp://easytier.weiai.org.cn:11010".to_string();
         }
 
         if trimmed == "tcp://mctiers.pmhs.top" {

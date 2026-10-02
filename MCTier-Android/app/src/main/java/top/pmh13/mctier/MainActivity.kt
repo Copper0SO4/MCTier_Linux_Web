@@ -16,6 +16,12 @@ import top.pmh13.mctier.network.LobbyInviteCodec
 import top.pmh13.mctier.ui.MctierApp
 
 class MainActivity : ComponentActivity() {
+    override fun onStart() {
+        super.onStart()
+        // Check daily automatic support at startup/resume; the service also watches for midnight.
+        top.pmh13.mctier.network.QuarkSupport.get(applicationContext).onLaunch()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 开启 edge-to-edge：让 statusBars/navigationBars/ime 等 WindowInsets 只计一次，

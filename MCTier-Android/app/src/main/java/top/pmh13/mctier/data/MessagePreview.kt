@@ -6,6 +6,7 @@ data class MessagePreview(val kind: String, val text: String, val detail: String
 
 fun messagePreview(message: ChatMessage): MessagePreview {
     if (message.recalled) return MessagePreview("text", "[消息已撤回]")
+    if (message.type == "text" && BuiltinEmojiMessage.decode(message.content) != null) return MessagePreview("image", "[内置表情]")
     return when (message.type) {
         "text" -> MessagePreview("text", message.content.replaceFirst(Regex("^> \\[reply:[^]]+]\\s*"), "> "))
         "image" -> MessagePreview("image", "[图片 / 表情]")

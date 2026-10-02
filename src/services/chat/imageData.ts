@@ -32,3 +32,10 @@ export async function fileToChatImageDataUrl(file: Blob): Promise<string> {
   if (!mime) throw new Error('IMAGE_FORMAT');
   return bytesToImageDataUrl(bytes, mime);
 }
+
+/** Source limit is separate from the 2 MiB inline wire limit. Optimization
+ * happens natively; large lossless results use image attachments. */
+export async function fileToOutgoingImageDataUrl(file: Blob): Promise<string> {
+  if (file.size <= 0 || file.size > 64 * 1024 * 1024) throw new Error('IMAGE_SIZE_64_MIB');
+  return bytesToImageDataUrl(new Uint8Array(await file.arrayBuffer()));
+}

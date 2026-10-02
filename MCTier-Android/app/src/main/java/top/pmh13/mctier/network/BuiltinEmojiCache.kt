@@ -33,6 +33,13 @@ class BuiltinEmojiCache private constructor(
     }
 
     suspend fun sync(onProgress: (downloaded: Int, total: Int) -> Unit = { _, _ -> }): List<CustomEmojiItem> = syncMutex.withLock {
+        withContext(Dispatchers.IO) {
+            val ids = readIndex(marker)
+            if ("1f60d" in ids) {
+                File(cacheDirectory, "1f60d.gif").delete()
+                marker.writeText(ids.filterNot { it == "1f60d" }.joinToString("\n"))
+            }
+        }
         cachedItems().takeIf { isComplete() }?.let {
             onProgress(it.size, it.size)
             return@withLock it
@@ -78,7 +85,7 @@ class BuiltinEmojiCache private constructor(
         return items(ids)
     }
 
-    private fun items(ids: List<String>): List<CustomEmojiItem> = ids.map { id ->
+    private fun items(ids: List<String>): List<CustomEmojiItem> = ids.filterNot { it == "1f60d" }.map { id ->
         CustomEmojiItem("builtin-$id", "builtin", id, "image/gif", "builtin/$id.gif", 0L)
     }
 

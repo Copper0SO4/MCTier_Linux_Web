@@ -21,8 +21,8 @@ android {
         testInstrumentationRunner = "top.pmh13.mctier.PeerUiInstrumentation"
         minSdk = 26
         targetSdk = 36
-        versionCode = 89
-        versionName = "3.7.0-android"
+        versionCode = 109
+        versionName = "3.8.0-android"
         ndk {
             // The bundled LocalVQE engine is currently built for the primary
             // Android ABI; unsupported ABIs retain the WebRTC hardware AEC/NS path.
@@ -69,6 +69,7 @@ val syncLicenseAssets by tasks.registering(Sync::class) {
     from(repoRoot.file("LICENSE-LGPL-3.0.txt"))
     from(repoRoot.file("LICENSE-GPL-3.0.txt"))
     from(repoRoot.file("THIRD_PARTY_NOTICES.md"))
+    from(repoRoot.file("licenses/image-optimizer.txt"))
     from(repoRoot.file("shared/speech-model.json"))
     from(repoRoot.file("patches/easytier-2.6.0-mctier-android.patch"))
     into(licenseAssetDir)
@@ -115,6 +116,22 @@ val buildFilePreview by tasks.registering(Exec::class) {
     inputs.file(rootProject.projectDir.parentFile.resolve("package-lock.json"))
     outputs.file(projectDir.resolve("src/main/assets/file-preview/index.html"))
 }
+
+val imageOptimizerJni = layout.buildDirectory.dir("generated/imageOptimizerJni")
+val prepareImageOptimizer by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir.parentFile)
+    environment("ANDROID_HOME", android.sdkDirectory.absolutePath)
+    commandLine("node", "scripts/build-image-optimizer.mjs", imageOptimizerJni.get().asFile.absolutePath)
+    inputs.dir(rootProject.projectDir.parentFile.resolve("shared/image-optimizer/src"))
+    inputs.file(rootProject.projectDir.parentFile.resolve("shared/image-optimizer/Cargo.toml"))
+    inputs.file(rootProject.projectDir.parentFile.resolve("shared/image-optimizer/Cargo.lock"))
+    inputs.file(rootProject.projectDir.parentFile.resolve("scripts/build-image-optimizer.mjs"))
+    outputs.file(imageOptimizerJni.map { it.file("arm64-v8a/libmctier_image_optimizer.so") })
+}
+android.sourceSets.getByName("main").jniLibs.srcDir(imageOptimizerJni)
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }.configureEach {
+    dependsOn(prepareImageOptimizer)
+}
 tasks.named("preBuild") { dependsOn(syncLicenseAssets, buildFilePreview) }
 
 // Kotlin 2.4 writes JVM test classes to its own tmp directory, while AGP's
@@ -144,12 +161,20 @@ val jvmSecurityHardeningTest by tasks.registering(JavaExec::class) {
     )
     mainClass.set("org.junit.runner.JUnitCore")
     args("top.pmh13.mctier.network.LobbyAddressTest")
+    args("top.pmh13.mctier.network.EasyTierConfigTest")
+    args("top.pmh13.mctier.network.ScreenShareQualityTest")
+    args("top.pmh13.mctier.network.QuarkDailyAttemptTest")
+    args("top.pmh13.mctier.network.QuarkMobileLoginTest")
+    args("top.pmh13.mctier.network.QuarkContributionLedgerTest")
     args("top.pmh13.mctier.network.SignalingRegistrationTest")
     args("top.pmh13.mctier.ui.ChatMediaLayoutTest")
     args("top.pmh13.mctier.ui.ThemeContrastTest")
     args("top.pmh13.mctier.network.PeerPreferencesTest")
     args("top.pmh13.mctier.network.VoiceHealthTest")
+    args("top.pmh13.mctier.data.LobbyModerationTest")
     args("top.pmh13.mctier.network.MessagePreviewTest")
+    args("top.pmh13.mctier.network.BuiltinEmojiMessageTest")
+    args("top.pmh13.mctier.audio.VoiceRecordingPcmTest")
     args("top.pmh13.mctier.ui.SpeechModelTest")
     args("top.pmh13.mctier.network.SecurityHardeningTest", "top.pmh13.mctier.network.ChatOrderTest", "top.pmh13.mctier.network.ChatUnreadTest", "top.pmh13.mctier.network.EncryptedChatTest", "top.pmh13.mctier.network.ImageFormatTest", "top.pmh13.mctier.network.BuiltinEmojiCacheTest", "top.pmh13.mctier.network.EmojiManagementTest", "top.pmh13.mctier.network.ChatAttachmentTest", "top.pmh13.mctier.ui.ChatLinkTest")
 }
@@ -207,6 +232,8 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.1")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
+    // Match the Material 3 runtime selected by miuix for the actual app.
+    androidTestImplementation("androidx.compose.material3:material3:1.4.0")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")

@@ -8,7 +8,11 @@
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { emitTo } from '@tauri-apps/api/event';
 import { messagePreview, visualThumbnail, type PreviewKind, type PreviewMessage } from './messagePreview';
-import { parseChatAttachment } from '../chat/fileAttachment';
+import { decodeBuiltinEmoji } from '../emoji/builtinEmojiMessage';
+import { syncBuiltinEmojiItems } from '../emoji/emojiLibrary';
+import { parseChatAttachment, type ChatAttachment } from '../chat/fileAttachment';
+import { safeVoiceUrl } from '../chat/voiceMessage';
+import { randomDanmakuColor } from './colors';
 
 export interface DanmakuConfig {
   enabled: boolean;
@@ -31,17 +35,16 @@ export const DEFAULT_DANMAKU_CONFIG: DanmakuConfig = {
 const LS_KEY = 'mctier_danmaku_config';
 
 /** 生成一个明亮鲜艳的随机颜色（用于"彩色"模式，每条弹幕颜色不同） */
-function randomBrightColor(): string {
-  const h = Math.floor(Math.random() * 360);
-  return `hsl(${h}, 85%, 62%)`;
-}
 
 /** 解析配置颜色：'rainbow' 返回随机色，否则原样返回 */
 function resolveColor(color: string): string {
-  return color === 'rainbow' ? randomBrightColor() : color;
+  return color === 'rainbow' ? randomDanmakuColor() : color;
 }
 
 export interface DanmakuPayload {
+  attachment?: ChatAttachment;
+  ownerPlayerId?: string;
+  voice?: string;
   text: string;
   color: string;
   fontSize: number;
@@ -59,6 +62,9 @@ export interface DanmakuPayload {
 
 /** push 的可选项 */
 export interface DanmakuPushOptions {
+  attachment?: ChatAttachment;
+  ownerPlayerId?: string;
+  voice?: string;
   color?: string;
   kind?: PreviewKind;
   detail?: string;
@@ -129,6 +135,9 @@ class DanmakuService {
       image: o.image,
       copyText: o.copyText,
       detail: o.detail,
+      voice: o.kind === 'voice' && safeVoiceUrl(o.voice) ? o.voice : undefined,
+      attachment: parseChatAttachment(o.attachment) ?? undefined,
+      ownerPlayerId: o.ownerPlayerId,
     };
     try {
       await emitTo('danmaku', 'danmaku-msg', payload);
@@ -140,6 +149,13 @@ class DanmakuService {
   async pushMessage(sender: string, message: PreviewMessage & { playerId: string }, shouldDisplay: () => boolean = () => true): Promise<void> {
     if (!this.config.enabled || message.recalled || !shouldDisplay()) return;
     const preview = messagePreview(message);
+    const builtinId = message.type === 'text' ? decodeBuiltinEmoji(message.content) : null;
+    if (builtinId) {
+      try {
+        const emoji = (await syncBuiltinEmojiItems()).find(item => item.id === builtinId);
+        if (emoji) preview.image = await visualThumbnail(emoji.dataUrl, 'image');
+      } catch { /* Keep a readable emoji card if the local pack cannot be loaded. */ }
+    }
     if (message.type === 'file' && (preview.kind === 'image' || preview.kind === 'video')) {
       const attachment = parseChatAttachment(message.attachment ?? message.content);
       if (attachment) {
@@ -152,6 +168,9 @@ class DanmakuService {
     if (!shouldDisplay()) return;
     await this.push(`${sender}: ${preview.kind === 'image' && preview.image ? '' : preview.text}`, {
       kind: preview.kind, image: preview.image, detail: preview.detail,
+      voice: preview.kind === 'voice' && safeVoiceUrl(message.imageData) ? message.imageData : undefined,
+      attachment: message.type === 'file' ? parseChatAttachment(message.attachment ?? message.content) ?? undefined : undefined,
+      ownerPlayerId: message.type === 'file' ? message.playerId : undefined,
       copyText: preview.kind === 'text' ? preview.text : [preview.text, preview.detail].filter(Boolean).join(' · '),
     });
   }

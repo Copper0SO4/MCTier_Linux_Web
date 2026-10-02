@@ -151,10 +151,7 @@ pub async fn detect_security_software() -> Vec<String> {
 /// 一键导出日志：将日志目录打包为 zip，返回生成的 zip 路径
 #[tauri::command]
 pub async fn export_logs(_app_handle: tauri::AppHandle) -> Result<String, String> {
-    // 日志目录：%LOCALAPPDATA%/MCTier（与 get_log_file_path 保持一致）
-    let log_dir = dirs::data_local_dir()
-        .map(|d| d.join("MCTier"))
-        .ok_or_else(|| "无法获取日志目录".to_string())?;
+    let log_dir = crate::modules::app_paths::data_root().map_err(|e| e.to_string())?;
 
     if !log_dir.exists() {
         return Err("日志目录不存在".to_string());

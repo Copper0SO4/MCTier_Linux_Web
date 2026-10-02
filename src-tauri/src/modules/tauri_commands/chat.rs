@@ -423,7 +423,7 @@ fn safe_chat_file_name(path: &std::path::Path) -> Result<String, String> {
 #[tauri::command]
 pub async fn select_chat_attachment(
     recipient_id: Option<String>,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Option<ChatAttachmentMeta>, String> {
     let Some(source) = rfd::FileDialog::new().set_title("发送文件").pick_file() else {
@@ -438,17 +438,15 @@ pub async fn select_chat_attachment(
     {
         return Err("仅支持 1 B 至 64 MiB 的普通文件".to_string());
     }
-    let name = safe_chat_file_name(&source)?;
+    let mut name = safe_chat_file_name(&source)?;
     let id = format!("att-{}", uuid::Uuid::new_v4());
-    let meta = ChatAttachmentMeta {
+    let mut meta = ChatAttachmentMeta {
         id: id.clone(),
         name: name.clone(),
         mime: chat_file_mime(&name),
         size: source_meta.len(),
     };
-    let directory = app
-        .path()
-        .app_cache_dir()
+    let directory = crate::modules::app_paths::data_root()
         .map_err(|error| format!("无法获取缓存目录: {error}"))?
         .join("chat-attachments");
     std::fs::create_dir_all(&directory).map_err(|error| format!("创建附件缓存失败: {error}"))?;
@@ -457,8 +455,48 @@ pub async fn select_chat_attachment(
         .and_then(|value| value.to_str())
         .filter(|value| value.len() <= 16)
         .unwrap_or("bin");
-    let cached = directory.join(format!("{id}.{extension}"));
+    let mut cached = directory.join(format!("{id}.{extension}"));
     std::fs::copy(&source, &cached).map_err(|error| format!("缓存聊天附件失败: {error}"))?;
+    let optimized = tauri::async_runtime::spawn_blocking({
+        let cached = cached.clone();
+        move || {
+            use std::io::Read;
+            let mut header = [0u8; 12];
+            std::fs::File::open(&cached)
+                .ok()?
+                .read_exact(&mut header)
+                .ok()?;
+            mctier_image_optimizer::mime(&header)?;
+            let bytes = std::fs::read(cached).ok()?;
+            let original_mime = mctier_image_optimizer::mime(&bytes)?;
+            let optimized = mctier_image_optimizer::optimize(&bytes)?;
+            let mime = mctier_image_optimizer::mime(&optimized)?;
+            Some((optimized, mime, original_mime))
+        }
+    })
+    .await
+    .map_err(|error| error.to_string())?;
+    if let Some((optimized, mime, original_mime)) = optimized {
+        std::fs::write(&cached, &optimized)
+            .map_err(|error| format!("缓存优化图片失败: {error}"))?;
+        if original_mime != mime {
+            let stem: String = source
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("image")
+                .chars()
+                .take(170)
+                .collect();
+            name = format!("{stem}.{}", mctier_image_optimizer::extension(mime));
+            let renamed =
+                directory.join(format!("{id}.{}", mctier_image_optimizer::extension(mime)));
+            std::fs::rename(&cached, &renamed).map_err(|error| error.to_string())?;
+            cached = renamed;
+        }
+        meta.name = name;
+        meta.mime = mime.to_string();
+        meta.size = optimized.len() as u64;
+    }
     let chat_service = { state.core.lock().await.get_chat_service() };
     chat_service
         .lock()
@@ -467,10 +505,82 @@ pub async fn select_chat_attachment(
     Ok(Some(meta))
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PreparedChatImage {
+    image_data_url: Option<String>,
+    attachment: Option<ChatAttachmentMeta>,
+}
+
+/// Optimize before applying the inline wire limit. Large lossless images use
+/// the existing attachment channel rather than being resized or degraded.
+#[tauri::command]
+pub async fn prepare_chat_image(
+    image_data: String,
+    recipient_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<PreparedChatImage, String> {
+    use base64::Engine;
+    if image_data.len() > mctier_image_optimizer::MAX_INPUT_BYTES.div_ceil(3) * 4 {
+        return Err("图片超过 64 MiB，请使用文件共享".into());
+    }
+    let (bytes, mime) = tauri::async_runtime::spawn_blocking(move || {
+        let source = base64::engine::general_purpose::STANDARD
+            .decode(image_data)
+            .map_err(|_| "图片编码无效")?;
+        if source.is_empty() || source.len() > mctier_image_optimizer::MAX_INPUT_BYTES {
+            return Err("图片大小无效");
+        }
+        mctier_image_optimizer::mime(&source).ok_or("不支持此图片格式")?;
+        let bytes = mctier_image_optimizer::optimize(&source).unwrap_or(source);
+        let mime = mctier_image_optimizer::mime(&bytes).ok_or("图片格式无效")?;
+        Ok::<_, &str>((bytes, mime))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+    .map_err(str::to_string)?;
+    if bytes.len() <= 2 * 1024 * 1024 {
+        return Ok(PreparedChatImage {
+            image_data_url: Some(format!(
+                "data:{mime};base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes)
+            )),
+            attachment: None,
+        });
+    }
+    let id = format!("att-{}", uuid::Uuid::new_v4());
+    let extension = mctier_image_optimizer::extension(mime);
+    let directory = crate::modules::app_paths::data_root()
+        .map_err(|error| error.to_string())?
+        .join("chat-attachments");
+    tokio::fs::create_dir_all(&directory)
+        .await
+        .map_err(|error| error.to_string())?;
+    let cached = directory.join(format!("{id}.{extension}"));
+    let meta = ChatAttachmentMeta {
+        id,
+        name: format!("image.{extension}"),
+        mime: mime.to_string(),
+        size: bytes.len() as u64,
+    };
+    tokio::fs::write(&cached, bytes)
+        .await
+        .map_err(|error| error.to_string())?;
+    let service = state.core.lock().await.get_chat_service();
+    service
+        .lock()
+        .await
+        .register_attachment(meta.clone(), cached, recipient_id)?;
+    Ok(PreparedChatImage {
+        image_data_url: None,
+        attachment: Some(meta),
+    })
+}
+
 async fn ensure_chat_attachment_cached(
     owner_player_id: &str,
     meta: &ChatAttachmentMeta,
-    app: &tauri::AppHandle,
+    _app: &tauri::AppHandle,
     state: &AppState,
 ) -> Result<std::path::PathBuf, String> {
     if !valid_attachment_meta(meta) {
@@ -489,9 +599,7 @@ async fn ensure_chat_attachment_cached(
         .ok_or("附件发送者已离开大厅")?;
     let token = chat.get_chat_token().ok_or("聊天令牌尚未就绪")?;
     drop(chat);
-    let directory = app
-        .path()
-        .app_cache_dir()
+    let directory = crate::modules::app_paths::data_root()
         .map_err(|error| format!("无法获取缓存目录: {error}"))?
         .join("chat-attachments");
     let extension = std::path::Path::new(&meta.name)
@@ -583,6 +691,23 @@ pub async fn save_chat_attachment(
     Ok(destination.to_str().map(str::to_string))
 }
 
+/// A notification click saves the authenticated original directly into Downloads.
+#[tauri::command]
+pub async fn download_danmaku_attachment(
+    owner_player_id: String,
+    attachment: ChatAttachmentMeta,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let cached = ensure_chat_attachment_cached(&owner_player_id, &attachment, &app, &state).await?;
+    let directory = dirs::download_dir().ok_or("无法定位下载文件夹")?.join("MCTier");
+    tokio::fs::create_dir_all(&directory).await.map_err(|e| e.to_string())?;
+    // Prefix a unique ID: never overwrite another download, even for repeated clicks.
+    let destination = directory.join(format!("{}_{}", uuid::Uuid::new_v4(), attachment.name));
+    tokio::fs::copy(cached, &destination).await.map_err(|e| format!("下载失败: {e}"))?;
+    Ok(destination.to_string_lossy().into_owned())
+}
+
 #[tauri::command]
 pub async fn preview_spreadsheet_attachment(
     owner_player_id: String,
@@ -652,9 +777,7 @@ pub async fn preview_office_attachment(
         _ => return Err("该格式不需要系统 Office 转换".into()),
     };
     let cached = ensure_chat_attachment_cached(&owner_player_id, &attachment, &app, &state).await?;
-    let directory = app
-        .path()
-        .app_cache_dir()
+    let directory = crate::modules::app_paths::data_root()
         .map_err(|error| format!("无法获取缓存目录: {error}"))?
         .join("office-previews");
     tokio::fs::create_dir_all(&directory)

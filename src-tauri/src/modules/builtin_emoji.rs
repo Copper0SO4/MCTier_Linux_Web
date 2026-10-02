@@ -64,14 +64,19 @@ fn read_index(path: &Path) -> Option<Vec<String>> {
 }
 
 fn assets(cache_dir: &Path, ids: &[String]) -> Vec<BuiltinEmojiAsset> {
-    ids.iter().map(|id| BuiltinEmojiAsset {
+    ids.iter().filter(|id| id.as_str() != "1f60d").map(|id| BuiltinEmojiAsset {
         id: format!("builtin-{id}"), name: id.clone(),
         path: cache_dir.join(format!("{id}.gif")).to_string_lossy().into_owned(),
     }).collect()
 }
 
 fn completed_cache(cache_dir: &Path) -> Option<Vec<BuiltinEmojiAsset>> {
-    let ids = read_index(&cache_dir.join("complete-v3.txt"))?;
+    let mut ids = read_index(&cache_dir.join("complete-v3.txt"))?;
+    if ids.iter().any(|id| id == "1f60d") {
+        ids.retain(|id| id != "1f60d");
+        let _ = std::fs::remove_file(cache_dir.join("1f60d.gif"));
+        let _ = std::fs::write(cache_dir.join("complete-v3.txt"), ids.join("\n"));
+    }
     ids.iter().all(|id| valid_cached_gif(&cache_dir.join(format!("{id}.gif")))).then(|| assets(cache_dir, &ids))
 }
 
@@ -161,7 +166,7 @@ fn resource_pack_path(app: &tauri::AppHandle) -> Option<PathBuf> {
 #[tauri::command]
 pub async fn sync_builtin_emoji(app: tauri::AppHandle) -> Result<Vec<BuiltinEmojiAsset>, String> {
     let _guard = SYNC_LOCK.lock().await;
-    let cache_dir = app.path().app_cache_dir().map_err(|error| format!("无法定位应用缓存目录: {error}"))?.join("emoji-builtin-v3");
+    let cache_dir = crate::modules::app_paths::data_root().map_err(|error| format!("无法定位应用缓存目录: {error}"))?.join("emoji-builtin-v3");
     std::fs::create_dir_all(&cache_dir).map_err(|error| format!("无法创建表情缓存目录: {error}"))?;
     if let Some(cached) = completed_cache(&cache_dir) { emit_progress(&app, cached.len(), cached.len()); return Ok(cached); }
     let _ = std::fs::remove_file(cache_dir.join("complete-v3.txt"));
@@ -206,6 +211,15 @@ mod tests {
         for id in &ids { std::fs::write(directory.join(format!("{id}.gif")), b"GIF89a").unwrap(); }
         std::fs::write(directory.join("complete-v3.txt"), ids.join("\n")).unwrap();
         assert_eq!(completed_cache(&directory).unwrap().len(), MIN_EMOJI_COUNT);
+        let mut old_ids = ids.clone();
+        old_ids.extend(["1f60d".to_string(), "1f970".to_string()]);
+        for id in ["1f60d", "1f970"] { std::fs::write(directory.join(format!("{id}.gif")), b"GIF89a").unwrap(); }
+        std::fs::write(directory.join("complete-v3.txt"), old_ids.join("\n")).unwrap();
+        let migrated = completed_cache(&directory).unwrap();
+        assert_eq!(migrated.len(), MIN_EMOJI_COUNT + 1);
+        assert!(migrated.iter().any(|asset| asset.id == "builtin-1f970"));
+        assert!(!migrated.iter().any(|asset| asset.id == "builtin-1f60d"));
+        assert!(!directory.join("1f60d.gif").exists());
         std::fs::write(directory.join("0.gif"), b"broken").unwrap();
         assert!(completed_cache(&directory).is_none());
         std::fs::remove_dir_all(directory).unwrap();

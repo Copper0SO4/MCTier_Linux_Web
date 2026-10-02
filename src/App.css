@@ -724,7 +724,7 @@ html[data-theme='light'] .version-update-modal .ant-modal-title,
 html[data-theme='light'] .update-log-title,
 html[data-theme='light'] .update-log-text,
 html[data-theme='light'] .ant-modal-body
-  :is(p, div, label, span):not(.ant-btn-icon):not(.anticon):not(:is(button, .ant-btn, .mct-on-dark) *) {
+  :is(p, div, label, span):not(.ant-btn-icon):not(.anticon):not(:is(button, .ant-btn, .mct-on-dark, .quark-support) *) {
   color: #18202b !important;
 }
 html[data-theme='light'] .ant-modal-close,

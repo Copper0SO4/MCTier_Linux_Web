@@ -3,6 +3,7 @@
 
 // 错误处理模块
 pub mod error;
+pub mod app_paths;
 
 // 配置管理模块
 pub mod config_manager;
@@ -74,6 +75,17 @@ pub mod mc_lan_bridge;
 // 远程控制（输入注入）模块
 pub mod remote_control;
 pub mod speech_transcription;
+pub mod media_permission;
+pub mod native_capture;
+pub mod native_microphone;
+pub mod voice_ice;
+pub mod quark_support;
+pub mod quark_background;
+#[cfg(windows)]
+mod quark_scheduler;
+#[cfg(all(test, windows))]
+mod quark_webview_test;
+
 
 // Linux 平台支撑（TUN 文件能力 / 网卡检测 / 防火墙 / XDG 自启动）
 #[cfg(target_os = "linux")]

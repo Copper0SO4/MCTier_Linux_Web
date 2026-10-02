@@ -432,6 +432,7 @@ pub async fn join_lobby(
 /// * `Err(String)` - 错误信息
 #[tauri::command]
 pub async fn leave_lobby(state: State<'_, AppState>) -> Result<(), String> {
+    crate::modules::voice_ice::stop();
     log::info!("收到退出大厅命令");
 
     let core = state.core.lock().await;

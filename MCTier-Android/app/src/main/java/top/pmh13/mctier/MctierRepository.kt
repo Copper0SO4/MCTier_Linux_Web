@@ -1,6 +1,9 @@
 package top.pmh13.mctier
 
 import top.pmh13.mctier.data.messagePreview
+import top.pmh13.mctier.data.BuiltinEmojiMessage
+import top.pmh13.mctier.data.lobbyMutesWithoutHost
+import top.pmh13.mctier.data.isMutedByLobbyHost
 
 import android.content.Context
 import android.content.Intent
@@ -66,12 +69,14 @@ import top.pmh13.mctier.data.SignalingEnvelope
 import top.pmh13.mctier.data.UserSettings
 import top.pmh13.mctier.network.AndroidRtcController
 import top.pmh13.mctier.network.BuiltinEmojiCache
+import top.pmh13.mctier.network.ImageOptimizer
 import top.pmh13.mctier.network.ChatAuth
 import top.pmh13.mctier.network.ChatP2PClient
 import top.pmh13.mctier.network.ConnectArgs
 import top.pmh13.mctier.network.FileShareHttpServer
 import top.pmh13.mctier.network.NetworkController
 import top.pmh13.mctier.network.RemoteFileClient
+import top.pmh13.mctier.network.ScreenShareQuality
 import top.pmh13.mctier.network.ScreenShareController
 import top.pmh13.mctier.network.LobbyInviteCodec
 import top.pmh13.mctier.service.ScreenCaptureService
@@ -228,6 +233,7 @@ class MctierRepository(private val context: Context) {
     private val soundManager = top.pmh13.mctier.network.SoundManager(context)
     private val builtinEmojiCache = BuiltinEmojiCache(context)
     private val cachedBuiltinEmojiItems = builtinEmojiCache.cachedItems()
+    @Volatile private var builtinEmojiIndex = cachedBuiltinEmojiItems.associateBy { it.id }
     private var builtinEmojiSyncJob: Job? = null
     private var reconnectNoticeJob: Job? = null
     private var lastShareSignalRequestAt: Long = 0L
@@ -367,6 +373,7 @@ class MctierRepository(private val context: Context) {
     val state: StateFlow<MctierUiState> = _state.asStateFlow()
 
     init {
+        syncBuiltinEmoji()
         clearAvatarCacheOnStartup()
         scope.launch { signalingClient.events.collect { handleSignal(it) } }
         // 应用已保存的音效/免打扰设置
@@ -871,7 +878,7 @@ class MctierRepository(private val context: Context) {
     fun toggleMic() {
         // 被房主禁言时不允许开麦
         val st = _state.value
-        if (st.mutedPlayers.contains(st.playerId) && !st.micEnabled) {
+        if (isMutedByLobbyHost(st.playerId, st.hostId, st.mutedPlayers) && !st.micEnabled) {
             return
         }
         rtcController.setMicEnabled(!st.micEnabled)
@@ -970,22 +977,30 @@ class MctierRepository(private val context: Context) {
 
     fun suspendLobbyVoiceForRecording(): () -> Unit = rtcController.suspendLobbyVoice()
 
-    fun sendVoiceChat(bytes: ByteArray, duration: Double, recipientId: String?) {
+    fun sendVoiceChat(bytes: ByteArray, duration: Double, recipientId: String?, mime: String = "audio/wav") {
         val current = _state.value
         val client = chatClient
         if (client == null || !current.chatReady || !client.isReady()) {
             _state.update { it.copy(error = L("语音发送失败：聊天连接尚未就绪", "Voice message failed: chat is not connected")) }
             return
         }
+        val pending = ChatMessage("local-${UUID.randomUUID()}", current.playerId, current.settings.playerName,
+            org.json.JSONObject().put("mime", mime).put("duration", duration).toString(), System.currentTimeMillis(),
+            mine = true, type = "voice", imageBase64 = "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP), recipientId = recipientId, delivery = "sending")
+        _state.update { it.copy(chatMessages = orderedChatMessages(it.chatMessages + pending)) }
         ioScope.launch {
-            val wire = runCatching { client.sendVoice(current.settings.playerName, bytes, duration, recipientId) }.getOrNull()
+            val encoded = if (mime == "audio/wav") runCatching { top.pmh13.mctier.audio.VoiceMessageEncoder.compress(context, bytes) }
+                .getOrElse { top.pmh13.mctier.audio.EncodedVoice(bytes, mime) }
+                else top.pmh13.mctier.audio.EncodedVoice(bytes, mime)
+            if (chatClient !== client || _state.value.lobby?.id != current.lobby?.id || _state.value.playerId != current.playerId) return@launch
+            val wire = runCatching { client.sendVoice(current.settings.playerName, encoded.bytes, duration, recipientId, encoded.mime) }.getOrNull()
             if (wire == null) {
-                _state.update { it.copy(error = L("语音发送失败，请检查大厅连接后重试", "Voice message failed. Check the lobby connection and retry")) }
+                _state.update { it.copy(chatMessages = it.chatMessages.map { m -> if (m.id == pending.id) m.copy(delivery = "failed") else m }, error = L("语音发送失败，请检查大厅连接后重试", "Voice message failed. Check the lobby connection and retry")) }
                 return@launch
             }
-            val data = "data:audio/wav;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+            val data = "data:${encoded.mime};base64," + Base64.encodeToString(encoded.bytes, Base64.NO_WRAP)
             val message = ChatMessage(wire.id, current.playerId, current.settings.playerName, wire.content, wire.timestamp * 1000, mine = true, type = "voice", imageBase64 = data, recipientId = recipientId)
-            _state.update { if (it.lobby?.id != current.lobby?.id || it.playerId != current.playerId) it else it.copy(chatMessages = orderedChatMessages(it.chatMessages + message)) }
+            _state.update { if (it.lobby?.id != current.lobby?.id || it.playerId != current.playerId) it else it.copy(chatMessages = orderedChatMessages(it.chatMessages.filterNot { m -> m.id == pending.id } + message)) }
         }
     }
 
@@ -1010,17 +1025,26 @@ class MctierRepository(private val context: Context) {
         }
     }
 
-    /** 发送图片消息：保留 GIF/PNG/JPEG/WebP 原始字节，避免破坏动画。 */
+    /** 无损优化后发送，保留尺寸、透明度和动画；大图走附件通道。 */
     fun sendImageChat(uri: Uri, recipientId: String? = null) {
+        val sendingClient = chatClient
+        val sendingLobbyId = _state.value.lobby?.id
         ioScope.launch {
             runCatching {
-                val bytes = context.contentResolver.openInputStream(uri)?.use { readLimited(it, ChatImageMaxBytes) } ?: return@runCatching
-                sendImageBytes(bytes, recipientId)
-            }
+                val bytes = context.contentResolver.openInputStream(uri)?.use { readLimited(it, ImageOptimizer.MaxSourceBytes) } ?: error("无法读取图片")
+                check(sendingClient === chatClient && sendingLobbyId == _state.value.lobby?.id) { "聊天会话已变化，请重新发送" }
+                check(sendImageBytes(bytes, recipientId)) { "图片发送失败，请检查格式、大小或聊天连接" }
+            }.onFailure { error -> _state.update { it.copy(error = error.message) } }
         }
     }
 
     fun sendFileChat(uri: Uri, recipientId: String? = null, onResult: (Boolean) -> Unit = {}) {
+        val sendingState = _state.value
+        val sendingClient = chatClient
+        if (sendingClient == null || !sendingState.chatReady || !sendingClient.isReady()) { onResult(false); return }
+        val pending = ChatMessage("local-${UUID.randomUUID()}", sendingState.playerId, sendingState.settings.playerName,
+            L("正在准备附件…", "Preparing attachment…"), System.currentTimeMillis(), mine = true, type = "file", recipientId = recipientId, delivery = "sending")
+        _state.update { it.copy(chatMessages = orderedChatMessages(it.chatMessages + pending)) }
         ioScope.launch {
             val result = runCatching {
                 var displayName = "file-${System.currentTimeMillis()}"
@@ -1037,7 +1061,7 @@ class MctierRepository(private val context: Context) {
                 val id = "att-${UUID.randomUUID()}"
                 val directory = java.io.File(context.cacheDir, "chat-attachments").also { it.mkdirs() }
                 val extension = displayName.substringAfterLast('.', "bin").takeIf { it.matches(Regex("[A-Za-z0-9]{1,16}")) } ?: "bin"
-                val target = java.io.File(directory, "$id.$extension")
+                var target = java.io.File(directory, "$id.$extension")
                 var size = 0L
                 context.contentResolver.openInputStream(uri)?.use { input ->
                     target.outputStream().use { output ->
@@ -1052,15 +1076,33 @@ class MctierRepository(private val context: Context) {
                     }
                 } ?: error("无法读取文件")
                 require(size > 0 && (declaredSize < 0 || declaredSize == size))
-                val resolvedMime = context.contentResolver.getType(uri)?.takeIf { it.matches(Regex("[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+")) } ?: chatAttachmentMime(displayName)
+                var resolvedMime = context.contentResolver.getType(uri)?.takeIf { it.matches(Regex("[A-Za-z0-9.+-]+/[A-Za-z0-9.+-]+")) } ?: chatAttachmentMime(displayName)
+                ImageOptimizer.optimizeFile(target)?.let { imageMime ->
+                    val optimizedExtension = imageExtension(imageMime)
+                    if (extension.lowercase() != optimizedExtension) {
+                        displayName = displayName.substringBeforeLast('.', displayName).take(170) + "." + optimizedExtension
+                        val renamed = java.io.File(directory, "$id.$optimizedExtension")
+                        check(target.renameTo(renamed)) { "无法缓存优化图片" }
+                        target = renamed
+                    }
+                    resolvedMime = imageMime
+                    size = target.length()
+                }
                 val meta = ChatAttachmentMeta(id, displayName, resolvedMime, size)
                 require(validChatAttachment(meta))
-                val current = _state.value
-                val wire = chatClient?.sendFile(current.settings.playerName, meta, target, recipientId) ?: error("聊天未连接")
+                check(sendingClient === chatClient && _state.value.lobby?.id == sendingState.lobby?.id) { "聊天会话已变化，请重新发送" }
+                val current = sendingState
+                val wire = sendingClient?.sendFile(current.settings.playerName, meta, target, recipientId) ?: error("聊天未连接")
                 ChatMessage(wire.id, current.playerId, current.settings.playerName, wire.content, wire.timestamp * 1000, mine = true, type = "file", recipientId = recipientId, attachment = meta, attachmentPath = target.absolutePath)
             }
-            result.onSuccess { message -> _state.update { it.copy(chatMessages = orderedChatMessages(it.chatMessages + message)) } }
-                .onFailure { Log.w(TAG, "发送文件失败: ${it.message}") }
+            result.onSuccess { message -> _state.update {
+                if (sendingClient !== chatClient || it.lobby?.id != sendingState.lobby?.id) it
+                else it.copy(chatMessages = orderedChatMessages(it.chatMessages.map { m -> if (m.id == pending.id) message else m }))
+            } }
+                .onFailure {
+                    Log.w(TAG, "发送文件失败: ${it.message}")
+                    _state.update { state -> state.copy(chatMessages = state.chatMessages.map { m -> if (m.id == pending.id) m.copy(delivery = "failed") else m }) }
+                }
             withContext(Dispatchers.Main) { onResult(result.isSuccess) }
         }
     }
@@ -1099,16 +1141,43 @@ class MctierRepository(private val context: Context) {
         }
     }
 
-    private fun sendImageBytes(bytes: ByteArray, recipientId: String? = null, content: String = "[图片]"): Boolean {
-        if (bytes.isEmpty() || bytes.size > ChatImageMaxBytes) return false
-        val mime = sniffChatImageMime(bytes) ?: return false
+    private fun sendImageBytes(source: ByteArray, recipientId: String? = null, content: String = "[图片]"): Boolean {
+        if (source.isEmpty() || source.size > ImageOptimizer.MaxSourceBytes) return false
         val current = _state.value
         val client = chatClient ?: return false
-        val wire = client.sendImage(current.settings.playerName, bytes.map { it.toInt() and 0xFF }, recipientId, content) ?: return false
-        val base64 = "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
-        val message = ChatMessage(wire.id, current.playerId, current.settings.playerName, content, wire.timestamp * 1000, mine = true, type = "image", imageBase64 = base64, recipientId = recipientId)
-        _state.update { it.copy(chatMessages = orderedChatMessages(it.chatMessages + message)) }
-        return true
+        val originalMime = sniffChatImageMime(source) ?: return false
+        val pending = ChatMessage("local-${UUID.randomUUID()}", current.playerId, current.settings.playerName, content,
+            System.currentTimeMillis(), mine = true, type = "image", recipientId = recipientId, delivery = "sending",
+            imageBase64 = if (source.size <= ChatImageMaxBytes) "data:$originalMime;base64," + Base64.encodeToString(source, Base64.NO_WRAP) else null)
+        _state.update { it.copy(chatMessages = orderedChatMessages(it.chatMessages + pending)) }
+        var sent = false
+        try {
+            val bytes = ImageOptimizer.optimize(source)
+            val mime = sniffChatImageMime(bytes) ?: return false
+            if (client !== chatClient || _state.value.lobby?.id != current.lobby?.id) return false
+            val message = if (bytes.size > ChatImageMaxBytes) {
+                val id = "att-${UUID.randomUUID()}"
+                val extension = imageExtension(mime)
+                val target = java.io.File(context.cacheDir, "chat-attachments/$id.$extension")
+                target.parentFile?.mkdirs(); target.writeBytes(bytes)
+                val meta = ChatAttachmentMeta(id, "image.$extension", mime, bytes.size.toLong())
+                val wire = client.sendFile(current.settings.playerName, meta, target, recipientId) ?: return false
+                ChatMessage(wire.id, current.playerId, current.settings.playerName, wire.content, wire.timestamp * 1000,
+                    mine = true, type = "file", recipientId = recipientId, attachment = meta, attachmentPath = target.absolutePath)
+            } else {
+                val wire = client.sendImage(current.settings.playerName, bytes.map { it.toInt() and 255 }, recipientId, content) ?: return false
+                ChatMessage(wire.id, current.playerId, current.settings.playerName, content, wire.timestamp * 1000,
+                    mine = true, type = "image", imageBase64 = "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP), recipientId = recipientId)
+            }
+            _state.update {
+                if (client !== chatClient || it.lobby?.id != current.lobby?.id) it
+                else it.copy(chatMessages = orderedChatMessages(it.chatMessages.map { m -> if (m.id == pending.id) message else m }))
+            }
+            sent = true
+            return true
+        } finally {
+            if (!sent) _state.update { it.copy(chatMessages = it.chatMessages.map { m -> if (m.id == pending.id) m.copy(delivery = "failed") else m }) }
+        }
     }
 
     /** 收到他人聊天消息（来自 P2P 聊天客户端，已去重并排除自己） */
@@ -1209,19 +1278,39 @@ class MctierRepository(private val context: Context) {
             runCatching {
                 val preview = messagePreview(finalMessage)
                 if (finalMessage.recalled) return@runCatching
-                if (preview.kind == "image" && base64 != null) {
-                    top.pmh13.mctier.ui.DanmakuOverlay.pushImage("$resolvedName:", base64)
+                val builtinId = if (finalMessage.type == "text") BuiltinEmojiMessage.decode(finalMessage.content) else null
+                // Save the original attachment/GIF, not the small notification thumbnail.
+                val imageAction = if (preview.kind == "image" || finalMessage.type == "file") top.pmh13.mctier.ui.DanmakuOverlay.Action(L("下载附件", "Download attachment")) {
+                    val onResult: (Boolean) -> Unit = { ok ->
+                        android.widget.Toast.makeText(context, if (ok) L("已保存到下载目录或相册", "Saved to Downloads or Pictures") else L("下载失败，请在聊天室重试", "Download failed. Try in chat"), android.widget.Toast.LENGTH_SHORT).show()
+                    }
+                    if (_state.value.chatMessages.none { it.id == finalMessage.id && !it.recalled }) onResult(false)
+                    else if (builtinId != null) saveBuiltinEmojiToGallery(builtinId, onResult)
+                    else if (finalMessage.type == "file") saveChatAttachment(finalMessage, onResult)
+                    else saveChatImageToGallery(base64, onResult)
+                } else null
+                if (builtinId != null) {
+                    ioScope.launch {
+                        builtinEmojiSyncJob?.join()
+                        if (_state.value.chatMessages.none { it.id == finalMessage.id && !it.recalled } ||
+                            (finalMessage.recipientId != null && _state.value.peerPreferences[finalMessage.playerId]?.muted == true)) return@launch
+                        val file = builtinEmojiFile(builtinId)
+                        if (file != null) top.pmh13.mctier.ui.DanmakuOverlay.pushMediaFile("$resolvedName:", file, preview, imageAction)
+                        else top.pmh13.mctier.ui.DanmakuOverlay.pushCard("$resolvedName:", preview, imageAction)
+                    }
+                } else if (preview.kind == "image" && base64 != null) {
+                    top.pmh13.mctier.ui.DanmakuOverlay.pushImage("$resolvedName:", base64, action = imageAction)
                 } else if (wire.messageType == "file" && preview.kind in setOf("image", "video")) {
                     val sessionClient = chatClient
                     ioScope.launch {
                         val file = runCatching { attachment?.let { sessionClient?.fetchAttachment(wire.playerId, it) } }.getOrNull()
                         if (sessionClient !== chatClient || _state.value.chatMessages.none { it.id == finalMessage.id && !it.recalled } ||
                             (finalMessage.recipientId != null && _state.value.peerPreferences[finalMessage.playerId]?.muted == true)) return@launch
-                        if (file != null) top.pmh13.mctier.ui.DanmakuOverlay.pushMediaFile("$resolvedName:", file, preview)
-                        else top.pmh13.mctier.ui.DanmakuOverlay.pushCard("$resolvedName:", preview.copy(detail = "${preview.detail} · 预览暂不可用"))
+                        if (file != null) top.pmh13.mctier.ui.DanmakuOverlay.pushMediaFile("$resolvedName:", file, preview, imageAction)
+                        else top.pmh13.mctier.ui.DanmakuOverlay.pushCard("$resolvedName:", preview.copy(detail = "${preview.detail} · 预览暂不可用"), imageAction)
                     }
                 } else if (preview.kind != "text") {
-                    top.pmh13.mctier.ui.DanmakuOverlay.pushCard("$resolvedName:", preview)
+                    top.pmh13.mctier.ui.DanmakuOverlay.pushCard("$resolvedName:", preview, action = imageAction, voiceData = if (preview.kind == "voice") base64 else null)
                 } else {
                     val visibleContent = preview.text
                     val dm = "$resolvedName: $visibleContent"
@@ -1623,7 +1712,11 @@ class MctierRepository(private val context: Context) {
     }
 
     /** 开始共享自己的屏幕（需传入 MediaProjection 授权数据） */
-    fun startScreenCapture(data: Intent, requirePassword: Boolean, password: String?) {
+    fun screenShareQuality() = ScreenShareQuality(
+        prefs.getInt("screenResolution", 1080), prefs.getInt("screenFrameRate", 30), prefs.getInt("screenBitrateMbps", 0),
+    ).normalized()
+
+    fun startScreenCapture(data: Intent, requirePassword: Boolean, password: String?, quality: ScreenShareQuality = screenShareQuality()) {
         if (requirePassword && password?.trim().isNullOrEmpty()) {
             _state.update { it.copy(error = L("请设置屏幕共享密码", "Set a screen sharing password")) }
             return
@@ -1649,7 +1742,13 @@ class MctierRepository(private val context: Context) {
             try {
                 delay(800)
                 if (!isCurrentScreenCaptureStart(generation, shareId, playerId)) return@launch
-                val started = screenController?.startSharing(shareId, data, password) == true
+                val selectedQuality = quality.normalized()
+                val started = screenController?.startSharing(shareId, data, password, selectedQuality) == true
+                if (started) prefs.edit {
+                    putInt("screenResolution", selectedQuality.resolution)
+                    putInt("screenFrameRate", selectedQuality.frameRate)
+                    putInt("screenBitrateMbps", selectedQuality.bitrateMbps)
+                }
                 if (!isCurrentScreenCaptureStart(generation, shareId, playerId)) return@launch
                 if (!started) {
                     ScreenCaptureService.stop(appContext)
@@ -1956,7 +2055,7 @@ class MctierRepository(private val context: Context) {
                         hostId = message.hostId,
                         maxPlayers = message.maxPlayers,
                         isPublicLobby = message.isPublic ?: false,
-                        mutedPlayers = message.mutedPlayers?.toSet() ?: state.mutedPlayers,
+                        mutedPlayers = lobbyMutesWithoutHost(message.mutedPlayers?.toSet() ?: state.mutedPlayers, message.hostId),
                         players = state.players.map { player ->
                             if (player.id == registeredId) {
                                 player.copy(
@@ -1966,6 +2065,10 @@ class MctierRepository(private val context: Context) {
                             } else player
                         },
                     )
+                }
+                val registeredState = _state.value
+                if (isMutedByLobbyHost(registeredState.playerId, registeredState.hostId, registeredState.mutedPlayers)) {
+                    rtcController.setMicEnabled(false)
                 }
                 // Install the authenticated HTTP session for every member
                 // immediately. Non-hosts previously waited for players-list,
@@ -2162,7 +2265,7 @@ class MctierRepository(private val context: Context) {
             }
             "host-changed" -> {
                 val hostId = message.hostId ?: return
-                _state.update { it.copy(hostId = hostId) }
+                _state.update { it.copy(hostId = hostId, mutedPlayers = lobbyMutesWithoutHost(it.mutedPlayers, hostId)) }
                 val client = chatClient
                 if (client?.isReady() == true && !client.updateHostId(hostId) && !configureAuthenticatedChat()) {
                     rejectChatProtocol(L("无法更新聊天房主身份", "Unable to update chat host identity"))
@@ -2170,13 +2273,13 @@ class MctierRepository(private val context: Context) {
             }
             "player-mute-changed" -> {
                 val id = message.playerId ?: return
-                val muted = message.muted ?: false
+                val muted = message.muted == true && id != _state.value.hostId
                 _state.update {
                     val set = it.mutedPlayers.toMutableSet().apply { if (muted) add(id) else remove(id) }
                     it.copy(mutedPlayers = set)
                 }
                 // 自己被禁言：强制关麦
-                if (id == _state.value.playerId && muted && _state.value.micEnabled) {
+                if (id == _state.value.playerId && muted) {
                     rtcController.setMicEnabled(false)
                 }
             }
@@ -3044,9 +3147,14 @@ class MctierRepository(private val context: Context) {
 
     fun sendEmoji(item: CustomEmojiItem, recipientId: String? = null, onResult: (Boolean) -> Unit = {}) {
         ioScope.launch {
-            val library = if (item.categoryId == "builtin") "emoji-library-v3" else "emoji-library-v1"
-            val bytes = runCatching { java.io.File(context.filesDir, "$library/${item.fileName}").readBytes() }.getOrNull()
-            if (bytes == null || !sendImageBytes(bytes, recipientId, "[表情]")) {
+            val sent = if (item.categoryId == "builtin") {
+                // Send only a known bundled ID through the existing encrypted text channel.
+                builtinEmojiFile(item.id) != null && sendChat(BuiltinEmojiMessage.encode(item.id), recipientId)
+            } else {
+                val bytes = runCatching { java.io.File(context.filesDir, "emoji-library-v1/${item.fileName}").readBytes() }.getOrNull()
+                bytes != null && sendImageBytes(bytes, recipientId, "[表情]")
+            }
+            if (!sent) {
                 withContext(Dispatchers.Main) { onResult(false) }
                 return@launch
             }
@@ -3061,7 +3169,25 @@ class MctierRepository(private val context: Context) {
 
     fun ensureBuiltinEmoji() = syncBuiltinEmoji()
 
+    fun builtinEmojiFile(id: String): java.io.File? {
+        if (runCatching { BuiltinEmojiMessage.encode(id) }.isFailure) return null
+        val item = builtinEmojiIndex[id] ?: return null
+        return java.io.File(context.filesDir, "emoji-library-v3/${item.fileName}")
+    }
+
     fun retryBuiltinEmojiSync() = syncBuiltinEmoji()
+
+    fun saveBuiltinEmojiToGallery(id: String, onResult: (Boolean) -> Unit) {
+        ioScope.launch {
+            val encoded = runCatching {
+                val file = builtinEmojiFile(id) ?: return@runCatching null
+                val bytes = file.inputStream().use { readLimited(it, ChatImageMaxBytes) }
+                if (bytes.size > ChatImageMaxBytes || sniffChatImageMime(bytes) != "image/gif") return@runCatching null
+                "data:image/gif;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+            }.getOrNull()
+            withContext(Dispatchers.Main) { saveChatImageToGallery(encoded, onResult) }
+        }
+    }
 
     private fun syncBuiltinEmoji() {
         if (builtinEmojiSyncJob?.isActive == true) return
@@ -3071,6 +3197,7 @@ class MctierRepository(private val context: Context) {
                 _state.update { it.copy(emojiBuiltinDownloaded = downloaded, emojiBuiltinTotal = total) }
             } }
                 .onSuccess { builtin ->
+                    builtinEmojiIndex = builtin.associateBy { it.id }
                     withContext(Dispatchers.Main) {
                         _state.update { current ->
                             current.copy(
@@ -3085,6 +3212,7 @@ class MctierRepository(private val context: Context) {
                     if (error is kotlinx.coroutines.CancellationException) throw error
                     Log.w(TAG, "Built-in emoji extraction failed", error)
                     val available = builtinEmojiCache.cachedItems()
+                    builtinEmojiIndex = available.associateBy { it.id }
                     withContext(Dispatchers.Main) {
                         _state.update {
                             it.copy(

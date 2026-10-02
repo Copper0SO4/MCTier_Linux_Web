@@ -9,6 +9,7 @@ export function useHoldVoice(enabled: boolean, send: (blob: Blob, duration: numb
   const pending = useRef<ReturnType<typeof setTimeout> | null>(null);
   const timer = useRef<ReturnType<typeof setInterval> | null>(null);
   const generation = useRef(0);
+  const deliveryGeneration = useRef(0);
   const recorder = useRef<MediaRecorder | null>(null);
   const startY = useRef(0);
   const cancelled = useRef(false);
@@ -50,6 +51,7 @@ export function useHoldVoice(enabled: boolean, send: (blob: Blob, duration: numb
     const key = (e: KeyboardEvent) => { if (e.key === 'Escape') cancel(); };
     window.addEventListener('keydown', key);
     return () => {
+      deliveryGeneration.current++;
       cancel();
       window.removeEventListener('blur', cancel);
       document.removeEventListener('visibilitychange', cancel);
@@ -76,16 +78,24 @@ export function useHoldVoice(enabled: boolean, send: (blob: Blob, duration: numb
             if (ticket !== generation.current) { stream.getTracks().forEach(t => t.stop()); release(); return; }
             const mimeType = ['audio/webm;codecs=opus', 'audio/ogg;codecs=opus', 'audio/mp4'].find(t => MediaRecorder.isTypeSupported(t));
             if (!mimeType) { stream.getTracks().forEach(t => t.stop()); throw new Error('No voice codec'); }
-            const active = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: 32000 });
+            // Mono Opus at 16 kbps keeps speech intelligible with ~120 KB/minute.
+            await Promise.all(stream.getAudioTracks().map(track => track.applyConstraints({ channelCount: 1 }).catch(() => {})));
+            if (ticket !== generation.current) { stream.getTracks().forEach(t => t.stop()); release(); return; }
+            const active = new MediaRecorder(stream, { mimeType, audioBitsPerSecond: mimeType.includes('opus') ? 16000 : 24000 });
             const currentJob = { cancelled: false };
             job.current = currentJob;
             const sendRecording = sendRef.current;
+            const deliveryTicket = deliveryGeneration.current;
             const began = performance.now();
             const chunks: Blob[] = [];
             recorder.current = active;
+            stream.getAudioTracks()[0]?.addEventListener?.('ended', () => {
+              if (recorder.current === active) { finish(true); failed(); }
+            }, { once: true });
             active.ondataavailable = e => { if (e.data.size) chunks.push(e.data); };
             active.onerror = () => { finish(true); failed(); };
             active.onstop = () => {
+              if (deliveryTicket !== deliveryGeneration.current) return;
               const duration = Math.min(60, (performance.now() - began) / 1000);
               const blob = new Blob(chunks, { type: mimeType.split(';')[0] });
               if (!currentJob.cancelled && duration >= 0.5 && blob.size > 0 && blob.size <= MAX_VOICE_BYTES) {

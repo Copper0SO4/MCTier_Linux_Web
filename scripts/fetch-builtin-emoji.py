@@ -64,7 +64,8 @@ def main() -> int:
         page_cache.with_suffix(".part").write_bytes(html_bytes)
         page_cache.with_suffix(".part").replace(page_cache)
     html = html_bytes.decode("utf-8")
-    ids = list(dict.fromkeys(PATTERN.findall(html)))
+    # This source's 1f60d animation duplicates 1f970.
+    ids = [emoji_id for emoji_id in dict.fromkeys(PATTERN.findall(html)) if emoji_id != "1f60d"]
     if not MIN_COUNT <= len(ids) <= MAX_COUNT:
         raise ValueError(f"unexpected emoji count: {len(ids)}")
     (args.cache / "ids.txt").write_text("\n".join(ids) + "\n", encoding="ascii")

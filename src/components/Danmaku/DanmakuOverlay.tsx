@@ -6,12 +6,18 @@ import {
   MAX_CHAT_TEXT_LENGTH,
   sanitizeImageDataUrl,
   sanitizeUntrustedText,
+  sanitizeIdentifier,
 } from '../../security/trustBoundary';
 import './DanmakuOverlay.css';
 import type { PreviewKind } from '../../services/danmaku/messagePreview';
+import { safeVoiceUrl } from '../../services/chat/voiceMessage';
+import { parseChatAttachment, type ChatAttachment } from '../../services/chat/fileAttachment';
 import { FileOutlined, PlayCircleOutlined, AudioOutlined, SoundOutlined } from '@ant-design/icons';
 
 interface Bullet {
+  attachment?: ChatAttachment;
+  ownerPlayerId?: string;
+  voice?: string;
   id: number;
   text: string;
   color: string;
@@ -25,6 +31,9 @@ interface Bullet {
 }
 
 interface DanmakuPayload {
+  attachment?: ChatAttachment;
+  ownerPlayerId?: string;
+  voice?: string;
   text: string;
   color: string;
   fontSize: number;
@@ -39,8 +48,8 @@ interface DanmakuPayload {
 
 /**
  * 弹幕覆盖窗口的渲染组件（运行在独立的置顶透明窗口中）。
- * 桌面端交互：鼠标悬停到弹幕上即暂停（定住）并显示操作按钮（文本→复制，图片→下载）；
- * 鼠标移开自动恢复飘动；点击复制/下载后也立即恢复飘动。
+ * 鼠标悬停暂停以便点击；直接点击文本复制、语音播放、图片/附件下载。
+ * 鼠标移开或点击后恢复飘动，每条弹幕最多触发一次操作。
  */
 export const DanmakuOverlay: React.FC = () => {
   const [bullets, setBullets] = useState<Bullet[]>([]);
@@ -51,11 +60,27 @@ export const DanmakuOverlay: React.FC = () => {
   const idRef = useRef(1);
   const trackFreeAt = useRef<number[]>([]);
   const nodeRefs = useRef<Map<number, HTMLDivElement>>(new Map());
-  const actionBtnRef = useRef<HTMLDivElement | null>(null);
   const hoverIdRef = useRef<number | null>(null);
-  const actionedRef = useRef<Set<number>>(new Set()); // 已点过按钮的弹幕：不再因悬停暂停，直接飘走
+  const actionedRef = useRef<Set<number>>(new Set()); // 已操作的弹幕不再因悬停暂停
   const ignoreRef = useRef<boolean>(true);
   const toastTimer = useRef<number | null>(null);
+  const voicePlayer = useRef<HTMLAudioElement | null>(null);
+  const stopVoice = useCallback(() => {
+    const player = voicePlayer.current;
+    voicePlayer.current = null;
+    if (player) {
+      player.onended = null;
+      player.onerror = null;
+      player.pause();
+      player.removeAttribute('src');
+      player.load();
+    }
+  }, []);
+
+  useEffect(() => () => {
+    stopVoice();
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+  }, [stopVoice]);
 
   hoverIdRef.current = hoverId;
 
@@ -107,6 +132,9 @@ export const DanmakuOverlay: React.FC = () => {
       duration,
       top,
       kind,
+      voice: kind === 'voice' && safeVoiceUrl(p.voice) ? p.voice : undefined,
+      attachment: parseChatAttachment(p.attachment) ?? undefined,
+      ownerPlayerId: sanitizeIdentifier(p.ownerPlayerId) || undefined,
       detail: sanitizeUntrustedText(p.detail, 200),
       image,
       copyText: sanitizeUntrustedText(p.copyText, MAX_CHAT_TEXT_LENGTH),
@@ -146,10 +174,8 @@ export const DanmakuOverlay: React.FC = () => {
             // 1) 维持当前悬停：鼠标仍在该弹幕或其按钮上
             if (hid !== null) {
               const el = nodeRefs.current.get(hid);
-              const btn = actionBtnRef.current;
               const overBullet = !!el && within(el.getBoundingClientRect(), cx, cy);
-              const overBtn = !!btn && within(btn.getBoundingClientRect(), cx, cy);
-              if (overBullet || overBtn) target = hid;
+              if (overBullet) target = hid;
             }
             // 2) 否则寻找鼠标下的新弹幕（已点过按钮的跳过）
             if (target === null) {
@@ -220,7 +246,7 @@ export const DanmakuOverlay: React.FC = () => {
     if (hoverIdRef.current === id) setHoverId(null);
   }, []);
 
-  // 点击按钮后立即恢复飘动：标记为已操作并取消悬停暂停
+  // 点击后立即恢复飘动：标记为已操作并取消悬停暂停
   const releaseAfterAction = useCallback((id: number) => {
     actionedRef.current.add(id);
     setHoverId(null);
@@ -241,15 +267,41 @@ export const DanmakuOverlay: React.FC = () => {
   }, [showToast, releaseAfterAction]);
 
   const doDownload = useCallback(async (b: Bullet) => {
-    if (!b.image) { releaseAfterAction(b.id); return; }
+    if (!b.image && !b.attachment) { showToast(tl('下载内容不可用，请在聊天室重试', 'Download unavailable. Try in chat')); releaseAfterAction(b.id); return; }
     try {
-      await invoke<string>('save_danmaku_image', { dataUrl: b.image });
-      showToast(tl('图片已保存到下载文件夹', 'Image saved to Downloads'));
+      showToast(tl('正在下载…', 'Downloading…'));
+      if (b.attachment && b.ownerPlayerId) {
+        await invoke<string>('download_danmaku_attachment', { ownerPlayerId: b.ownerPlayerId, attachment: b.attachment });
+      } else if (b.image) {
+        await invoke<string>('save_danmaku_image', { dataUrl: b.image });
+      } else { throw new Error('Missing attachment owner'); }
+      showToast(tl('已保存到下载文件夹', 'Saved to Downloads'));
     } catch {
       showToast(tl('保存失败', 'Save failed'));
     }
     releaseAfterAction(b.id);
   }, [showToast, releaseAfterAction]);
+
+  const doPlayVoice = useCallback(async (b: Bullet) => {
+    if (!safeVoiceUrl(b.voice)) { showToast(tl('语音不可用，请在聊天室重试', 'Voice unavailable. Try in chat')); return; }
+    stopVoice();
+    const player = new Audio(b.voice);
+    voicePlayer.current = player;
+    player.onended = () => { if (voicePlayer.current === player) stopVoice(); };
+    player.onerror = () => { if (voicePlayer.current === player) { stopVoice(); showToast(tl('语音播放失败', 'Voice playback failed')); } };
+    try { await player.play(); }
+    catch { if (voicePlayer.current === player) { stopVoice(); showToast(tl('语音播放失败', 'Voice playback failed')); } }
+    releaseAfterAction(b.id);
+  }, [showToast, releaseAfterAction, stopVoice]);
+
+  const activateBullet = (b: Bullet) => {
+    if (actionedRef.current.has(b.id)) return;
+    // Guard before starting async work, so a double click cannot duplicate downloads.
+    releaseAfterAction(b.id);
+    if (b.attachment || b.kind === 'image' || b.kind === 'file' || b.kind === 'audio' || b.kind === 'video') void doDownload(b);
+    else if (b.kind === 'voice') void doPlayVoice(b);
+    else void doCopy(b);
+  };
 
   return (
     <div className="danmaku-root" style={{ opacity, pointerEvents: 'none' }}>
@@ -260,6 +312,11 @@ export const DanmakuOverlay: React.FC = () => {
             key={b.id}
             ref={(el) => { if (el) nodeRefs.current.set(b.id, el); else nodeRefs.current.delete(b.id); }}
             className={`danmaku-bullet${paused ? ' danmaku-pinned' : ''}`}
+            role="button"
+            tabIndex={0}
+            aria-label={b.kind === 'text' ? tl('复制消息', 'Copy message') : b.kind === 'voice' ? tl('播放语音', 'Play voice') : tl('下载消息附件', 'Download attachment')}
+            onClick={() => activateBullet(b)}
+            onKeyDown={event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); activateBullet(b); } }}
             style={{
               top: `${b.top}px`,
               color: b.color,
@@ -283,15 +340,6 @@ export const DanmakuOverlay: React.FC = () => {
               </span>
             ) : (
               <span>{b.text}</span>
-            )}
-            {paused && (
-              <div className="danmaku-actions" ref={actionBtnRef}>
-                {b.kind === 'image' && b.image ? (
-                  <button className="danmaku-action-btn" onClick={() => doDownload(b)}>{tl('下载图片', 'Download')}</button>
-                ) : (
-                  <button className="danmaku-action-btn" onClick={() => doCopy(b)}>{tl('复制内容', 'Copy')}</button>
-                )}
-              </div>
             )}
           </div>
         );

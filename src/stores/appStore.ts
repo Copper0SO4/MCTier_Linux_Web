@@ -577,14 +577,18 @@ export const useAppStore = create<AppStore>()(
       },
 
       // ==================== 房主/大厅管理操作 ====================
-      setHostId: (id: string | null) => set({ hostId: id }, false, 'setHostId'),
+      setHostId: (id: string | null) => set(state => {
+        const hostMutedPlayers = new Set(state.hostMutedPlayers);
+        if (id) hostMutedPlayers.delete(id);
+        return { hostId: id, hostMutedPlayers };
+      }, false, 'setHostId'),
       setMaxPlayers: (max: number | null) => set({ maxPlayers: max }, false, 'setMaxPlayers'),
       setIsPublicLobby: (pub: boolean) => set({ isPublicLobby: pub }, false, 'setIsPublicLobby'),
       setHostMuted: (playerId: string, muted: boolean) => {
         set(
           (state) => {
             const next = new Set(state.hostMutedPlayers);
-            if (muted) next.add(playerId);
+            if (muted && playerId !== state.hostId) next.add(playerId);
             else next.delete(playerId);
             return { hostMutedPlayers: next };
           },
@@ -593,7 +597,7 @@ export const useAppStore = create<AppStore>()(
         );
       },
       setHostMutedPlayers: (ids: string[]) =>
-        set({ hostMutedPlayers: new Set(ids) }, false, 'setHostMutedPlayers'),
+        set(state => ({ hostMutedPlayers: new Set(ids.filter(id => id !== state.hostId)) }), false, 'setHostMutedPlayers'),
 
       // ==================== 玩家音量操作 ====================
       setPlayerVolume: (playerId: string, volume: number) => {

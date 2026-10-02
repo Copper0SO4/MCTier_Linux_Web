@@ -1,6 +1,7 @@
+import { loadScreenQuality, saveScreenQuality, SCREEN_RESOLUTIONS, SCREEN_FRAME_RATES, SCREEN_BITRATES, screenBitrate } from '../../services/screenShare/quality';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Button, Modal, Switch, message, Tooltip } from 'antd';
+import { Button, Modal, Select, Switch, message, Tooltip } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import { PasswordInput } from '../PasswordInput/PasswordInput';
 import { useAppStore } from '../../stores';
@@ -10,6 +11,9 @@ import { useTranslation } from 'react-i18next';
 import { tl } from '../../i18n';
 import type { ScreenShare } from '../../types';
 import './ScreenShareManager.css';
+
+// Keep dropdowns in the modal's stacking context, above its high-z-index mask.
+const qualityPopupContainer = (trigger: HTMLElement) => trigger.parentElement || document.body;
 
 /**
  * 屏幕共享管理器组件
@@ -21,6 +25,8 @@ export const ScreenShareManager: React.FC = () => {
   const [activeShares, setActiveShares] = useState<ScreenShare[]>([]);
   const [myShareId, setMyShareId] = useState<string | null>(null);
   const [showStartModal, setShowStartModal] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [quality, setQuality] = useState(loadScreenQuality);
   const [requirePassword, setRequirePassword] = useState(false);
   const [password, setPassword] = useState('');
   const [viewingShareId, setViewingShareId] = useState<string | null>(null);
@@ -159,24 +165,29 @@ export const ScreenShareManager: React.FC = () => {
         // 从信令服务器获取共享列表
         const shares = screenShareService.getActiveShares();
         setActiveShares(shares);
+        setMyShareId(shares.find(share => share.playerId === currentPlayerId)?.id ?? null);
       } catch (error) {
         console.error('获取共享列表失败:', error);
       }
     }, 1000); // 【修复】改为1秒轮询，避免过高频率导致时序抖动
 
     return () => clearInterval(interval);
-  }, []);
+  }, [currentPlayerId]);
 
   // 开始共享 - 内部处理
   const handleStartSharingInternal = async () => {
+    if (starting) return;
+    setStarting(true);
     try {
       console.log('🖥️ 开始屏幕共享...');
 
       const shareId = await screenShareService.startSharing(
         requirePassword,
-        requirePassword ? password : undefined
+        requirePassword ? password : undefined,
+        quality
       );
 
+      saveScreenQuality(quality);
       setMyShareId(shareId);
       setShowStartModal(false);
       setPassword('');
@@ -186,14 +197,16 @@ export const ScreenShareManager: React.FC = () => {
     } catch (error: any) {
       console.error('❌ 启动屏幕共享失败:', error);
       
-      if (error.name === 'NotAllowedError') {
+      if (error.name === 'AbortError') {
+        return;
+      } else if (error.name === 'NotAllowedError') {
         message.error(tl('用户拒绝了屏幕共享权限', 'Screen share permission denied'));
       } else if (error.name === 'NotFoundError') {
         message.error(tl('未找到可共享的屏幕', 'No screen available to share'));
       } else {
-        message.error(tl('启动屏幕共享失败', 'Failed to start screen sharing'));
+        message.error(`${tl('启动屏幕共享失败', 'Failed to start screen sharing')}: ${String(error.message || error)}`);
       }
-    }
+    } finally { setStarting(false); }
   };
 
   // 停止共享 - 内部处理
@@ -463,8 +476,10 @@ export const ScreenShareManager: React.FC = () => {
       <Modal
         title={tl('开始屏幕共享', 'Start Screen Sharing')}
         open={showStartModal}
+        confirmLoading={starting}
         onOk={handleStartSharingInternal}
         onCancel={() => {
+          screenShareService.cancelPendingStart();
           setShowStartModal(false);
           setPassword('');
           setRequirePassword(false);
@@ -474,6 +489,31 @@ export const ScreenShareManager: React.FC = () => {
         centered
       >
         <div className="start-share-modal-content">
+          <div className="modal-option">
+            <span>{tl('分辨率上限', 'Resolution limit')}</span>
+            <Select aria-label={tl('分辨率上限', 'Resolution limit')} value={quality.resolution} style={{ width: 155 }}
+              getPopupContainer={qualityPopupContainer}
+              options={SCREEN_RESOLUTIONS.map(value => ({ value, label: value === 1440 ? '2K (1440p)' : value === 2160 ? '4K (2160p)' : `${value}p` }))}
+              onChange={resolution => setQuality(q => ({ ...q, resolution }))} />
+          </div>
+          <div className="modal-option">
+            <span>{tl('帧率上限', 'Frame rate limit')}</span>
+            <Select aria-label={tl('帧率上限', 'Frame rate limit')} value={quality.frameRate} style={{ width: 155 }}
+              getPopupContainer={qualityPopupContainer}
+              options={SCREEN_FRAME_RATES.map(value => ({ value, label: `${value} FPS` }))}
+              onChange={frameRate => setQuality(q => ({ ...q, frameRate }))} />
+          </div>
+          <div className="modal-option">
+            <span>{tl('码率上限', 'Bitrate limit')}</span>
+            <Select aria-label={tl('码率上限', 'Bitrate limit')} value={quality.bitrateMbps} style={{ width: 155 }}
+              getPopupContainer={qualityPopupContainer}
+              options={SCREEN_BITRATES.map(value => ({ value, label: value ? `${value} Mbps` : tl('自动推荐', 'Recommended') }))}
+              onChange={bitrateMbps => setQuality(q => ({ ...q, bitrateMbps }))} />
+          </div>
+          <p style={{ fontSize: 12, margin: '8px 0 16px', opacity: 0.8 }}>
+            {tl(`当前码率上限 ${screenBitrate(quality) / 1_000_000} Mbps。低配或低带宽建议 720p/30 FPS；高帧率和 4K 需要更强的设备与上行带宽。实际画质和帧率受屏幕、编码器与网络限制，不会放大原画面。`,
+              `Bitrate limit: ${screenBitrate(quality) / 1_000_000} Mbps. Use 720p/30 FPS on slower devices or networks. High frame rates and 4K need more processing power and upload bandwidth. Actual quality depends on the display, encoder and network; the source is never upscaled.`)}
+          </p>
           <div className="modal-option">
             <span>{tl('需要密码才能查看', 'Require a password to view')}</span>
             <Switch

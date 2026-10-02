@@ -46,6 +46,7 @@ class ScreenShareController(
     private val factory: PeerConnectionFactory
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    private var captureQuality = ScreenShareQuality()
     private var currentShareId: String? = null
     private var currentOwnerId: String? = null
     private var currentPlayerName: String = ""
@@ -504,8 +505,9 @@ class ScreenShareController(
         currentPassword = null
     }
 
-    fun startSharing(shareId: String, permissionData: Intent, password: String? = null): Boolean {
+    fun startSharing(shareId: String, permissionData: Intent, password: String? = null, quality: ScreenShareQuality = ScreenShareQuality()): Boolean {
         stopSharing()
+        captureQuality = quality.normalized()
         sharePassword = password?.takeIf { it.isNotBlank() }
         viewerOrder.clear()
         viewerNames.clear()
@@ -526,10 +528,12 @@ class ScreenShareController(
             (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getMetrics(metrics)
             // 等比缩放而不是两个维度各自截断，避免画面被拉伸。
             // “单个应用”采集的真实尺寸由 onCapturedContentResize 再纠正一次。
-            val (width, height) = captureDimensions(metrics.widthPixels, metrics.heightPixels)
+            val (width, height) = captureQuality.dimensions(metrics.widthPixels, metrics.heightPixels)
             val helper = SurfaceTextureHelper.create("MCTierScreenCapture", eglBase.eglBaseContext)
             surfaceHelper = helper
             val source = factory.createVideoSource(true)
+            // MediaProjection follows display updates; also limit frames before encoding.
+            source.adaptOutputFormat(width, height, captureQuality.frameRate)
             videoSource = source
             val capturer = ScreenCapturerAndroid(permissionData, object : MediaProjection.Callback() {
                 override fun onStop() {
@@ -557,16 +561,19 @@ class ScreenShareController(
                 override fun onCapturedContentResize(contentWidth: Int, contentHeight: Int) {
                     mainHandler.post {
                         if (sharingShareId != shareId) return@post
-                        val (targetWidth, targetHeight) = captureDimensions(contentWidth, contentHeight)
+                        val (targetWidth, targetHeight) = captureQuality.dimensions(contentWidth, contentHeight)
                         Log.i(TAG, "Captured content resized: ${contentWidth}x$contentHeight -> ${targetWidth}x$targetHeight")
-                        runCatching { screenCapturer?.changeCaptureFormat(targetWidth, targetHeight, CAPTURE_FPS) }
+                        runCatching {
+                            videoSource?.adaptOutputFormat(targetWidth, targetHeight, captureQuality.frameRate)
+                            screenCapturer?.changeCaptureFormat(targetWidth, targetHeight, captureQuality.frameRate)
+                        }
                             .onFailure { Log.w(TAG, "changeCaptureFormat failed: ${it.message}") }
                     }
                 }
             })
             screenCapturer = capturer
             capturer.initialize(helper, context, source.capturerObserver)
-            capturer.startCapture(width, height, CAPTURE_FPS)
+            capturer.startCapture(width, height, captureQuality.frameRate)
             localVideoTrack = factory.createVideoTrack("screen-$localPlayerId", source)
             localFrameProbe?.let { probe -> localVideoTrack?.removeSink(probe) }
             sourceFrameSequences[shareId] = AtomicLong(0L)
@@ -638,6 +645,21 @@ class ScreenShareController(
                         pc.setLocalDescription(object : SimpleSdpObserver() {
                             override fun onSetSuccess() {
                                 if (outboundConnections[connectionKey] !== pc) return
+                                // Apply after negotiation; keep relay streams independent of local capture preferences.
+                                if (isOwner) {
+                                    runCatching {
+                                        outboundSenders[connectionKey]?.let { sender ->
+                                            val params = sender.parameters
+                                            params.degradationPreference = org.webrtc.RtpParameters.DegradationPreference.BALANCED
+                                            params.encodings.forEach { encoding ->
+                                                encoding.maxBitrateBps = captureQuality.maxBitrate()
+                                                encoding.maxFramerate = captureQuality.frameRate
+                                                encoding.scaleResolutionDownBy = 1.0
+                                            }
+                                            if (!sender.setParameters(params)) Log.w(TAG, "Screen quality parameters rejected by encoder")
+                                        }
+                                    }.onFailure { Log.w(TAG, "Screen quality configuration failed", it) }
+                                }
                                 sendSignal(
                                     SignalingEnvelope(
                                         type = "screen-share-answer", from = localPlayerId, to = from, shareId = shareId,
@@ -1158,40 +1180,9 @@ class ScreenShareController(
         private const val PASSWORD_BACKOFF_MAX_MILLIS = 60_000L
         private const val PASSWORD_BACKOFF_TTL_MILLIS = 15 * 60_000L
 
-        /** 采集帧率。startCapture 与 changeCaptureFormat 必须用同一个值，否则重设格式会顺带改帧率。 */
-        private const val CAPTURE_FPS = 24
-
-        /** 编码分辨率上限。按长短边约束而不是按宽高分别约束，见 captureDimensions 的说明。 */
-        private const val CAPTURE_MAX_SHORT_EDGE = 1280
-        private const val CAPTURE_MAX_LONG_EDGE = 2280
-
         private fun iceCandidateBytes(candidate: IceCandidate): Int =
             candidate.sdp.toByteArray(Charsets.UTF_8).size +
                 (candidate.sdpMid?.toByteArray(Charsets.UTF_8)?.size ?: 0) + 16
 
-        /**
-         * 把内容尺寸压到编码上限内，并保持宽高比。
-         *
-         * 原实现用 `width.coerceAtMost(1280)` / `height.coerceAtMost(2280)` 分别裁剪，
-         * 两个维度独立设限会改变宽高比（横屏设备、以及“单个应用”采集的窄窗口尤其明显），
-         * 观看端看到的画面会被拉伸。这里改为按长短边等比缩放。
-         *
-         * 结果强制为偶数：多数硬件 H.264 编码器要求宽高为偶数，奇数会导致初始化失败或画面错位。
-         */
-        fun captureDimensions(contentWidth: Int, contentHeight: Int): Pair<Int, Int> {
-            // 兜底：拿不到有效尺寸时退回竖屏上限，不能返回 0（VirtualDisplay 会直接抛异常）
-            if (contentWidth <= 0 || contentHeight <= 0) {
-                return CAPTURE_MAX_SHORT_EDGE to CAPTURE_MAX_LONG_EDGE
-            }
-            val shortEdge = minOf(contentWidth, contentHeight)
-            val longEdge = maxOf(contentWidth, contentHeight)
-            val scale = minOf(
-                1.0,
-                CAPTURE_MAX_SHORT_EDGE.toDouble() / shortEdge,
-                CAPTURE_MAX_LONG_EDGE.toDouble() / longEdge,
-            )
-            fun even(value: Double): Int = (value.toInt() / 2 * 2).coerceAtLeast(2)
-            return even(contentWidth * scale) to even(contentHeight * scale)
-        }
     }
 }

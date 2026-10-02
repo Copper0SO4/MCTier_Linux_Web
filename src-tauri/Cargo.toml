@@ -1,6 +1,6 @@
 [package]
 name = "mctier"
-version = "3.7.0"
+version = "3.8.0"
 description = "MCTier - Minecraft 虚拟局域网联机工具"
 authors = ["MCTier Team"]
 edition = "2021"
@@ -39,7 +39,8 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 rand = "0.8"
-reqwest = { version = "0.12", features = ["blocking", "stream", "json"] }
+reqwest = { version = "0.12", features = ["blocking", "stream", "json", "cookies"] }
+cookie_store = "0.22"
 rfd = "0.15"
 urlencoding = "2.1"
 base64 = "0.22"
@@ -67,6 +68,7 @@ calamine = "0.31"
 sherpa-onnx = "=1.13.8"
 flate2 = "1"
 hound = "3.5"
+mctier-image-optimizer = { path = "../shared/image-optimizer" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -81,8 +83,23 @@ libc = "0.2"
 webkit2gtk = { version = "2.0", features = ["v2_40"] }
 
 [target.'cfg(windows)'.dependencies]
+webview2-com = "0.38.2"
+windows-core-webview = { package = "windows-core", version = "0.61" }
 wasapi = "0.23"
 windows = { version = "0.58", features = [
+    "Win32_Media_Audio",
+    "Foundation",
+    "Graphics_Capture",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_Com",
+    "Win32_System_TaskScheduler",
+    "Win32_Security_Authorization",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_UI_WindowsAndMessaging",

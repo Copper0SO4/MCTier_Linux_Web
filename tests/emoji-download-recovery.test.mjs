@@ -41,3 +41,23 @@ test('failed local extraction reports once without download retries', async () =
     delete globalThis.emojiFixture;
   }
 });
+
+test('startup, chat and picker share one extraction and reuse the local index', async () => {
+  let calls = 0, finish;
+  globalThis.emojiFixture = {
+    listen: async () => () => {},
+    invoke: () => { calls++; return new Promise(resolve => { finish = resolve; }); },
+  };
+  try {
+    const { syncBuiltinEmojiItems } = await import(`data:text/javascript,${encodeURIComponent(bundled.outputFiles[0].text)}#concurrent`);
+    const pending = [syncBuiltinEmojiItems(), syncBuiltinEmojiItems(), syncBuiltinEmojiItems()];
+    await Promise.resolve();
+    assert.equal(calls, 1);
+    finish([{ id: 'builtin-a', name: 'a', path: '/local/a.gif' }]);
+    const results = await Promise.all(pending);
+    assert.equal(results[0], results[1]);
+    assert.equal(results[0], results[2]);
+    assert.equal((await syncBuiltinEmojiItems())[0].dataUrl, 'asset:/local/a.gif');
+    assert.equal(calls, 1);
+  } finally { delete globalThis.emojiFixture; }
+});

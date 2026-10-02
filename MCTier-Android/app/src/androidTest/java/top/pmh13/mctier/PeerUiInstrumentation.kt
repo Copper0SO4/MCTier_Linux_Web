@@ -24,7 +24,8 @@ import java.io.File
 
 /** Test APK only. Synthetic peers exercise the actual Compose UI, not network delivery. */
 class PeerUiInstrumentation : Instrumentation() {
-    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); start() }
+    private var checkMode: String? = null
+    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); checkMode = arguments?.getString("check"); start() }
     private fun find(label: String): AccessibilityNodeInfo? {
         fun visit(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
             if (!node.refresh()) return null
@@ -176,6 +177,14 @@ class PeerUiInstrumentation : Instrumentation() {
         }
     }
     override fun onStart() {
+        if (checkMode == "remote-live") {
+            RemoteDesktopCheck(this).run()
+            return
+        }
+        if (checkMode == "quark-media" || checkMode == "remote-frame") {
+            QuarkMediaChecks(this).run(checkMode == "remote-frame")
+            return
+        }
         uiAutomation.serviceInfo = uiAutomation.serviceInfo.apply { flags = flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS }
         val result = Bundle()
         var resultCode = 0

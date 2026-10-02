@@ -167,6 +167,8 @@ export type ConnectionStatus =
  * 聊天消息
  */
 export interface ChatMessage {
+  /** Local-only send state; never sent over the network. */
+  delivery?: 'sending' | 'failed';
   /** 消息ID */
   id: string;
   /** 发送者玩家ID */

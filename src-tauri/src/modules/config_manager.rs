@@ -415,7 +415,7 @@ impl Default for UserConfig {
             auto_startup: Some(false),
             auto_lobby: Some(AutoLobbyConfig::default()),
             use_private_server: Some(false),
-            private_easytier_server: Some("udp://us01.225284.xyz:11010".to_string()),
+            private_easytier_server: Some("tcp://easytier.weiai.org.cn:11010".to_string()),
             private_signaling_server: Some("wss://mctier.pmhs.top/signaling".to_string()),
             always_on_top: Some(true),
             remember_window_position: Some(false),
@@ -471,8 +471,6 @@ impl Default for ConfigManager {
 }
 
 impl ConfigManager {
-    /// 配置文件名
-    const CONFIG_FILE_NAME: &'static str = "mctier_config.json";
 
     /// 加载配置管理器（静态方法）
     ///
@@ -520,14 +518,8 @@ impl ConfigManager {
     /// * `Ok(PathBuf)` - 配置文件路径
     /// * `Err(AppError)` - 获取失败
     fn get_config_path() -> Result<PathBuf, AppError> {
-        // 获取用户配置目录
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| AppError::ConfigError("无法获取配置目录".to_string()))?;
-
-        // 创建应用配置目录
-        let app_config_dir = config_dir.join("mctier");
-
-        Ok(app_config_dir.join(Self::CONFIG_FILE_NAME))
+        super::app_paths::config_path()
+            .map_err(|e| AppError::ConfigError(format!("无法获取配置路径: {e}")))
     }
 
     /// 从文件加载配置

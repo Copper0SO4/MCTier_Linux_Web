@@ -6,7 +6,7 @@
   **A universal virtual-LAN networking tool**
 
   <p>
-    <img src="https://img.shields.io/badge/version-3.7.0-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-3.8.0-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-2ea44f?style=flat-square" alt="Windows 10/11">
     <img src="https://img.shields.io/badge/Android-supported-3ddc84?style=flat-square" alt="Android">
     <img src="https://img.shields.io/badge/license-Custom-orange?style=flat-square" alt="License">
@@ -131,7 +131,7 @@ Screenshots are grouped by desktop and mobile and laid out compactly to avoid an
 - **Cross-platform lobbies**: Phones and PCs can join the same lobby, with handy QR-code invites.
 - **Public lobby plaza**: Hosts can publish a lobby to the plaza, so strangers can find it and join with one click.
 - **Custom nodes & virtual domains**: Add your own EasyTier nodes and configure a custom domain for the virtual network.
-- **Built-in EasyTier nodes**: The default is the Haibo US node, `udp://us01.225284.xyz:11010`; Haibo Mainland China and Weiai Xiamen nodes are also available, and the last selection is remembered.
+- **Built-in EasyTier nodes**: Listed in this order: Weiai Xiamen, Haibo Mainland China, and Haibo US. The default is Weiai Xiamen, `tcp://easytier.weiai.org.cn:11010`, and the last selection is remembered.
 - **Node settings in invites**: QR codes, invite links, recent lobbies and favorite lobbies carry and restore the matching EasyTier node and signaling-server settings, preventing cross-node join failures.
 - **Self-healing connections**: Both desktop and Android support signaling reconnects, secondary member-state confirmation and automatic voice-connection recovery to tolerate short network interruptions.
 - **Connection / network diagnostics**: Aggregate members' direct/relay status, latency and packet loss into a score with tuning tips; network diagnostics can also check the virtual adapter, firewall, UDP ports and security-software blocking, with one-click firewall allow.
@@ -368,7 +368,7 @@ MCTier transmits communication content (chat, voice, files, screen, remote contr
 | Default service | Address | Metadata visible to the server | Purpose |
 |---|---|---|---|
 | Signaling server | `wss://mctier.pmhs.top/signaling` | Public IP, connection time, lobby name and password hash used for matching, player name, virtual IP/domain, member count, client version | Exchange WebRTC signaling, discover members of the same lobby |
-| EasyTier public node | `udp://us01.225284.xyz:11010` | Public IP, connection time, EasyTier network identifier | P2P hole punching and relaying when required |
+| EasyTier public node | Default: `tcp://easytier.weiai.org.cn:11010`; alternatives: `tcp://225284.xyz:11010`, `udp://us01.225284.xyz:11010` | Public IP, connection time, EasyTier network identifier | P2P hole punching and relaying when required |
 | Version check | `https://gitee.com/api/v5/repos/peng-minghang/mctier/tags` | Public IP, request time (recorded by Gitee) | Retrieve the latest version number |
 
 Notes:

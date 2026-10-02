@@ -52,7 +52,9 @@ const bundle = await build({
           contents: args.path.endsWith('/stores')
             ? 'export const useAppStore={getState:()=>globalThis.voiceTestStore};'
             : args.path.endsWith('/audioDevices')
-              ? 'export const audioDevices={getOutputDeviceId:()=>null};'
+              ? 'export const audioDevices={getOutputDeviceId:()=>globalThis.voiceTestOutput};'
+              : args.path === '@tauri-apps/api/core'
+                ? 'export const invoke=async (...args)=>{globalThis.voiceTestDiagnostics.push(args);};'
               : (stubs.get(args.path) ?? 'export const useAppStore={};'),
         }));
       },
@@ -124,7 +126,7 @@ function fakePc() {
 function fixture(t) {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const restore = new Map(
-    ['window', 'Audio', 'MediaStream', 'RTCSessionDescription', 'voiceTestStore'].map((key) => [
+    ['window', 'Audio', 'MediaStream', 'RTCSessionDescription', 'voiceTestStore', 'voiceTestOutput', 'voiceTestDiagnostics'].map((key) => [
       key,
       globalThis[key],
     ])
@@ -133,6 +135,8 @@ function fixture(t) {
     for (const [key, value] of restore) globalThis[key] = value;
   });
   globalThis.window = { setTimeout, clearTimeout };
+  globalThis.voiceTestOutput = '';
+  globalThis.voiceTestDiagnostics = [];
   globalThis.Audio = class {
     paused = true;
     muted = false;
@@ -254,6 +258,59 @@ test('streamless audio is attached and applies mute/group policy before first pl
   await f.client.checkVoiceHealth();
   assert.equal(peer.audioElement.paused, false);
   assert.equal(f.messages.length, 0);
+});
+
+test('unavailable saved output falls back to default before remote playback', async (t) => {
+  const f = fixture(t), peer = f.install();
+  globalThis.voiceTestOutput = 'removed-speaker';
+  const sinks = [];
+  Audio.prototype.setSinkId = async function (id) {
+    sinks.push(id);
+    if (id) throw new Error('output unavailable');
+    this.sinkId = id;
+  };
+  f.client.attachRemoteAudio(remote, peer.connection, peer.connection.t.receiver.track);
+  await flush();
+  assert.deepEqual(sinks, ['removed-speaker', '']);
+  assert.equal(peer.audioElement.paused, false);
+  assert.ok(voiceTestDiagnostics.some(([, report]) => report.stage === 'playback-error'));
+  assert.equal(peer.connection.closed, false);
+});
+
+test('playback failures are logged once and retry recovers without destroying the call', async (t) => {
+  const f = fixture(t), peer = f.install();
+  const originalPlay = Audio.prototype.play;
+  Audio.prototype.play = async function () { throw new Error('playback blocked'); };
+  f.client.attachRemoteAudio(remote, peer.connection, peer.connection.t.receiver.track);
+  await flush();
+  f.client.resumePeerAudio(peer); await flush();
+  assert.equal(voiceTestDiagnostics.filter(([, report]) => report.stage === 'playback-error').length, 1);
+  assert.equal(peer.playPending, false);
+  assert.equal(peer.connection.closed, false);
+  Audio.prototype.play = originalPlay;
+  f.client.resumePeerAudio(peer); await flush();
+  assert.equal(peer.audioElement.paused, false);
+  assert.equal(peer.lastPlaybackError, undefined);
+  assert.equal(voiceTestDiagnostics.at(-1)[1].stage, 'playback-ready');
+});
+
+test('changing a call output device reports failure to the caller', async (t) => {
+  const f = fixture(t), peer = f.install();
+  peer.audioElement = new Audio();
+  peer.audioElement.setSinkId = async () => { throw new Error('missing device'); };
+  await assert.rejects(f.client.applyOutputDeviceToAll('missing'), /missing device/);
+});
+
+test('disconnected realtime calls produce throttled disk diagnostics instead of silent health checks', async (t) => {
+  const f = fixture(t), peer = f.install();
+  peer.connection.connectionState = 'connecting';
+  peer.connection.iceConnectionState = 'checking';
+  await f.client.checkVoiceHealth(); await flush();
+  await f.client.checkVoiceHealth(); await flush();
+  const waiting = voiceTestDiagnostics.filter(([, report]) => report.detail.startsWith('waiting'));
+  assert.equal(waiting.length, 1);
+  assert.match(waiting[0][1].detail, /pc=connecting, ice=checking/);
+  assert.equal(peer.connection.closed, false);
 });
 
 test('late ontrack and telemetry from an obsolete PC cannot replace new audio', async (t) => {

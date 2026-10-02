@@ -22,9 +22,7 @@ static RESTORE_ALWAYS_ON_TOP_AFTER_TRAY: std::sync::atomic::AtomicBool =
 /// 在应用启动时应用 GPU 设置
 fn apply_gpu_settings_on_startup() {
     // 尝试加载配置文件
-    let config_path = if let Some(config_dir) = dirs::config_dir() {
-        config_dir.join("mctier").join("mctier_config.json")
-    } else {
+    let Ok(config_path) = modules::app_paths::config_path() else {
         return;
     };
 
@@ -66,10 +64,10 @@ fn reset_microphone_permission_cache_on_startup() {
         return;
     }
 
-    let Some(local_app_data) = dirs::data_local_dir() else {
+    let Ok(data_root) = modules::app_paths::data_root() else {
         return;
     };
-    let webview_dir = local_app_data.join("com.mctier.app").join("EBWebView");
+    let webview_dir = data_root.join("EBWebView");
 
     // The previous process may hold WebView2 files briefly after spawning us.
     for attempt in 0..40 {
@@ -92,7 +90,7 @@ use modules::tauri_commands::{
     clear_avatar_cache, clear_p2p_chat_messages, close_danmaku_window, close_game_hud_window,
     configure_p2p_chat, create_lobby, danmaku_cursor_pos, delete_file, detect_security_software,
     diagnose_file_share_connection, download_remote_batch, download_remote_file, exit_app,
-    export_config, export_logs, extract_zip, fetch_chat_attachment, force_stop_easytier,
+    export_config, export_logs, extract_zip, fetch_chat_attachment, download_danmaku_attachment, force_stop_easytier,
     gamehud_cursor_pos, get_app_state, get_audio_devices, get_config, get_current_lobby,
     get_download_url, get_exit_node_advanced_config, get_file_share_download_dir,
     get_file_share_download_path, get_folder_info, get_folder_name, get_global_mute_status,
@@ -107,7 +105,7 @@ use modules::tauri_commands::{
     reset_microphone_permission, restart_app_with_gpu_settings, restart_as_admin,
     preview_office_attachment, preview_spreadsheet_attachment, save_chat_attachment, save_chat_image, save_danmaku_image, save_exit_node_advanced_config,
     save_file, save_opacity, save_settings, save_voice_volume, save_window_position,
-    select_chat_attachment, select_file, select_file_share_download_folder, select_folder,
+    prepare_chat_image, select_chat_attachment, select_file, select_file_share_download_folder, select_folder,
     select_save_location, send_heartbeat, send_p2p_chat_message, send_signaling_message,
     set_always_on_top, set_auto_start, set_avatar_data, set_danmaku_ignore_cursor,
     set_file_share_download_dir, set_gamehud_ignore_cursor, set_mic_enabled, set_window_opacity,
@@ -378,9 +376,7 @@ fn show_tray_background_notification(app: &tauri::AppHandle, generation: u64) {
         }
 
         fn load_notification_icon() -> Option<HICON> {
-            let icon_dir = dirs::cache_dir()
-                .unwrap_or_else(std::env::temp_dir)
-                .join("mctier");
+            let icon_dir = modules::app_paths::data_root().ok()?;
             let icon_path = icon_dir.join("notification-logo.ico");
             let icon_bytes = include_bytes!("../icons/icon.ico");
             let icon_ready = std::fs::create_dir_all(&icon_dir)
@@ -1079,6 +1075,10 @@ async fn apply_hotkeys(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    #[cfg(windows)]
+    if modules::quark_background::run_if_requested() {
+        return;
+    }
     #[cfg(unix)]
     if modules::unix_hosts_helper::run_if_requested() {
         return;
@@ -1088,18 +1088,24 @@ pub fn run() {
         return;
     }
 
+    if let Err(error) = modules::app_paths::migrate_legacy_data() {
+        let message = format!("迁移 MCTier 用户数据失败，旧文件已保留: {error}");
+        if let Ok(root) = modules::app_paths::data_root() {
+            let _ = std::fs::write(root.join("migration-error.log"), &message);
+        }
+        eprintln!("{message}");
+        rfd::MessageDialog::new()
+            .set_title("MCTier 数据迁移失败")
+            .set_description(format!("{message}\n请关闭其他 MCTier 实例后重试。详细信息见 Local/com.mctier.app/migration-error.log。"))
+            .set_level(rfd::MessageLevel::Error)
+            .show();
+        return;
+    }
     reset_microphone_permission_cache_on_startup();
     // 在应用启动时检查并应用 GPU 设置
     apply_gpu_settings_on_startup();
-
     use std::fs::OpenOptions;
-    let log_path = if let Some(data_dir) = dirs::data_local_dir() {
-        let mctier_dir = data_dir.join("MCTier");
-        let _ = std::fs::create_dir_all(&mctier_dir);
-        mctier_dir.join("mctier.log")
-    } else {
-        std::path::PathBuf::from("mctier.log")
-    };
+    let log_path = modules::app_paths::log_path().expect("无法定位日志文件");
     let log_file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -1240,8 +1246,10 @@ pub fn run() {
             update_p2p_chat_peers,
             stop_p2p_chat,
             select_chat_attachment,
+            prepare_chat_image,
             fetch_chat_attachment,
             save_chat_attachment,
+            download_danmaku_attachment,
             preview_spreadsheet_attachment,
             preview_office_attachment,
             transcribe_voice_message,
@@ -1291,11 +1299,33 @@ pub fn run() {
             remote_inject_input,
             revoke_remote_input,
             apply_hotkeys,
+            crate::modules::native_microphone::native_microphone_supported,
+            crate::modules::voice_ice::voice_ice_server,
+            crate::modules::quark_support::quark_support,
+            crate::modules::native_microphone::report_audio_diagnostic,
+            crate::modules::native_microphone::native_microphone_devices,
+            crate::modules::native_microphone::native_microphone_start,
+            crate::modules::native_microphone::native_microphone_read,
+            crate::modules::native_microphone::native_microphone_stop,
+            crate::modules::native_capture::native_capture_sources,
+            crate::modules::native_capture::native_capture_start,
+            crate::modules::native_capture::native_capture_frame,
+            crate::modules::native_capture::native_capture_stop,
         ])
+        .on_page_load(|webview, payload| {
+            if webview.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
+                crate::modules::native_capture::stop_all();
+                crate::modules::native_microphone::stop_all();
+                crate::modules::voice_ice::stop();
+            }
+            #[cfg(windows)]
+            crate::modules::media_permission::configure_browser_ui(webview);
+        })
         .setup(|app| {
             info!("Tauri 应用设置完成");
             println!("🚀 [Setup] Tauri 应用设置开始");
             let app_handle = app.handle().clone();
+            crate::modules::quark_support::start();
 
             // Linux：必须显式打开 WebKitGTK 的 MediaStream 开关，否则页面里的
             // RTCPeerConnection 是 undefined，语音/屏幕共享/远程控制全部无法启动。
@@ -1307,6 +1337,9 @@ pub fn run() {
             #[cfg(target_os = "windows")]
             if let Some(main_window) = app.get_webview_window("main") {
                 install_minimize_to_hide(&main_window);
+                if let Err(error) = crate::modules::media_permission::install(&main_window) {
+                    log::warn!("安装浏览器媒体权限拦截失败: {error}");
+                }
             }
 
             {
@@ -1328,7 +1361,7 @@ pub fn run() {
                     .show_menu_on_left_click(false)
                     .on_menu_event(|app, event| match event.id().as_ref() {
                         "show_main" => restore_main_window(app),
-                        "exit_app" => app.exit(0),
+                        "exit_app" => { crate::modules::native_capture::stop_all(); crate::modules::native_microphone::stop_all(); app.exit(0); },
                         _ => {}
                     })
                     .on_tray_icon_event(|tray, event| {

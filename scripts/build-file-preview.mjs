@@ -33,3 +33,8 @@ for (const folder of ['public/file-preview', 'MCTier-Android/app/src/main/assets
   await cp(path.join(root, 'node_modules/@aiden0z/pptx-renderer/licenses'), path.join(licenses, 'pptx-renderer'), { recursive: true });
 }
 console.log('Built isolated desktop and Android file previews');
+// The desktop PDF preview renders with app controls; keep all decoder/font assets local.
+for (const folder of ['cmaps', 'standard_fonts', 'wasm']) {
+  await cp(path.join(root, 'node_modules/pdfjs-dist', folder), path.join(root, 'public/pdfjs', folder), { recursive: true });
+}
+await cp(path.join(root, 'node_modules/pdfjs-dist/LICENSE'), path.join(root, 'public/pdfjs/LICENSE'));

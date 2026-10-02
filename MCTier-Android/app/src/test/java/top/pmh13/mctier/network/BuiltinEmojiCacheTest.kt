@@ -1,6 +1,8 @@
 package top.pmh13.mctier.network
 
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -11,6 +13,35 @@ import java.nio.file.Files
 import java.util.zip.GZIPOutputStream
 
 class BuiltinEmojiCacheTest {
+    @Test fun oldCacheRemovesDuplicateWithoutDownloadingOrLosingOtherEmoji() = runBlocking {
+        val root = Files.createTempDirectory("mctier-emoji-dedup-test").toFile()
+        val ids = (0 until 100).map { "id$it" } + listOf("1f60d", "1f970")
+        val directory = java.io.File(root, "builtin").apply { mkdirs() }
+        try {
+            ids.forEach { java.io.File(directory, "$it.gif").writeBytes(gifBytes()) }
+            java.io.File(directory, "complete-v3.txt").writeText(ids.joinToString("\n"))
+            val cache = BuiltinEmojiCache.fromTestInput(root) { error("Should reuse cached emoji") }
+            assertFalse(cache.cachedItems().any { it.id == "builtin-1f60d" })
+            val items = cache.sync()
+            assertEquals(101, items.size)
+            assertTrue(items.any { it.id == "builtin-1f970" })
+            assertFalse(java.io.File(directory, "1f60d.gif").exists())
+            assertEquals(items, cache.sync())
+        } finally { root.deleteRecursively() }
+    }
+    @Test fun startupAndPickerShareOneExtraction() = runBlocking {
+        val root = Files.createTempDirectory("mctier-emoji-concurrent-test").toFile()
+        val pack = packOf((0 until 100).map { "id$it" to gifBytes() })
+        val opens = java.util.concurrent.atomic.AtomicInteger()
+        try {
+            val cache = BuiltinEmojiCache.fromTestInput(root) { opens.incrementAndGet(); ByteArrayInputStream(pack) }
+            val results = List(3) { async { cache.sync() } }.awaitAll()
+            assertEquals(1, opens.get())
+            assertTrue(results.all { it == results.first() })
+            assertEquals(100, cache.cachedItems().size)
+        } finally { root.deleteRecursively() }
+    }
+
     @Test
     fun unpackCreatesGifCacheAndSecondSyncReusesMarker() = runBlocking {
         val root = Files.createTempDirectory("mctier-emoji-pack-test").toFile()

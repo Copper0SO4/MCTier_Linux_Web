@@ -212,7 +212,7 @@ const ServerNodeSelect: React.FC<ServerNodeSelectProps> = ({
 
 // 内置 EasyTier 公共节点
 const HAIBO_US_EASYTIER_SERVER = 'udp://us01.225284.xyz:11010';
-const DEFAULT_EASYTIER_SERVER = HAIBO_US_EASYTIER_SERVER;
+const DEFAULT_EASYTIER_SERVER = 'tcp://easytier.weiai.org.cn:11010';
 const REMOVED_QINGYUN_NODE = 'wss://mctiers.pmhs.top';
 
 // 旧版官方节点（用于兼容历史配置，自动迁移到 WebSockets 节点）
@@ -236,9 +236,9 @@ interface CustomEasyTierNode {
 // 获取服务器节点列表（包含官方节点、默认备用节点和自定义节点）
 const getServerNodes = (customNodes: CustomEasyTierNode[]) => {
   const nodes = [
-    { value: HAIBO_US_EASYTIER_SERVER, label: tl('海波美国节点', 'Haibo US Node') },
+    { value: DEFAULT_EASYTIER_SERVER, label: tl('唯爱厦门节点', 'Weiai Xiamen Node') },
     { value: 'tcp://225284.xyz:11010', label: tl('海波中国大陆节点', 'Haibo Mainland China Node') },
-    { value: 'tcp://easytier.weiai.org.cn:11010', label: tl('唯爱厦门节点', 'Weiai Xiamen Node') },
+    { value: HAIBO_US_EASYTIER_SERVER, label: tl('海波美国节点', 'Haibo US Node') },
   ];
   const knownAddresses = new Set(nodes.map((node) => node.value));
 
@@ -469,7 +469,7 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
     privateSignalingServer: string;
   }>({
     usePrivateServer: false,
-    privateEasytierServer: 'udp://us01.225284.xyz:11010',
+    privateEasytierServer: DEFAULT_EASYTIER_SERVER,
     privateSignalingServer: 'wss://mctier.pmhs.top/signaling',
   });
   // @ts-ignore - customNodes is used in useEffect to load custom nodes
@@ -724,7 +724,7 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
           // 使用 ?? 运算符，只在 null/undefined 时使用默认值
           privateEasytierServer: isSafeServerNode(settings.privateEasytierServer)
             ? settings.privateEasytierServer
-            : 'udp://us01.225284.xyz:11010',
+            : DEFAULT_EASYTIER_SERVER,
           privateSignalingServer: isSafeSignalingServer(settings.privateSignalingServer)
             ? settings.privateSignalingServer
             : 'wss://mctier.pmhs.top/signaling',
@@ -1732,8 +1732,8 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
                 >
                   <Input
                     placeholder={tl(
-                      '例如：udp://us01.225284.xyz:11010 或 wss://your-server.com',
-                      'e.g. udp://us01.225284.xyz:11010 or wss://your-server.com'
+                      '例如：tcp://easytier.weiai.org.cn:11010 或 wss://your-server.com',
+                      'e.g. tcp://easytier.weiai.org.cn:11010 or wss://your-server.com'
                     )}
                     size="large"
                     disabled={loading}

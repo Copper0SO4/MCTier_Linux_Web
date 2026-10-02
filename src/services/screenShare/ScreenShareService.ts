@@ -6,6 +6,9 @@
 import type { ScreenShare } from '../../types';
 import { isSignalingSocketRegistered } from '../signaling/registeredSocket';
 import { buildRelayTopology } from './relayTopology';
+import { DEFAULT_SCREEN_QUALITY, normalizeScreenQuality, screenSenderLimits } from './quality';
+import type { ScreenShareQuality } from './quality';
+import { requestNativeScreen } from './nativeCapture';
 
 interface ScreenShareOffer {
   shareId: string;
@@ -33,6 +36,8 @@ const SCREEN_ICE_SERVERS: RTCIceServer[] = [
 
 class ScreenShareService {
   private localStream: MediaStream | null = null;
+  private captureAbort: AbortController | null = null;
+  private localQuality = DEFAULT_SCREEN_QUALITY;
   private peerConnections: Map<string, RTCPeerConnection> = new Map();
   private activeShares: Map<string, ScreenShare> = new Map();
   // 存储接收到的远程流（用于查看者）
@@ -143,29 +148,26 @@ class ScreenShareService {
   /**
    * 开始共享屏幕
    */
-  async startSharing(requirePassword: boolean, password?: string): Promise<string> {
+  async startSharing(requirePassword: boolean, password?: string, quality: ScreenShareQuality = DEFAULT_SCREEN_QUALITY): Promise<string> {
+    if (this.captureAbort || this.localStream) throw new Error('已有进行中的屏幕共享');
+    const captureAbort = new AbortController();
+    this.captureAbort = captureAbort;
+    let stream: MediaStream | null = null;
     try {
       if (requirePassword && !password?.trim()) {
         throw new Error('屏幕共享密码不能为空');
       }
-      console.log('🖥️ [ScreenShareService] 开始捕获屏幕...');
+      this.localQuality = normalizeScreenQuality(quality);
+      console.log('🖥️ [ScreenShareService] 开始捕获屏幕...', this.localQuality);
 
       // 捕获屏幕
-      this.localStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          cursor: 'always',
-          displaySurface: 'monitor',
-          // 1080p/30fps 更适合 P2P relay，避免 4K/60fps 挤占上行导致慢动作。
-          frameRate: { ideal: 30, max: 30 },
-          width: { ideal: 1920, max: 1920 },
-          height: { ideal: 1080, max: 1080 },
-        } as any,
-        audio: false,
-      });
+      stream = await requestNativeScreen(this.localQuality, false, captureAbort.signal);
+      if (captureAbort.signal.aborted) throw new DOMException('Cancelled', 'AbortError');
+      this.localStream = stream;
 
       const videoTrack = this.localStream.getVideoTracks()[0];
       if (videoTrack) {
-        // 【优化】设置为detail模式，优先保证画质清晰
+        // Native D3D scales before IPC; sender limits still bound WebRTC bitrate/FPS.
         videoTrack.contentHint = 'motion';
       }
 
@@ -210,6 +212,9 @@ class ScreenShareService {
       console.log('✅ [ScreenShareService] 屏幕共享已启动:', shareId);
       return shareId;
     } catch (error) {
+      stream?.getTracks().forEach(track => track.stop());
+      if (this.localStream === stream) this.localStream = null;
+      if (this.captureAbort === captureAbort) this.captureAbort = null;
       console.error('❌ [ScreenShareService] 启动屏幕共享失败:', error);
       throw error;
     }
@@ -218,9 +223,15 @@ class ScreenShareService {
   /**
    * 停止共享屏幕
    */
+  cancelPendingStart(): void {
+    if (!this.localStream) this.captureAbort?.abort();
+  }
+
   stopSharing(shareId: string): void {
     console.log('🛑 [ScreenShareService] 停止屏幕共享:', shareId);
 
+    this.captureAbort?.abort();
+    this.captureAbort = null;
     // 停止本地流
     if (this.localStream) {
       this.localStream.getTracks().forEach((track) => track.stop());
@@ -1633,26 +1644,7 @@ class ScreenShareService {
         }
       };
 
-      sourceStream.getTracks().forEach((track) => {
-        const sender = pc.addTrack(track, sourceStream);
-
-        if (track.kind === 'video') {
-          const params = sender.getParameters();
-          // 【优化】设置高码率和稳定帧率，确保画质清晰流畅
-          params.degradationPreference = 'balanced';
-          params.encodings = [
-            {
-              maxBitrate: 4_000_000,
-              maxFramerate: 30,
-              scaleResolutionDownBy: 1.0, // 不降低分辨率
-              priority: 'high', // 高优先级
-            },
-          ];
-          sender.setParameters(params).catch((error) => {
-            console.warn('⚠️ [ScreenShareService] 设置发送参数失败，继续默认参数', error);
-          });
-        }
-      });
+      sourceStream.getTracks().forEach(track => pc.addTrack(track, sourceStream));
 
       // 设置远程描述
       await pc.setRemoteDescription({
@@ -1664,6 +1656,17 @@ class ScreenShareService {
       // 创建Answer
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
+      for (const sender of pc.getSenders()) {
+        if (sender.track?.kind !== 'video') continue;
+        const params = sender.getParameters();
+        params.degradationPreference = 'balanced';
+        params.encodings = (params.encodings?.length ? params.encodings : [{}]).map(encoding => ({
+          ...encoding, ...screenSenderLimits(this.localQuality, isOwner), scaleResolutionDownBy: 1,
+        }));
+        await sender.setParameters(params).catch(error => {
+          console.warn('⚠️ [ScreenShareService] 设置发送参数失败', error);
+        });
+      }
       this.startOutboundHealthHeartbeat(
         offer.shareId,
         offer.playerId,
@@ -1943,6 +1946,8 @@ class ScreenShareService {
    * 清理资源
    */
   cleanup(): void {
+    this.captureAbort?.abort();
+    this.captureAbort = null;
     console.log('🧹 [ScreenShareService] 清理资源...');
 
     // 停止所有共享

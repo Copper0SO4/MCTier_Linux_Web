@@ -1,11 +1,13 @@
 import { chatFileKind, formatFileSize, parseChatAttachment } from '../chat/fileAttachment';
 import { sniffImageMime } from '../chat/imageData';
+import { decodeBuiltinEmoji } from '../emoji/builtinEmojiMessage';
 
 export type PreviewKind = 'text' | 'image' | 'video' | 'voice' | 'audio' | 'file';
 export interface PreviewMessage { type?: string; content: string; imageData?: string; attachment?: unknown; recalled?: boolean }
 export interface MessagePreview { kind: PreviewKind; text: string; detail?: string; image?: string }
 export function messagePreview(message: PreviewMessage): MessagePreview {
   if (message.recalled) return { kind: 'text', text: '[消息已撤回]' };
+  if ((!message.type || message.type === 'text') && decodeBuiltinEmoji(message.content)) return { kind: 'image', text: '[内置表情]' };
   if (!message.type || message.type === 'text') return { kind: 'text', text: message.content.replace(/^> \[reply:[^\]]+\]\s*/, '> ') };
   if (message.type === 'image') return { kind: 'image', text: '[图片 / 表情]', image: message.imageData };
   if (message.type === 'voice') {

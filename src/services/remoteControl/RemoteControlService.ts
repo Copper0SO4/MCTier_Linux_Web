@@ -10,8 +10,12 @@
 import { invoke } from '@tauri-apps/api/core';
 import { isSignalingSocketRegistered } from '../signaling/registeredSocket';
 import { isSafeIdentifier, isSafeSessionId, sanitizeUntrustedText } from '../../security/trustBoundary';
+import { requestNativeScreen } from '../screenShare/nativeCapture';
+import { DEFAULT_SCREEN_QUALITY } from '../screenShare/quality';
 
 export type RemoteInputEvent =
+  | { kind: 'relative-move'; dx: number; dy: number }
+  | { kind: 'relative-button'; button: number; down: boolean }
   | { kind: 'move'; x: number; y: number }
   | { kind: 'down'; button: number; x: number; y: number }
   | { kind: 'up'; button: number; x: number; y: number }
@@ -46,13 +50,59 @@ class RemoteControlService {
   private peerId = '';        // 对端 playerId
   private peerName = '';
   private pc: RTCPeerConnection | null = null;
+  private creatingPeerConnectionFor: string | null = null;
   private inputChannel: RTCDataChannel | null = null;
   private localStream: MediaStream | null = null;
+  private captureAbort: AbortController | null = null;
   private pendingInput: RemoteInputEvent[] = [];
   private flushTimer: number | null = null;
   private pendingIce: Array<{ sessionId: string; peerId: string; candidate: RTCIceCandidateInit }> = [];
   private requestTimer: number | null = null;
+  private connectionTimer: number | null = null;
+  private remoteVideoTrackReceived = false;
   private pendingRequest: PendingControlRequest | null = null;
+
+  private armConnectionTimeout(sessionId: string, peerId: string, pc: RTCPeerConnection): void {
+    if (this.connectionTimer !== null) clearTimeout(this.connectionTimer);
+    this.connectionTimer = window.setTimeout(() => {
+      if (this.isCurrentPeerSession(sessionId, peerId, pc) &&
+          (pc.connectionState !== 'connected' || (this.role === 'controller' && !this.remoteVideoTrackReceived))) {
+        console.warn('远程控制连接超时', { sessionId, state: pc.connectionState });
+        this.stopControl();
+      }
+    }, 30000);
+  }
+
+  private clearConnectionTimeoutIfReady(pc: RTCPeerConnection): void {
+    if (pc.connectionState === 'connected' &&
+        (this.role === 'controlled' || this.remoteVideoTrackReceived) &&
+        this.connectionTimer !== null) {
+      clearTimeout(this.connectionTimer);
+      this.connectionTimer = null;
+    }
+  }
+
+  private async createPeerConnection(sessionId: string, peerId: string): Promise<RTCPeerConnection | null> {
+    if (this.creatingPeerConnectionFor || this.pc) return null;
+    this.creatingPeerConnectionFor = sessionId;
+    try {
+      // Native capture needs the same EasyTier interface discovery as real-time voice.
+      const localDiscovery = await invoke<string | null>('voice_ice_server');
+      if (!this.isCurrentPeerSession(sessionId, peerId) || this.pc) return null;
+      const pc = new RTCPeerConnection({
+        ...RTC_CONFIG,
+        iceServers: localDiscovery ? [{ urls: localDiscovery }] : [],
+      });
+      this.pc = pc;
+      this.armConnectionTimeout(sessionId, peerId, pc);
+      return pc;
+    } catch (error) {
+      if (this.isCurrentPeerSession(sessionId, peerId)) this.stopControl();
+      throw error;
+    } finally {
+      if (this.creatingPeerConnectionFor === sessionId) this.creatingPeerConnectionFor = null;
+    }
+  }
 
   initialize(playerId: string, playerName: string, ws: WebSocket): void {
     this.playerId = playerId;
@@ -154,16 +204,10 @@ class RemoteControlService {
     this.peerName = safeControllerName;
     this.pendingRequest = null;
     try {
-      // 在用户手势内采集屏幕（getDisplayMedia 需要用户激活）。
+      const captureAbort = new AbortController();
+      this.captureAbort = captureAbort;
       // 先保存在局部变量，避免旧授权 Promise 覆盖后续新会话的 localStream。
-      const stream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          frameRate: { ideal: 30, max: 60 },
-          width: { ideal: 1920, max: 3840 },
-          height: { ideal: 1080, max: 2160 },
-        } as any,
-        audio: false,
-      });
+      const stream = await requestNativeScreen(DEFAULT_SCREEN_QUALITY, true, captureAbort.signal);
       // 用户授权期间对端可能已经停止或会话被本地清理，不能把迟到的媒体流重新挂回旧会话。
       if (!this.isCurrentPeerMessage(sessionId, controllerId, this.playerId)) {
         stream.getTracks().forEach((track) => track.stop());
@@ -236,9 +280,16 @@ class RemoteControlService {
   }
 
   private cleanup(): void {
+    const captureAbort = this.captureAbort;
+    this.captureAbort = null;
+    captureAbort?.abort();
     if (this.requestTimer !== null) {
       clearTimeout(this.requestTimer);
       this.requestTimer = null;
+    }
+    if (this.connectionTimer !== null) {
+      clearTimeout(this.connectionTimer);
+      this.connectionTimer = null;
     }
     if (this.flushTimer !== null) {
       clearInterval(this.flushTimer);
@@ -253,6 +304,8 @@ class RemoteControlService {
     this.pendingInput = [];
     this.pendingIce = [];
     this.pendingRequest = null;
+    this.creatingPeerConnectionFor = null;
+    this.remoteVideoTrackReceived = false;
     if (this.inputChannel) {
       try { this.inputChannel.onmessage = null; this.inputChannel.close(); } catch { /* ignore */ }
       this.inputChannel = null;
@@ -304,8 +357,8 @@ class RemoteControlService {
     const expectedSessionId = sessionId;
     const expectedPeerId = from;
     if (this.requestTimer !== null) { clearTimeout(this.requestTimer); this.requestTimer = null; }
-    const pc = new RTCPeerConnection(RTC_CONFIG);
-    this.pc = pc;
+    const pc = await this.createPeerConnection(expectedSessionId, expectedPeerId);
+    if (!pc) return;
 
     const ch = pc.createDataChannel('rc-input', { ordered: true });
     this.inputChannel = ch;
@@ -313,16 +366,19 @@ class RemoteControlService {
 
     pc.addTransceiver('video', { direction: 'recvonly' });
     pc.ontrack = (e) => {
-      if (this.isCurrentPeerSession(expectedSessionId, expectedPeerId, pc) && e.streams && e.streams[0]) {
-        window.dispatchEvent(new CustomEvent('rc-stream', { detail: { stream: e.streams[0], peerName: this.peerName } }));
-      }
+      if (!this.isCurrentPeerSession(expectedSessionId, expectedPeerId, pc) || e.track.kind !== 'video') return;
+      this.remoteVideoTrackReceived = true;
+      this.clearConnectionTimeoutIfReady(pc);
+      const stream = e.streams?.[0] ?? new MediaStream([e.track]);
+      window.dispatchEvent(new CustomEvent('rc-stream', { detail: { stream, peerName: this.peerName } }));
     };
     pc.onicecandidate = (e) => {
       if (e.candidate) this.sendIce(expectedSessionId, expectedPeerId, pc, e.candidate);
     };
     pc.onconnectionstatechange = () => {
       if (!this.isCurrentPeerSession(expectedSessionId, expectedPeerId, pc)) return;
-      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') this.stopControl(false);
+      this.clearConnectionTimeoutIfReady(pc);
+      if (pc.connectionState === 'failed' || pc.connectionState === 'closed') this.stopControl();
     };
 
     try {
@@ -342,7 +398,7 @@ class RemoteControlService {
         offer: { type: offer.type, sdp: offer.sdp },
       });
     } catch (error) {
-      if (this.isCurrentPeerSession(expectedSessionId, expectedPeerId, pc)) this.stopControl(false);
+      if (this.isCurrentPeerSession(expectedSessionId, expectedPeerId, pc)) this.stopControl();
       throw error;
     }
   }
@@ -355,20 +411,14 @@ class RemoteControlService {
     const expectedSessionId = sessionId;
     const expectedPeerId = from;
     try {
-      let stream = this.localStream;
+      const stream = this.localStream;
       if (!stream) {
-        // 兜底：理论上 acceptControl 已采集
-        const capturedStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: false } as any);
-        if (!this.isCurrentPeerSession(expectedSessionId, expectedPeerId)) {
-          capturedStream.getTracks().forEach((track) => track.stop());
-          return;
-        }
-        this.localStream = capturedStream;
-        stream = capturedStream;
+        // A network offer must never open a new picker or restart a stopped capture.
+        throw new Error('已授权的屏幕采集已停止');
       }
-      const pc = new RTCPeerConnection(RTC_CONFIG);
-      this.pc = pc;
-      stream.getTracks().forEach((track) => pc.addTrack(track, stream!));
+      const pc = await this.createPeerConnection(expectedSessionId, expectedPeerId);
+      if (!pc) return;
+      stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
       pc.ondatachannel = (e) => {
         if (e.channel.label === 'rc-input' && this.isCurrentPeerSession(expectedSessionId, expectedPeerId, pc)) {
@@ -383,7 +433,8 @@ class RemoteControlService {
       };
       pc.onconnectionstatechange = () => {
         if (!this.isCurrentPeerSession(expectedSessionId, expectedPeerId, pc)) return;
-        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') this.stopControl(false);
+        this.clearConnectionTimeoutIfReady(pc);
+        if (pc.connectionState === 'failed' || pc.connectionState === 'closed') this.stopControl();
       };
 
       await pc.setRemoteDescription({ type: 'offer', sdp });
@@ -409,7 +460,7 @@ class RemoteControlService {
       });
       window.dispatchEvent(new CustomEvent('rc-controlled-active', { detail: { peerName: this.peerName } }));
     } catch (error) {
-      if (this.isCurrentPeerSession(expectedSessionId, expectedPeerId)) this.stopControl(false);
+      if (this.isCurrentPeerSession(expectedSessionId, expectedPeerId)) this.stopControl();
       throw error;
     }
   }
@@ -426,7 +477,7 @@ class RemoteControlService {
       if (!this.isCurrentPeerSession(sessionId, from, pc)) return;
       await this.flushPendingIce(sessionId, from, pc);
     } catch (error) {
-      if (this.isCurrentPeerSession(sessionId, from, pc)) this.stopControl(false);
+      if (this.isCurrentPeerSession(sessionId, from, pc)) this.stopControl();
       throw error;
     }
   }

@@ -152,7 +152,7 @@ export const SettingsWindow: React.FC<{ onClose: () => void }> = ({ onClose }) =
         useDomain: ud,
         usePrivateServer: ups,
         // 只在后端返回 null/undefined 时使用默认值
-        privateEasytierServer: settings.privateEasytierServer ?? 'udp://us01.225284.xyz:11010',
+        privateEasytierServer: settings.privateEasytierServer ?? 'tcp://easytier.weiai.org.cn:11010',
         privateSignalingServer: settings.privateSignalingServer ?? 'wss://mctier.pmhs.top/signaling',
         alwaysOnTop: aot,
         rememberWindowPosition: rwp,
@@ -188,7 +188,7 @@ export const SettingsWindow: React.FC<{ onClose: () => void }> = ({ onClose }) =
         playerName: '',
         useDomain: false,
         usePrivateServer: false,
-        privateEasytierServer: 'udp://us01.225284.xyz:11010',
+        privateEasytierServer: 'tcp://easytier.weiai.org.cn:11010',
         privateSignalingServer: 'wss://mctier.pmhs.top/signaling',
         alwaysOnTop: true,
         rememberWindowPosition: false,
@@ -710,7 +710,7 @@ export const SettingsWindow: React.FC<{ onClose: () => void }> = ({ onClose }) =
                         />
                       </div>
                       <div style={{ fontSize: '12px', color: 'rgba(255,255,255,0.55)', marginTop: '4px', lineHeight: 1.7 }}>
-                        {tl('说明：自动大厅会沿用与手动创建大厅相同的服务器。若已开启「使用私有服务器」，则使用你在私有服务器中配置的 EasyTier 节点与信令服务器；否则使用用户上次选择的节点（默认为海波美国节点）。', 'Note: Auto lobby uses the same server as manual lobby creation. If "Use private server" is enabled, it uses the configured EasyTier and signaling servers; otherwise it uses the last selected node (default: Haibo US Node).')}
+                        {tl('说明：自动大厅会沿用与手动创建大厅相同的服务器。若已开启「使用私有服务器」，则使用你在私有服务器中配置的 EasyTier 节点与信令服务器；否则使用用户上次选择的节点（默认为唯爱厦门节点）。', 'Note: Auto lobby uses the same server as manual lobby creation. If "Use private server" is enabled, it uses the configured EasyTier and signaling servers; otherwise it uses the last selected node (default: Weiai Xiamen Node).')}
                       </div>
                     </div>
                   </motion.div>
@@ -720,7 +720,7 @@ export const SettingsWindow: React.FC<{ onClose: () => void }> = ({ onClose }) =
 
             <motion.div className="settings-card" variants={itemVariants}>
               <div className="settings-card-header">
-                <div className="settings-card-icon settings-card-icon-blue">
+                <div className="settings-card-icon settings-card-icon-green">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
                     <path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"/>
                   </svg>
@@ -762,7 +762,7 @@ export const SettingsWindow: React.FC<{ onClose: () => void }> = ({ onClose }) =
                           { required: true, message: tl('请输入 EasyTier 节点服务器地址', 'Please enter the EasyTier node server address') },
                           { pattern: /^(tcp|udp|ws|wss|txt):\/\/.+$/, message: tl('格式：tcp://、udp://、ws://、wss:// 或 txt:// 开头', 'Format: must start with tcp://, udp://, ws://, wss:// or txt://') },
                         ]}>
-                        <Input placeholder="udp://us01.225284.xyz:11010" onBlur={handleFieldBlur} />
+                        <Input placeholder="tcp://easytier.weiai.org.cn:11010" onBlur={handleFieldBlur} />
                       </Form.Item>
                       <Form.Item name="privateSignalingServer" label={tl('WebRTC 信令服务器', 'WebRTC Signaling Server')}
                         rules={[
@@ -795,7 +795,7 @@ export const SettingsWindow: React.FC<{ onClose: () => void }> = ({ onClose }) =
                           className="settings-action-btn settings-action-btn-reset"
                           onClick={async () => {
                             const defaults = {
-                              privateEasytierServer: 'udp://us01.225284.xyz:11010',
+                              privateEasytierServer: 'tcp://easytier.weiai.org.cn:11010',
                               privateSignalingServer: 'wss://mctier.pmhs.top/signaling',
                             };
                             form.setFieldsValue(defaults);
@@ -949,18 +949,21 @@ export const SettingsWindow: React.FC<{ onClose: () => void }> = ({ onClose }) =
               <div className="settings-card-header">
                 <div className="settings-card-icon settings-card-icon-green">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor">
-                    <path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3zm5-3a5 5 0 0 1-10 0H5a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2z"/>
+                    <path d="M13 3a9 9 0 1 1-8.49 12H6.7A7 7 0 1 0 8 6.1L11 9H3V1l3.56 3.56A8.96 8.96 0 0 1 13 3z"/>
                   </svg>
                 </div>
-                <span className="settings-card-title">{tl('麦克风权限', 'Microphone Permission')}</span>
+                <span className="settings-card-title">{tl('重置软件', 'Reset Application')}</span>
               </div>
               <div className="settings-card-desc">
-                {tl('首次拒绝后，若 WebView2 不再弹出授权窗口，可一键重置 MCTier 的权限缓存并自动重启。', 'If WebView2 no longer shows the permission prompt after access was denied, reset MCTier permission data and restart automatically.')}
+                {tl('界面或本地缓存异常时，可清理界面数据并自动重启 MCTier。', 'If the interface or local cache is malfunctioning, clear interface data and restart MCTier.')}
               </div>
-              <div className="settings-centered-control microphone-reset-control">
-                <Button className="microphone-reset-button" type="primary" onClick={() => void invoke('reset_microphone_permission')}>
+              <div className="settings-centered-control app-reset-control">
+                <Button className="app-reset-button" type="primary" onClick={() => void invoke('reset_microphone_permission').catch(error => message.error(String(error)))}>
                   {tl('一键重置并重启', 'Reset and Restart')}
                 </Button>
+              </div>
+              <div className="settings-card-desc" style={{ fontSize: 12 }}>
+                {tl('将清除 WebView 的网页本地存储、浏览缓存及麦克风等权限记录，可能重置界面偏好等数据；应用配置文件会保留，不是完整恢复出厂设置。', 'Clears WebView local storage, browsing caches and permissions, including microphone access. Web preferences may be reset. Application configuration files are retained; this is not a full factory reset.')}
               </div>
             </motion.div>
 
@@ -1069,16 +1072,16 @@ interface EasyTierNode {
 // 默认内置节点（不可删除）
 const DEFAULT_BUILTIN_NODES: EasyTierNode[] = [
   {
-    name: '海波美国节点',
-    address: 'udp://us01.225284.xyz:11010'
+    name: '唯爱厦门节点',
+    address: 'tcp://easytier.weiai.org.cn:11010'
   },
   {
     name: '海波中国大陆节点',
     address: 'tcp://225284.xyz:11010'
   },
   {
-    name: '唯爱厦门节点',
-    address: 'tcp://easytier.weiai.org.cn:11010'
+    name: '海波美国节点',
+    address: 'udp://us01.225284.xyz:11010'
   }
 ];
 

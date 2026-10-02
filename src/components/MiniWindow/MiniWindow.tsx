@@ -1185,7 +1185,7 @@ export const MiniWindow: React.FC = () => {
         settings.usePrivateServer && settings.privateEasytierServer
           ? settings.privateEasytierServer
           : savedServerNode === 'wss://mctiers.pmhs.top' || !savedServerNode
-            ? 'udp://us01.225284.xyz:11010'
+            ? 'tcp://easytier.weiai.org.cn:11010'
             : savedServerNode;
       const signalingServer =
         settings.usePrivateServer && settings.privateSignalingServer

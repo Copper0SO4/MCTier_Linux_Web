@@ -15,6 +15,8 @@ import { Modal, Select, Button, Typography, Space, Progress, message } from 'ant
 import { useTranslation } from 'react-i18next';
 import { tl } from '../../i18n';
 import { audioDevices } from '../../services/voice/audioDevices';
+import { microphoneDevices, nativeMicrophoneLevel, openMicrophone, resumeAudioContext } from '../../services/voice/nativeMicrophone';
+import { microphoneLevelPercent, pcmRms } from '../../services/voice/microphoneLevel';
 import { webrtcClient } from '../../services';
 
 const { Text } = Typography;
@@ -46,6 +48,7 @@ export const VoiceDevicePanel: React.FC<VoiceDevicePanelProps> = ({ active = tru
   const testStreamRef = useRef<MediaStream | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
   const rafRef = useRef<number | null>(null);
+  const testGeneration = useRef(0);
 
   // 下拉框渲染到自身父节点，避免在透明窗口/弹窗中出现层级错误（显示在弹窗背后无法点击）
   const popupContainer = (triggerNode: HTMLElement) =>
@@ -53,9 +56,17 @@ export const VoiceDevicePanel: React.FC<VoiceDevicePanelProps> = ({ active = tru
 
   const loadDevices = async () => {
     try {
-      // 仅枚举设备；麦克风权限只在用户明确点击「开始试音」时申请。
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const ins: DeviceOption[] = [{ value: '', label: tl('系统默认麦克风', 'System Default Microphone') }];
+      // Enumerating inputs does not open the microphone or start recording.
+      const [microphones, browserDevices] = await Promise.all([
+        microphoneDevices(), navigator.mediaDevices.enumerateDevices(),
+      ]);
+      const devices = [...microphones, ...browserDevices.filter(device => device.kind === 'audiooutput')];
+      const defaultInput = microphones.find(device => device.isDefault);
+      const ins: DeviceOption[] = [{ value: '', label: `${tl('系统默认麦克风', 'System Default Microphone')}${defaultInput ? `（${defaultInput.label}）` : ''}` }];
+      const communicationsInput = microphones.find(device => device.isCommunications);
+      if (communicationsInput && communicationsInput.deviceId !== defaultInput?.deviceId) {
+        ins.push({ value: 'communications', label: `${tl('默认通信麦克风', 'Default Communications Microphone')}（${communicationsInput.label}）` });
+      }
       const outs: DeviceOption[] = [{ value: '', label: tl('系统默认扬声器', 'System Default Speaker') }];
       devices.forEach((d) => {
         if (d.kind === 'audioinput') {
@@ -66,6 +77,11 @@ export const VoiceDevicePanel: React.FC<VoiceDevicePanelProps> = ({ active = tru
       });
       setInputs(ins);
       setOutputs(outs);
+      const savedInputId = audioDevices.getInputDeviceId();
+      if (savedInputId && !ins.some(option => option.value === savedInputId)) {
+        audioDevices.setInputDeviceId('');
+        setInputId('');
+      }
       const savedOutputId = audioDevices.getOutputDeviceId();
       if (savedOutputId) {
         const savedOutput = outs.find((option) => option.value === savedOutputId);
@@ -78,6 +94,7 @@ export const VoiceDevicePanel: React.FC<VoiceDevicePanelProps> = ({ active = tru
   };
 
   const stopMicTest = () => {
+    testGeneration.current++;
     if (rafRef.current !== null) {
       window.cancelAnimationFrame(rafRef.current);
       rafRef.current = null;
@@ -118,62 +135,74 @@ export const VoiceDevicePanel: React.FC<VoiceDevicePanelProps> = ({ active = tru
   };
 
   const handleOutputChange = async (id: string) => {
-    setOutputId(id);
-    audioDevices.setOutputDeviceId(id, outputs.find((option) => option.value === id)?.label || '');
+    const previous = audioDevices.getOutputDeviceId();
     try {
+      // Validate even before any peer has joined the call.
+      const probe = new Audio();
+      if (typeof probe.setSinkId === 'function') await probe.setSinkId(id);
       await webrtcClient.applyOutputDeviceToAll(id);
+      setOutputId(id);
+      audioDevices.setOutputDeviceId(id, outputs.find((option) => option.value === id)?.label || '');
       message.success(tl('扬声器已切换并对当前通话生效', 'Speaker switched and applied to the current call'));
-    } catch {
-      message.success(tl('扬声器已切换', 'Speaker switched'));
+    } catch (error) {
+      await webrtcClient.applyOutputDeviceToAll(previous).catch(() => {});
+      message.error(`${tl('扬声器切换失败，请重新选择可用设备', 'Could not switch speaker; select an available device')}：${error}`);
     }
   };
 
   const startMicTest = async (deviceId?: string) => {
+    stopMicTest();
+    const generation = ++testGeneration.current;
     try {
       const id = deviceId !== undefined ? deviceId : inputId;
-      // 与实际发送链路保持一致的纯原声采集：浏览器默认会开启 AEC/NS/AGC，
-      // 若不显式关闭，麦克风音量条反映的就不是真正发出去的波形。
-      const constraints: MediaStreamConstraints = {
-        audio: {
-          ...(id ? { deviceId: { ideal: id } } : {}),
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-        video: false,
-      };
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      const stream = await openMicrophone(id);
+      if (generation !== testGeneration.current) { stream.getTracks().forEach(track => track.stop()); return; }
+      stream.getAudioTracks()[0]?.addEventListener('ended', () => {
+        if (generation === testGeneration.current) stopMicTest();
+      }, { once: true });
       testStreamRef.current = stream;
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
-      ctxRef.current = ctx;
-      const source = ctx.createMediaStreamSource(stream);
-      const analyser = ctx.createAnalyser();
-      analyser.fftSize = 512;
-      source.connect(analyser);
-      const data = new Uint8Array(analyser.fftSize);
+      let readRms: () => number;
+      if (nativeMicrophoneLevel(stream) !== undefined) {
+        // Meter native PCM directly: no second audio engine, resampling or byte quantization.
+        readRms = () => nativeMicrophoneLevel(stream) ?? 0;
+      } else {
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+        ctxRef.current = ctx;
+        await resumeAudioContext(ctx);
+        if (generation !== testGeneration.current) { stream.getTracks().forEach(track => track.stop()); void ctx.close().catch(() => {}); return; }
+        const source = ctx.createMediaStreamSource(stream);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 1024;
+        const silent = ctx.createGain();
+        silent.gain.value = 0;
+        source.connect(analyser);
+        analyser.connect(silent).connect(ctx.destination);
+        const data = new Float32Array(analyser.fftSize);
+        readRms = () => { analyser.getFloatTimeDomainData(data); return pcmRms(data); };
+      }
       setTesting(true);
       const tick = () => {
-        analyser.getByteTimeDomainData(data);
-        let sum = 0;
-        for (let i = 0; i < data.length; i++) {
-          const v = (data[i] - 128) / 128;
-          sum += v * v;
-        }
-        const rms = Math.sqrt(sum / data.length);
-        setLevel(Math.min(100, Math.round(rms * 300)));
+        if (generation !== testGeneration.current) return;
+        setLevel(microphoneLevelPercent(readRms()));
         rafRef.current = window.requestAnimationFrame(tick);
       };
       rafRef.current = window.requestAnimationFrame(tick);
     } catch (e) {
+      if (generation !== testGeneration.current) return;
+      stopMicTest();
       message.error(`${tl('无法打开麦克风试音', 'Unable to start microphone test')}：${e}`);
     }
   };
 
   // 扬声器试音：播放一段测试音并路由到选定输出设备
   const testOutput = async () => {
+    const ctx = new AudioContext();
+    const audio = new Audio();
+    let stream: MediaStream | undefined;
     try {
-      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      await resumeAudioContext(ctx);
       const dest = ctx.createMediaStreamDestination();
+      stream = dest.stream;
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       gain.gain.value = 0.15;
@@ -182,20 +211,19 @@ export const VoiceDevicePanel: React.FC<VoiceDevicePanelProps> = ({ active = tru
       gain.connect(dest);
       osc.start();
 
-      const audio = new Audio();
       audio.srcObject = dest.stream;
       if (outputId && typeof (audio as any).setSinkId === 'function') {
-        await (audio as any).setSinkId(outputId).catch(() => {});
+        await (audio as any).setSinkId(outputId);
       }
-      await audio.play().catch(() => {});
-      setTimeout(() => {
-        osc.stop();
-        audio.pause();
-        audio.srcObject = null;
-        ctx.close().catch(() => {});
-      }, 600);
+      await audio.play();
+      await new Promise(resolve => setTimeout(resolve, 600));
     } catch (e) {
       message.error(`${tl('扬声器试音失败', 'Speaker test failed')}：${e}`);
+    } finally {
+      audio.pause();
+      audio.srcObject = null;
+      stream?.getTracks().forEach(track => track.stop());
+      await ctx.close().catch(() => {});
     }
   };
 

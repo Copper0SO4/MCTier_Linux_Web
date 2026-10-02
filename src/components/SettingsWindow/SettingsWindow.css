@@ -482,11 +482,6 @@
   background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
 }
 
-.settings-card-icon-blue {
-  background: rgba(139, 111, 71, 0.2);
-  color: rgba(255, 215, 0, 0.95);
-}
-
 .settings-card-icon-cyan {
   background: rgba(0, 188, 212, 0.2);
   color: rgba(0, 229, 255, 0.9);
@@ -920,11 +915,11 @@ html[data-theme='light'] .hotkey-reset-row .settings-action-btn-reset:hover {
   }
 }
 
-.microphone-reset-control {
+.app-reset-control {
   margin-top: 2px;
 }
 
-.microphone-reset-button {
+.app-reset-button {
   width: min(220px, 100%);
   height: 40px;
 }
@@ -1011,25 +1006,15 @@ html[data-theme='light'] .hotkey-reset-row .settings-action-btn-reset:hover {
   animation-timing-function: linear;
   animation-iteration-count: infinite;
 }
-html[data-theme='light'] :is(.settings-window, .lobby-settings-modal) .snd-block .danmaku-preview-bullet:not(.rainbow) {
+html[data-theme='light'] :is(.settings-window, .lobby-settings-modal) .snd-block .danmaku-preview-bullet {
   color: var(--danmaku-preview-color) !important;
+  -webkit-text-fill-color: var(--danmaku-preview-color) !important;
 }
 @keyframes danmaku-preview-move {
   from { transform: translate(100%, -50%); }
   to { transform: translate(-110%, -50%); }
 }
 
-/* 彩色模式预览：文字颜色随色相循环 */
-.danmaku-preview-bullet.rainbow {
-  animation-name: danmaku-preview-move, danmaku-rainbow-hue;
-  animation-timing-function: linear, linear;
-  animation-iteration-count: infinite, infinite;
-  color: hsl(0, 85%, 62%);
-}
-@keyframes danmaku-rainbow-hue {
-  from { color: hsl(0, 85%, 62%); }
-  to { color: hsl(360, 85%, 62%); }
-}
 
 .snd-dnd-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
 .snd-dnd-times { display: flex; align-items: center; justify-content: center; gap: 10px; margin-top: 4px; width: 100%; }
@@ -1359,6 +1344,10 @@ html[data-theme='light'] .community-node-submitter {
 html[data-theme='light'] .community-node-empty {
   color: var(--mct-text-secondary);
   border-color: var(--mct-border);
+}
+
+html[data-theme='light'] .community-node-btn-primary {
+  color: #ffffff;
 }
 
 html[data-theme='light'] .community-node-text-btn,

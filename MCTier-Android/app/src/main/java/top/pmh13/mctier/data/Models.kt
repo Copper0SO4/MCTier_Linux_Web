@@ -3,7 +3,7 @@ package top.pmh13.mctier.data
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-const val DefaultEasyTierNode = "udp://us01.225284.xyz:11010"
+const val DefaultEasyTierNode = "tcp://easytier.weiai.org.cn:11010"
 const val RemovedQingyunNode = "wss://mctiers.pmhs.top"
 const val DefaultSignalingServer = "wss://mctier.pmhs.top/signaling"
 const val FileSharePort = 14539
@@ -14,7 +14,7 @@ const val ChatMaxHistoryMessages = 1000
 const val ChatMaxHistoryBytes = 12 * 1024 * 1024
 const val ChatMaxHttpBodyBytes = 12 * 1024 * 1024
 const val ChatMaxAttachmentBytes = 64 * 1024 * 1024
-const val AppClientVersion = "3.7.0"
+const val AppClientVersion = "3.8.0"
 
 enum class AppConnectionState { Idle, Connecting, InLobby, Error }
 
@@ -77,6 +77,7 @@ data class ChatMessage(
     val recipientId: String? = null,
     val attachment: ChatAttachmentMeta? = null,
     val attachmentPath: String? = null,
+    val delivery: String? = null, // Local-only sending/failed status.
 )
 
 @Serializable
@@ -492,9 +493,9 @@ data class LocalStats(
 )
 
 val BuiltinNodes: List<BuiltinNode> = listOf(
-    BuiltinNode("海波美国节点", "udp://us01.225284.xyz:11010"),
+    BuiltinNode("唯爱厦门节点", DefaultEasyTierNode),
     BuiltinNode("海波中国大陆节点", "tcp://225284.xyz:11010"),
-    BuiltinNode("唯爱厦门节点", "tcp://easytier.weiai.org.cn:11010"),
+    BuiltinNode("海波美国节点", "udp://us01.225284.xyz:11010"),
 )
 
 @Serializable

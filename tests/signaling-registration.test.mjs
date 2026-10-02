@@ -250,6 +250,42 @@ test('registration publishes authoritative host and readiness before completing 
   } finally { await f.dispose(); }
 });
 
+test('host mute reaches its local target, silences immediately and promotion removes restriction', async () => {
+  const f = fixture();
+  try {
+    const events = [];
+    const micStates = [];
+    const originalSetMic = f.client.setMicEnabled.bind(f.client);
+    f.client.setMicEnabled = async enabled => { micStates.push(enabled); };
+    f.client.syncChatPeers = async () => {};
+    const pending = f.client.connectToSignalingServer();
+    const socket = f.client.websocket; socket.open(); socket.receive(f.challenge); await flush();
+    socket.receive({ ...f.success, hostId: 'b'.repeat(64) }); await pending;
+    f.client.onMuteChanged((id, muted) => events.push([id, muted]));
+    const track = { kind: 'audio', enabled: true };
+    f.client.localStream = { getAudioTracks: () => [track] };
+    f.client.desiredMicEnabled = true;
+    socket.receive({ type: 'player-mute-changed', playerId: f.client.localPlayerId, muted: true }); await flush();
+    assert.deepEqual(events, [[f.client.localPlayerId, true]]);
+    assert.equal(track.enabled, false);
+    assert.equal(f.client.desiredMicEnabled, false);
+    assert.deepEqual(micStates, [false]);
+    assert.equal(f.client.hostMutedLocal, true);
+    await assert.rejects(originalSetMic(true));
+    socket.receive({ type: 'player-mute-changed', playerId: 'c'.repeat(64), muted: true }); await flush();
+    assert.equal(events.length, 1); // Unrecognized target still rejected.
+    socket.receive({ type: 'host-changed', hostId: f.client.localPlayerId }); await flush();
+    assert.equal(f.client.hostMutedLocal, false);
+    assert.deepEqual(events.at(-1), [f.client.localPlayerId, false]);
+    assert.equal(f.client.desiredMicEnabled, false); // Promotion must not open the mic automatically.
+    socket.receive({ type: 'player-mute-changed', playerId: f.client.localPlayerId, muted: true }); await flush();
+    assert.equal(f.client.hostMutedLocal, false);
+    socket.receive({ type: 'host-changed', hostId: 'b'.repeat(64) }); await flush();
+    socket.receive({ type: 'player-mute-changed', playerId: f.client.localPlayerId, muted: true }); await flush();
+    assert.equal(f.client.hostMutedLocal, true); // A former host can be muted again.
+  } finally { await f.dispose(); }
+});
+
 test('rejection, timeout, cancellation and invalid success reject the pending connect', async () => {
   for (const kind of ['register-error', 'timeout', 'cancel', 'invalid', 'early-close']) {
     const f = fixture();

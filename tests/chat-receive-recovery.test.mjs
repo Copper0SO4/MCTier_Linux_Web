@@ -4,6 +4,7 @@ import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import ts from 'typescript';
+import { encodeBuiltinEmoji, decodeBuiltinEmoji } from '../src/services/emoji/builtinEmojiMessage.ts';
 
 const entry = fileURLToPath(new URL('../src/services/chat/P2PChatService.ts', import.meta.url));
 const ast = ts.createSourceFile(entry, fs.readFileSync(entry, 'utf8'), ts.ScriptTarget.Latest, true);
@@ -12,13 +13,129 @@ for (const node of ast.statements) if (ts.isImportDeclaration(node) && node.impo
   stubs.set(node.moduleSpecifier.text, node.importClause.namedBindings.elements.filter(e => !e.isTypeOnly).map(e => `export const ${(e.propertyName ?? e.name).text}=()=>null;`).join('\n'));
 }
 const bundle = await build({ entryPoints: [entry], bundle: true, format: 'esm', write: false, drop: ['console'], plugins: [{ name: 'chat-fixture', setup(b) {
-  b.onResolve({ filter: /.*/ }, args => args.kind === 'entry-point' || /(?:trustBoundary|recallPolicy)$/.test(args.path) ? undefined : { path: args.path, namespace: 'fixture' });
+  b.onResolve({ filter: /.*/ }, args => args.kind === 'entry-point' || /(?:trustBoundary|recallPolicy|fileAttachment)$/.test(args.path) || args.path === 'jszip' || args.importer.includes('node_modules') ? undefined : { path: args.path, namespace: 'fixture' });
   b.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ contents: args.path === '@tauri-apps/api/core'
     ? 'export const invoke=(...args)=>globalThis.chatFixture.invoke(...args);'
     : stubs.get(args.path) || 'export const useAppStore={getState:()=>({})};' }));
 } }] });
 const { p2pChatService: chat } = await import(`data:text/javascript,${encodeURIComponent(bundle.outputFiles[0].text)}`);
 const flush = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+
+test('image transport sends optimized bytes and updates local preview with the same image', async () => {
+  const f = setup();
+  try {
+    const optimized = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
+    const original = 'data:image/png;base64,' + Buffer.alloc(2 * 1024 * 1024 + 1, 42).toString('base64');
+    for (const recipientId of [undefined, 'remote']) {
+      const sent = [], previews = [];
+      globalThis.chatFixture.invoke = async (command, args) => {
+        if (command === 'prepare_chat_image') {
+          assert.equal(args.imageData, original.split(',')[1]);
+          assert.equal(args.recipientId, recipientId ?? null);
+          return { imageDataUrl: optimized, attachment: null };
+        }
+        sent.push(args);
+        return { delivered: 1, total: 1 };
+      };
+      await chat.sendImageMessage(original, '[图片]', 'image-optimized', recipientId, p => previews.push(p));
+      assert.deepEqual(previews, [{ imageData: optimized }]);
+      assert.equal(sent[0].messageType, 'image');
+      assert.equal(sent[0].messageId, 'image-optimized');
+      assert.equal(sent[0].recipientId, recipientId ?? null);
+      assert.deepEqual(sent[0].imageData, [...Buffer.from(optimized.split(',')[1], 'base64')]);
+    }
+  } finally { await f.close(); }
+});
+
+test('large lossless images use attachments without lowering quality or losing the private recipient', async () => {
+  const f = setup();
+  try {
+    const attachment = { id: 'att-image-large-1234', name: 'image.png', mime: 'image/png', size: 3 * 1024 * 1024 };
+    const calls = [], previews = [];
+    globalThis.chatFixture.invoke = async (command, args) => {
+      calls.push([command, args]);
+      if (command === 'prepare_chat_image') return { imageDataUrl: null, attachment };
+      return { delivered: 1, total: 1 };
+    };
+    await chat.sendImageMessage('data:image/png;base64,iVBORw0KGgo=', '[图片]', 'image-large', 'remote', p => previews.push(p));
+    assert.deepEqual(previews, [{ attachment }]);
+    assert.equal(calls[1][0], 'send_p2p_chat_message');
+    assert.equal(calls[1][1].messageType, 'file');
+    assert.deepEqual(JSON.parse(calls[1][1].content), attachment);
+    assert.equal(calls[1][1].imageData, null);
+    assert.equal(calls[1][1].recipientId, 'remote');
+    assert.equal(calls[1][1].messageId, 'image-large');
+  } finally { await f.close(); }
+});
+
+test('failed optimization preparation does not send or display a broken image', async () => {
+  const f = setup();
+  try {
+    globalThis.chatFixture.invoke = async command => { assert.equal(command, 'prepare_chat_image'); throw new Error('cache unavailable'); };
+    await assert.rejects(chat.sendImageMessage('data:image/png;base64,iVBORw0KGgo=', '[图片]', 'image-fail', undefined, () => assert.fail('must not display')), /cache unavailable/);
+  } finally { await f.close(); }
+});
+
+test('zero delivery reports failure for both inline and attachment images', async () => {
+  const f = setup();
+  try {
+    for (const attachment of [null, { id: 'att-image-large-1234', name: 'image.png', mime: 'image/png', size: 3000000 }]) {
+      globalThis.chatFixture.invoke = async command => command === 'prepare_chat_image'
+        ? { imageDataUrl: 'data:image/gif;base64,R0lGODlh', attachment }
+        : { total: 1, delivered: 0 };
+      await assert.rejects(chat.sendImageMessage('data:image/png;base64,iVBORw0KGgo=', '[图片]', 'image-failed'), /未送达/);
+    }
+  } finally { await f.close(); }
+});
+
+test('voice bytes finishing after a lobby switch cannot be sent to the new lobby', async () => {
+  const f = setup();
+  try {
+    let complete;
+    const blob = { type: 'audio/ogg', arrayBuffer: () => new Promise(resolve => { complete = resolve; }) };
+    globalThis.chatFixture.invoke = async () => assert.fail('old recording must not send');
+    const pending = chat.sendVoiceMessage(blob, 1, 'old-voice');
+    chat.reset(); complete(new ArrayBuffer(4));
+    await assert.rejects(pending, /聊天会话已变化/);
+  } finally { await f.close(); }
+});
+
+test('switching lobby during compression cancels the old image before sending', async () => {
+  const f = setup();
+  try {
+    let complete;
+    globalThis.chatFixture.invoke = async command => {
+      assert.equal(command, 'prepare_chat_image');
+      return new Promise(resolve => { complete = resolve; });
+    };
+    const pending = chat.sendImageMessage('data:image/png;base64,iVBORw0KGgo=', '[图片]', 'old-image', undefined, () => assert.fail('must not display old image'));
+    chat.reset();
+    complete({ imageDataUrl: 'data:image/gif;base64,R0lGODlh', attachment: null });
+    await assert.rejects(pending, /聊天会话已变化/);
+  } finally { await f.close(); }
+});
+
+test('built-in emoji uses text transport without GIF bytes for public and private chat', async () => {
+  const f = setup();
+  try {
+    const content = encodeBuiltinEmoji('builtin-a_B-9');
+    for (const recipientId of [undefined, 'remote']) {
+      globalThis.chatFixture.invoke = async (command, args) => {
+        assert.equal(command, 'send_p2p_chat_message');
+        assert.equal(args.messageType, 'text');
+        assert.equal(args.content, content);
+        assert.equal(args.imageData, null);
+        assert.equal(args.recipientId, recipientId ?? null);
+        return { delivered: 1, total: 1 };
+      };
+      assert.deepEqual(await chat.sendTextMessage(content, 'emoji-message', recipientId), { delivered: 1, total: 1 });
+    }
+    globalThis.chatFixture.invoke = async () => [{ ...message('incoming-emoji'), content }];
+    await chat.reconcileHistory();
+    assert.equal(decodeBuiltinEmoji(f.received[0].content), 'builtin-a_B-9');
+    assert.equal(f.received[0].type, 'text');
+  } finally { await f.close(); }
+});
 const message = id => ({ id, player_id: 'remote', player_name: 'Phone', message_type: 'text', content: 'hello', timestamp: 100 });
 
 function setup() {

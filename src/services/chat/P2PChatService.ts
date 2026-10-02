@@ -569,10 +569,14 @@ class P2PChatService {
   }
 
   async sendVoiceMessage(blob: Blob, duration: number, messageId: string, recipientId?: string) {
+    const sessionPlayer = this.currentPlayerId;
+    const sessionToken = this.chatToken;
+    const data = Array.from(new Uint8Array(await blob.arrayBuffer()));
+    if (!sessionPlayer || this.currentPlayerId !== sessionPlayer || this.chatToken !== sessionToken) throw new Error('聊天会话已变化，请重新发送语音');
     return invoke<{ delivered: number; total: number }>('send_p2p_chat_message', {
       playerId: this.currentPlayerId, playerName: '', messageType: 'voice',
       content: JSON.stringify({ mime: blob.type, duration }),
-      imageData: Array.from(new Uint8Array(await blob.arrayBuffer())),
+      imageData: data,
       messageId, recipientId: recipientId || null, peerIps: this.peerIps,
     });
   }
@@ -591,19 +595,38 @@ class P2PChatService {
    * 发送图片消息（Base64格式）
    * 【优化】使用更高效的数据转换方式
    */
-  async sendImageMessage(imageDataUrl: string, content = '[图片]', messageId?: string, recipientId?: string): Promise<void> {
+  async sendImageMessage(imageDataUrl: string, content = '[图片]', messageId?: string, recipientId?: string,
+    onPrepared?: (image: { imageData?: string; attachment?: ChatAttachment }) => void): Promise<void> {
     if (!this.currentPlayerId) {
       throw new Error('未初始化：缺少玩家ID');
     }
 
-    const safeImageDataUrl = sanitizeImageDataUrl(imageDataUrl);
+    const sessionPlayer = this.currentPlayerId;
+    const sessionToken = this.chatToken;
+    if (imageDataUrl.length > Math.ceil(64 * 1024 * 1024 / 3) * 4 + 64) throw new Error('图片超过 64 MiB');
+    const source = /^data:image\/(?:png|jpeg|gif|webp);base64,([A-Za-z0-9+/]*={0,2})$/.exec(imageDataUrl);
     const safeContent = sanitizeUntrustedText(content, 256).trim() || '[图片]';
     const safeMessageId = messageId ? sanitizeIdentifier(messageId) : undefined;
-    if (!safeImageDataUrl) throw new Error('图片数据格式无效');
+    if (!source || source[1].length > Math.ceil(64 * 1024 * 1024 / 3) * 4) throw new Error('图片数据格式无效或超过 64 MiB');
     if (messageId && !safeMessageId) throw new Error('消息ID无效');
 
     try {
       // 从Data URL中提取Base64数据
+      const prepared = await invoke<{ imageDataUrl: string | null; attachment: ChatAttachment | null }>('prepare_chat_image', {
+        imageData: source[1], recipientId: recipientId || null,
+      });
+      if (this.currentPlayerId !== sessionPlayer || this.chatToken !== sessionToken) throw new Error('聊天会话已变化，请重新发送图片');
+      if (prepared.attachment) {
+        const attachment = parseChatAttachment(prepared.attachment);
+        if (!attachment) throw new Error('图片附件无效');
+        onPrepared?.({ attachment });
+        const receipt = await this.sendFileMessage(attachment, messageId || `msg-${this.currentPlayerId}-${Date.now()}`, recipientId);
+        if (receipt.total > 0 && receipt.delivered === 0) throw new Error('图片未送达，请检查连接后重试');
+        return;
+      }
+      const safeImageDataUrl = sanitizeImageDataUrl(prepared.imageDataUrl);
+      if (!safeImageDataUrl) throw new Error('优化后的图片无效');
+      onPrepared?.({ imageData: safeImageDataUrl });
       const base64Data = safeImageDataUrl.split(',')[1];
       
       // 【优化】使用Uint8Array直接转换，避免中间字符串
@@ -624,7 +647,7 @@ class P2PChatService {
 
       const startTime = performance.now();
       
-      await invoke('send_p2p_chat_message', {
+      const receipt = await invoke<{ delivered: number; total: number }>('send_p2p_chat_message', {
         playerId: this.currentPlayerId,
         playerName: '', // 后端会自动填充
         content: safeContent,
@@ -634,6 +657,7 @@ class P2PChatService {
         peerIps: this.peerIps,
         recipientId: recipientId || null,
       });
+      if (receipt.total > 0 && receipt.delivered === 0) throw new Error('图片未送达，请检查连接后重试');
       
       const elapsed = performance.now() - startTime;
       console.log(`✅ [P2PChatService] 图片消息已发送 (耗时: ${elapsed.toFixed(2)}ms, 大小: ${(bytes.length / 1024).toFixed(2)}KB)`);

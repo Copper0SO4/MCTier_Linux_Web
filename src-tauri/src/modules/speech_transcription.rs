@@ -5,7 +5,7 @@ use std::{
     io::{Read, Write},
     path::Path,
 };
-use tauri::{ipc::Channel, Manager};
+use tauri::ipc::Channel;
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -162,15 +162,13 @@ pub fn decode_pcm(wav: &[u8]) -> Result<Vec<f32>, String> {
 
 pub async fn transcribe(
     wav: Vec<u8>,
-    app: tauri::AppHandle,
+    _app: tauri::AppHandle,
     progress: Channel<SpeechProgress>,
 ) -> Result<String, String> {
     let guard = RECOGNITION
         .try_lock()
         .map_err(|_| "另一条语音正在识别，请稍后重试")?;
-    let directory = app
-        .path()
-        .app_cache_dir()
+    let directory = crate::modules::app_paths::data_root()
         .map_err(|e| e.to_string())?
         .join("speech-models");
     let result = tokio::task::spawn_blocking(move || {

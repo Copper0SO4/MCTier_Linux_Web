@@ -5,11 +5,13 @@
 This file documents the third-party components distributed with MCTier, together with
 their licenses, upstream sources, versions and modification status.
 
-最后更新 / Last updated: 2026-09-27（对应 MCTier 3.7.0）
+最后更新 / Last updated: 2026-09-29（对应 MCTier 3.8.0）
 
 ---
 
 ## 1. 组件总览 / Component Summary
+
+图片发送使用两端共用的 `shared/image-optimizer`：oxipng 10.2.1、turbojpeg 1.5.1 / libjpeg-turbo、webp 0.3.1 / libwebp、weezl 0.2.1、image 0.25.9 及 libdeflate。源码版本由该目录和桌面端的 Cargo.lock 固定，均未修改上游库；完整许可证随包分发于 `licenses/image-optimizer.txt`（Android assets 中为 `image-optimizer.txt`）。This software is based in part on the work of the Independent JPEG Group.
 
 | 组件 | 来源 | 版本 | Commit | 许可证 | 是否修改 |
 | --- | --- | --- | --- | --- | --- |
@@ -410,6 +412,8 @@ Wintun / WireGuard 相关声明见 §7。
 补丁文件与二进制 SHA-256，并在发布说明中一并记录。
 
 ## 14. 本地文件预览与语音转写 / Local Preview and Transcription
+
+- `pdfjs-dist` 6.3.289 (Apache-2.0): https://github.com/mozilla/pdf.js . Used without source changes for desktop canvas PDF rendering with MCTier controls. Worker, CMaps, fonts and decoder WASM are bundled locally under `pdfjs/`, including their license files. The built-in browser PDF viewer is not used.
 
 - `@aiden0z/pptx-renderer` 1.3.0 (Apache-2.0): https://github.com/aiden0z/pptx-renderer . Used without source changes to render PPTX slide pages on desktop and Android. Embedded fonts and supported shapes retain their source appearance; complex effects may differ from PowerPoint.
 - `libarchive.js` 2.0.2 (MIT), using libarchive (BSD): https://github.com/nika-begiashvili/libarchivejs . The build inlines WASM and replaces the worker's `import.meta.url` with `self.location.href` for opaque sandbox compatibility. Only archive headers are listed; entries are not extracted.

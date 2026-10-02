@@ -24,6 +24,8 @@ async function loadService(websocket, invoke = async () => undefined) {
     plugins: [{
       name: 'tauri-core-stub',
       setup(pluginBuild) {
+        pluginBuild.onResolve({ filter: /\/screenShare\/nativeCapture$/ }, () => ({ path: 'native-capture', namespace: 'capture-stub' }));
+        pluginBuild.onLoad({ filter: /.*/, namespace: 'capture-stub' }, () => ({ contents: 'export const requestNativeScreen = (...args) => globalThis.__remoteControlCapture(...args);' }));
         pluginBuild.onResolve({ filter: /^@tauri-apps\/api\/core$/ }, () => ({ path: 'tauri-core', namespace: 'stub' }));
         pluginBuild.onLoad({ filter: /.*/, namespace: 'stub' }, () => ({
           contents: 'export const invoke = (...args) => globalThis.__remoteControlTestInvoke(...args);',
@@ -42,6 +44,7 @@ function installBrowserMocks({ capture, randomUUID = () => 'test-uuid', peerConn
   const events = [];
   const sent = [];
   const captureFn = capture || (async () => ({ getVideoTracks: () => [], getTracks: () => [] }));
+  globalThis.__remoteControlCapture = captureFn;
   Object.defineProperty(globalThis, 'WebSocket', {
     configurable: true,
     value: class MockWebSocket {},
@@ -59,7 +62,7 @@ function installBrowserMocks({ capture, randomUUID = () => 'test-uuid', peerConn
   });
   Object.defineProperty(globalThis, 'navigator', {
     configurable: true,
-    value: { mediaDevices: { getDisplayMedia: (...args) => captureFn(...args) } },
+    value: { mediaDevices: { getDisplayMedia: () => { throw new Error('Browser capture is forbidden'); } } },
   });
   Object.defineProperty(globalThis, 'crypto', {
     configurable: true,
@@ -69,7 +72,8 @@ function installBrowserMocks({ capture, randomUUID = () => 'test-uuid', peerConn
     Object.defineProperty(globalThis, 'RTCPeerConnection', {
       configurable: true,
       value: class MockPeerConnection {
-        constructor() {
+        constructor(config) {
+          this.config = config;
           this.connectionState = 'new';
           this.signalingState = 'stable';
           this.remoteDescription = null;
@@ -211,6 +215,107 @@ test('old PC callbacks cannot stop or signal a second session', async () => {
   assert.equal(remoteControlService.getRole(), 'controller');
   assert.equal(mocks.sent.length, sentBeforeStaleCallbacks);
   assert.equal(mocks.sent.at(-1).sessionId, secondSession);
+  remoteControlService.stopControl(false);
+});
+
+test('local ICE failure tells the peer to close the same remote-control session', async () => {
+  const peerConnections = [];
+  const mocks = installBrowserMocks({ peerConnections });
+  const { remoteControlService } = await loadService(mocks.websocket);
+  remoteControlService.initialize('local', 'Local', mocks.websocket);
+  remoteControlService.requestControl('peer', 'Peer');
+  const sessionId = mocks.sent.at(-1).sessionId;
+  await remoteControlService.handleAccept(sessionId, 'peer', 'local');
+  peerConnections[0].connectionState = 'failed';
+  peerConnections[0].onconnectionstatechange();
+  assert.equal(remoteControlService.getRole(), 'idle');
+  assert.deepEqual(mocks.sent.at(-1), {
+    type: 'remote-control-stop', from: 'local', to: 'peer', sessionId,
+  });
+  assert.equal(mocks.events.at(-1).type, 'rc-ended');
+});
+
+test('remote control discovers the EasyTier ICE route before creating a peer connection', async () => {
+  const peerConnections = [];
+  const calls = [];
+  const mocks = installBrowserMocks({ peerConnections });
+  const { remoteControlService } = await loadService(mocks.websocket, async (command) => {
+    calls.push(command);
+    return command === 'voice_ice_server' ? 'stun:10.42.0.3:45678' : undefined;
+  });
+  remoteControlService.initialize('local', 'Local', mocks.websocket);
+  remoteControlService.requestControl('peer', 'Peer');
+  await remoteControlService.handleAccept(mocks.sent.at(-1).sessionId, 'peer', 'local');
+  assert.ok(calls.includes('voice_ice_server'));
+  assert.deepEqual(peerConnections[0].config.iceServers, [{ urls: 'stun:10.42.0.3:45678' }]);
+  remoteControlService.stopControl(false);
+});
+
+test('a connected control channel without a video track still times out on both peers', async () => {
+  const peerConnections = [];
+  const mocks = installBrowserMocks({ peerConnections });
+  let connectionTimeout;
+  window.setTimeout = (callback, delay) => {
+    if (delay === 30000) connectionTimeout = callback;
+    return setTimeout(() => {}, 100000);
+  };
+  const { remoteControlService } = await loadService(mocks.websocket);
+  remoteControlService.initialize('local', 'Local', mocks.websocket);
+  remoteControlService.requestControl('peer', 'Peer');
+  const sessionId = mocks.sent.at(-1).sessionId;
+  await remoteControlService.handleAccept(sessionId, 'peer', 'local');
+  peerConnections[0].connectionState = 'connected';
+  peerConnections[0].onconnectionstatechange();
+  connectionTimeout();
+  assert.equal(remoteControlService.getRole(), 'idle');
+  assert.deepEqual(mocks.sent.at(-1), {
+    type: 'remote-control-stop', from: 'local', to: 'peer', sessionId,
+  });
+});
+
+test('a streamless video track opens the desktop viewer', async () => {
+  const peerConnections = [];
+  const mocks = installBrowserMocks({ peerConnections });
+  globalThis.MediaStream = class MockMediaStream {
+    constructor(tracks) { this.tracks = tracks; }
+  };
+  const { remoteControlService } = await loadService(mocks.websocket);
+  remoteControlService.initialize('local', 'Local', mocks.websocket);
+  remoteControlService.requestControl('peer', 'Peer');
+  await remoteControlService.handleAccept(mocks.sent.at(-1).sessionId, 'peer', 'local');
+  const track = { kind: 'video' };
+  peerConnections[0].ontrack({ track, streams: [] });
+  const streamEvent = mocks.events.find((event) => event.type === 'rc-stream');
+  assert.deepEqual(streamEvent.detail.stream.tracks, [track]);
+  remoteControlService.stopControl(false);
+});
+
+test('late EasyTier discovery cannot create a peer connection for a stopped session', async () => {
+  const peerConnections = [];
+  const uuids = ['old', 'new'];
+  const mocks = installBrowserMocks({ randomUUID: () => uuids.shift(), peerConnections });
+  let finishOldDiscovery;
+  let discoveries = 0;
+  const { remoteControlService } = await loadService(mocks.websocket, (command) => {
+    if (command !== 'voice_ice_server') return Promise.resolve();
+    discoveries += 1;
+    if (discoveries === 1) return new Promise((resolve) => { finishOldDiscovery = resolve; });
+    return Promise.resolve('stun:10.42.0.3:45678');
+  });
+  remoteControlService.initialize('local', 'Local', mocks.websocket);
+  remoteControlService.requestControl('peer', 'Peer');
+  const oldSessionId = mocks.sent.at(-1).sessionId;
+  const oldAccept = remoteControlService.handleAccept(oldSessionId, 'peer', 'local');
+  remoteControlService.stopControl(false);
+  remoteControlService.requestControl('peer', 'Peer');
+  const newSessionId = mocks.sent.at(-1).sessionId;
+  await remoteControlService.handleAccept(newSessionId, 'peer', 'local');
+  finishOldDiscovery('stun:10.42.0.3:45678');
+  await oldAccept;
+  assert.equal(peerConnections.length, 1);
+  assert.equal(remoteControlService.getRole(), 'controller');
+  assert.equal(mocks.sent.at(-1).sessionId, newSessionId);
+  remoteControlService.stopControl(false);
 });
 
 test('randomUUID failure leaves request state idle', async () => {

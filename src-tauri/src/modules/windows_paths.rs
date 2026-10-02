@@ -32,7 +32,13 @@ pub fn system_command(name: &str) -> PathBuf {
             && !name.contains('?'),
         "invalid Windows system path"
     );
-    system_directory().join(name)
+    let command = system_directory().join(name);
+    log::info!(
+        "system_command resolved: name={} command={}",
+        name,
+        command.display()
+    );
+    command
 }
 
 pub fn hosts_path() -> PathBuf {

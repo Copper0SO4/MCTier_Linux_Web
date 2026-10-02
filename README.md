@@ -6,7 +6,7 @@
   **虚拟局域网通用组网工具**
 
   <p>
-    <img src="https://img.shields.io/badge/version-3.7.0-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-3.8.0-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-2ea44f?style=flat-square" alt="Windows 10/11">
     <img src="https://img.shields.io/badge/Android-supported-3ddc84?style=flat-square" alt="Android">
     <img src="https://img.shields.io/badge/license-Custom-orange?style=flat-square" alt="License">
@@ -130,7 +130,7 @@ MCTier 基于 EasyTier 与 WebRTC，用来把不同网络环境下的设备组�
 - **跨端加入大厅**：手机和电脑可加入同一个大厅，二维码邀请更方便。
 - **公开大厅广场**：房主可把大厅公开到广场，陌生人也能在广场看到并一键加入一起玩。
 - **自定义节点与虚拟域名**：支持添加自定义 EasyTier 节点，并为虚拟网络配置自定义域名。
-- **内置 EasyTier 节点**：默认使用海波美国节点 `udp://us01.225284.xyz:11010`，也可切换海波中国大陆或唯爱厦门节点；客户端会记住上次选择。
+- **内置 EasyTier 节点**：按唯爱厦门、海波中国大陆、海波美国的顺序显示，默认使用唯爱厦门节点 `tcp://easytier.weiai.org.cn:11010`；客户端会记住上次选择。
 - **邀请信息同步节点**：二维码、邀请链接、最近大厅和收藏大厅会同步并恢复对应的 EasyTier 节点与信令服务器配置，避免跨节点导致组网失败。
 - **连接自动自愈**：桌面端和 Android 端均支持信令断线重连、成员状态二次确认与语音连接自动恢复，降低短暂网络波动造成的离线或听不到声音问题。
 - **连接 / 网络诊断**：聚合成员直连、中继、延迟、丢包，给出整体评分与优化建议；网络诊断还能检测虚拟网卡、防火墙、UDP 端口与安全软件拦截，并支持一键放行防火墙。
@@ -301,7 +301,7 @@ MCTier 会持续维护桌面端和手机端体验。如果它帮你完成了组�
 ### **赞助者名单（按时间排序）**
 
 | 序号 | 赞助者 | 赞助日期 | 赞助金额 |
-| --- | --- | ---: | --- |
+| :-: | :-: | :--: | :-: |
 | 1 | ＂Tyler    | 2026-05-02 11:55:19 | 1000.00  |
 | 2 | /dp长乐/dp | 2026-08-09 13:36:43 | 10.00    |
 | 3 | cutemiku | 2026-08-29 17:14:58 | 1.00 |
@@ -312,6 +312,9 @@ MCTier 会持续维护桌面端和手机端体验。如果它帮你完成了组�
 | 8 | 乐天-晨曦 | 2026-09-23 11:34:11 | 20.00 |
 | 9 | wdz | 2026-09-27 11:25:45 | 3.00 |
 | 10 | Forever | 2026-09-27 13:04:21 | 10.00 |
+| 11 | *空 | 2026-09-28 22:48:36 | 10.00 |
+| 12 | 血影 | 2026-09-29 22:16:37 | 50.00 |
+| 13 | 血影 | 2026-09-29 22:50:54 | 50.00 |
 
 ## 许可协议
 
@@ -377,7 +380,7 @@ MCTier 的通信内容（聊天、语音、文件、屏幕、远程控制）在�
 | 默认服务 | 地址 | 服务端可见的元数据 | 用途 |
 |---|---|---|---|
 | 信令服务器 | `wss://mctier.pmhs.top/signaling` | 公网 IP、连接时间、大厅名称与密码哈希用于匹配、玩家名、虚拟 IP/虚拟域名、成员数、客户端版本 | 交换 WebRTC 信令、发现同一大厅的成员 |
-| EasyTier 公共节点 | `udp://us01.225284.xyz:11010` | 公网 IP、连接时间、EasyTier 网络标识 | P2P 打洞与必要时的流量中继 |
+| EasyTier 公共节点 | 默认 `tcp://easytier.weiai.org.cn:11010`，另可选 `tcp://225284.xyz:11010`、`udp://us01.225284.xyz:11010` | 公网 IP、连接时间、EasyTier 网络标识 | P2P 打洞与必要时的流量中继 |
 | 版本检查 | `https://gitee.com/api/v5/repos/peng-minghang/mctier/tags` | 公网 IP、请求时间（由 Gitee 记录） | 获取最新版本号 |
 
 说明：

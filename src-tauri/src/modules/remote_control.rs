@@ -22,6 +22,11 @@ const REMOTE_INPUT_GRANT_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind")]
 pub enum RemoteInputEvent {
+    /// Relative game motion; never mapped to a desktop position.
+    #[serde(rename = "relative-move")]
+    RelativeMove { dx: i32, dy: i32 },
+    #[serde(rename = "relative-button")]
+    RelativeButton { button: u8, down: bool },
     /// 鼠标移动（归一化坐标）
     #[serde(rename = "move")]
     MouseMove { x: f64, y: f64 },
@@ -132,6 +137,14 @@ fn validate_remote_input_events(events: &[RemoteInputEvent]) -> Result<(), Strin
 
     let mut total_text_chars = 0usize;
     for event in events {
+        if matches!(event, RemoteInputEvent::RelativeMove { dx, dy }
+            if !(-32767..=32767).contains(dx) || !(-32767..=32767).contains(dy))
+        {
+            return Err("远程鼠标位移超出范围".to_string());
+        }
+        if matches!(event, RemoteInputEvent::RelativeButton { button, .. } if *button > 2) {
+            return Err("远程鼠标按键无效".to_string());
+        }
         let coordinates = match event {
             RemoteInputEvent::MouseMove { x, y }
             | RemoteInputEvent::MouseDown { x, y, .. }
@@ -222,6 +235,7 @@ pub fn remote_inject_input(
     }
     #[cfg(target_os = "windows")]
     {
+        if !super::native_capture::remote_capture_active() { return Err("本地屏幕采集已停止，拒绝远程输入".into()); }
         platform::inject(&events)
     }
     #[cfg(target_os = "linux")]
@@ -268,6 +282,23 @@ mod remote_input_security_tests {
         });
         assert!(!authorization.consume("rc-session", "controller-id"));
         assert!(authorization.grant.is_none());
+    }
+
+    #[test]
+    fn relative_input_is_typed_bounded_and_authorized_like_other_input() {
+        let events: Vec<RemoteInputEvent> = serde_json::from_str(r#"[
+            {"kind":"relative-move","dx":12,"dy":-9},
+            {"kind":"relative-button","button":0,"down":true}
+        ]"#).unwrap();
+        assert!(validate_remote_input_events(&events).is_ok());
+        assert!(serde_json::from_str::<RemoteInputEvent>(r#"{"kind":"relative-move","dx":1.5,"dy":0}"#).is_err());
+        assert!(validate_remote_input_events(&[RemoteInputEvent::RelativeMove { dx: i32::MAX, dy: 0 }]).is_err());
+        assert!(validate_remote_input_events(&[RemoteInputEvent::RelativeButton { button: 3, down: true }]).is_err());
+        let mut authorization = RemoteInputAuthorization::default();
+        assert!(!authorization.consume("session", "peer"));
+        authorization.authorize("session", "peer").unwrap();
+        assert!(!authorization.consume("session", "other-peer"));
+        assert!(authorization.consume("session", "peer"));
     }
 
     #[test]
@@ -399,11 +430,17 @@ mod platform {
         }
     }
 
-    pub fn inject(events: &[RemoteInputEvent]) -> Result<(), String> {
+    fn build_inputs(events: &[RemoteInputEvent]) -> Vec<INPUT> {
         let mut inputs: Vec<INPUT> = Vec::with_capacity(events.len() + 4);
 
         for ev in events {
             match ev {
+                RemoteInputEvent::RelativeMove { dx, dy } => {
+                    inputs.push(mouse_input(*dx, *dy, 0, MOUSEEVENTF_MOVE));
+                }
+                RemoteInputEvent::RelativeButton { button, down } => {
+                    inputs.push(mouse_input(0, 0, 0, button_flags(*button, *down)));
+                }
                 RemoteInputEvent::MouseMove { x, y } => {
                     let (ax, ay) = to_abs(*x, *y);
                     inputs.push(mouse_input(
@@ -494,6 +531,48 @@ mod platform {
             }
         }
 
+        inputs
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn game_motion_and_clicks_never_reposition_the_cursor() {
+            let inputs = build_inputs(&[
+                RemoteInputEvent::RelativeMove { dx: 7, dy: -4 },
+                RemoteInputEvent::RelativeButton { button: 0, down: true },
+                RemoteInputEvent::RelativeMove { dx: -2, dy: 3 },
+                RemoteInputEvent::RelativeButton { button: 0, down: false },
+            ]);
+            assert_eq!(inputs.len(), 4);
+            unsafe {
+                for input in &inputs {
+                    assert_eq!(input.r#type, INPUT_MOUSE);
+                    assert_eq!((input.Anonymous.mi.dwFlags & MOUSEEVENTF_ABSOLUTE).0, 0);
+                }
+                assert_eq!((inputs[0].Anonymous.mi.dx, inputs[0].Anonymous.mi.dy), (7, -4));
+                assert_eq!(inputs[0].Anonymous.mi.dwFlags, MOUSEEVENTF_MOVE);
+                assert_eq!(inputs[1].Anonymous.mi.dwFlags, MOUSEEVENTF_LEFTDOWN);
+                assert_eq!(inputs[3].Anonymous.mi.dwFlags, MOUSEEVENTF_LEFTUP);
+            }
+        }
+
+        #[test]
+        fn desktop_click_still_moves_to_the_requested_position_first() {
+            let inputs = build_inputs(&[RemoteInputEvent::MouseDown { button: 2, x: 0.5, y: 0.25 }]);
+            assert_eq!(inputs.len(), 2);
+            unsafe {
+                assert_eq!(inputs[0].Anonymous.mi.dwFlags, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE);
+                assert_eq!((inputs[0].Anonymous.mi.dx, inputs[0].Anonymous.mi.dy), (32768, 16384));
+                assert_eq!(inputs[1].Anonymous.mi.dwFlags, MOUSEEVENTF_RIGHTDOWN);
+            }
+        }
+    }
+
+    pub fn inject(events: &[RemoteInputEvent]) -> Result<(), String> {
+        let inputs = build_inputs(events);
         if inputs.is_empty() {
             return Ok(());
         }
@@ -1047,6 +1126,15 @@ mod linux_uinput {
         with_state(|state| {
             for event in events {
                 match event {
+                    RemoteInputEvent::RelativeMove { dx, dy } => {
+                        emit(state.mouse_fd, EV_REL, REL_X, *dx);
+                        emit(state.mouse_fd, EV_REL, REL_Y, *dy);
+                        emit_syn(state.mouse_fd);
+                    }
+                    RemoteInputEvent::RelativeButton { button, down } => {
+                        emit(state.mouse_fd, EV_KEY, button_code(*button), i32::from(*down));
+                        emit_syn(state.mouse_fd);
+                    }
                     RemoteInputEvent::MouseMove { x, y } => {
                         if state.touch_contact_active {
                             // 拖拽中：保持接触并移动，松手前不能断开

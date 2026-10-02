@@ -26,13 +26,15 @@ import './ChatRoom.css';
 const { TextArea } = Input;
 import { useHoldVoice } from '../../hooks/useHoldVoice';
 import { safeVoiceUrl, voiceDataUrl, voiceMetadata } from '../../services/chat/voiceMessage';
-import { fileToChatImageDataUrl } from '../../services/chat/imageData';
-import { addDataUrlAsEmoji, type EmojiItem } from '../../services/emoji/emojiLibrary';
+import { fileToChatImageDataUrl, fileToOutgoingImageDataUrl } from '../../services/chat/imageData';
+import { addDataUrlAsEmoji, syncBuiltinEmojiItems, type EmojiItem } from '../../services/emoji/emojiLibrary';
+import { decodeBuiltinEmoji, encodeBuiltinEmoji } from '../../services/emoji/builtinEmojiMessage';
 import { chatFileKind, formatFileSize, parseChatAttachment, previewOfficeFile, type ChatAttachment, type ChatFileKind } from '../../services/chat/fileAttachment';
 import { transcribeVoiceMessage } from '../../services/chat/voiceTranscription';
 import { showFeedback } from '../../services/ui/feedback';
 import { voiceBubbleWidth, nonEmptySheets } from '../../services/chat/mediaLayout';
 import { LocalFilePreview } from './LocalFilePreview';
+const PdfPreview = React.lazy(() => import('./PdfPreview'));
 const replyMarkerPattern = /^\[reply:([^\]]+)]\s*/;
 
 const parseReplyContent = (content: string) => {
@@ -52,6 +54,7 @@ const parseReplyContent = (content: string) => {
 };
 
 const getVisibleMessageContent = (content: string) => {
+  if (decodeBuiltinEmoji(content)) return tl('[内置表情]', '[Built-in emoji]');
   const parsed = parseReplyContent(content);
   return parsed ? `> ${parsed.quoteLine}\n${parsed.body}` : content;
 };
@@ -215,6 +218,17 @@ const FileDocumentViewer: React.FC<{ kind: ChatFileKind; sections: string[] }> =
 };
 
 export const ChatRoom: React.FC = () => {
+  const [builtinEmojis, setBuiltinEmojis] = useState<Map<string, EmojiItem>>(new Map());
+  const [builtinEmojiStatus, setBuiltinEmojiStatus] = useState<'loading' | 'ready' | 'error'>('loading');
+  const loadBuiltinEmojis = useCallback(async () => {
+    setBuiltinEmojiStatus('loading');
+    try {
+      const items = await syncBuiltinEmojiItems();
+      setBuiltinEmojis(new Map(items.map(item => [item.id, item])));
+      setBuiltinEmojiStatus('ready');
+    } catch { setBuiltinEmojiStatus('error'); }
+  }, []);
+  useEffect(() => { void loadBuiltinEmojis(); }, [loadBuiltinEmojis]);
   useTranslation();
   const { currentPlayerId, chatMessages, addChatMessage, deleteChatMessage, recallChatMessage, config } = useAppStore();
   const players = useAppStore((state) => state.players);
@@ -486,7 +500,7 @@ export const ChatRoom: React.FC = () => {
     if (!replyTo) return body;
     const summary = replyTo.type === 'voice' ? tl('[语音]', '[Voice]') : replyTo.type === 'image'
       ? tl('[图片]', '[Image]')
-      : (parseReplyContent(replyTo.content)?.body || replyTo.content).split('\n')[0].slice(0, 40);
+      : getVisibleMessageContent(parseReplyContent(replyTo.content)?.body || replyTo.content).split('\n')[0].slice(0, 40);
     return `> [reply:${encodeURIComponent(replyTo.id)}] @${replyTo.playerName} ${summary}\n${body}`;
   };
 
@@ -551,7 +565,7 @@ export const ChatRoom: React.FC = () => {
           const candidateSummary = candidate.type === 'image'
             ? tl('[图片]', '[Image]')
             : candidate.type === 'file' ? candidate.attachment?.name ?? tl('[文件]', '[File]')
-            : (parseReplyContent(candidate.content)?.body || candidate.content).split('\n')[0].slice(0, 40);
+            : getVisibleMessageContent(parseReplyContent(candidate.content)?.body || candidate.content).split('\n')[0].slice(0, 40);
           if (candidate.playerName === playerName && candidateSummary === summary) {
             targetIndex = index;
             break;
@@ -626,14 +640,23 @@ export const ChatRoom: React.FC = () => {
 
   const voice = useHoldVoice(!inputValue && !!currentPlayerId && (chatTab !== 'private' || !!privatePeerId), async (blob, duration) => {
     const recipientId = chatTab === 'private' ? privatePeerId : undefined;
+    const lobbyId = useAppStore.getState().lobby?.id;
+    const data = voiceDataUrl(Array.from(new Uint8Array(await blob.arrayBuffer())), blob.type);
+    if (useAppStore.getState().currentPlayerId !== currentPlayerId || useAppStore.getState().lobby?.id !== lobbyId) return;
     const id = createChatMessageId(currentPlayerId!);
-    const result = await p2pChatService.sendVoiceMessage(blob, duration, id, recipientId);
     addChatMessage({ id, playerId: currentPlayerId!, playerName: config.playerName || tl('我', 'Me'),
-      content: JSON.stringify({ mime: blob.type, duration }), type: 'voice', timestamp: Date.now(), recipientId,
-      imageData: voiceDataUrl(Array.from(new Uint8Array(await blob.arrayBuffer())), blob.type) });
+      content: JSON.stringify({ mime: blob.type, duration }), type: 'voice', timestamp: Date.now(), recipientId, delivery: 'sending',
+      imageData: data });
     scrollToBottom(false);
-    if (result.total > 0 && result.delivered === 0) showFeedback('warning', tl('语音未送达', 'Voice message was not delivered'));
-  }, () => showFeedback('error', tl('录音或发送失败，请检查麦克风权限', 'Recording or sending failed. Check microphone permission')), `${currentPlayerId}:${chatTab}:${privatePeerId}`);
+    try {
+      const result = await p2pChatService.sendVoiceMessage(blob, duration, id, recipientId);
+      useAppStore.setState(state => ({ chatMessages: state.chatMessages.map(m => m.id === id ? { ...m, delivery: result.total > 0 && result.delivered === 0 ? 'failed' : undefined } : m) }));
+      if (result.total > 0 && result.delivered === 0) showFeedback('warning', tl('语音未送达', 'Voice message was not delivered'));
+    } catch (error) {
+      useAppStore.setState(state => ({ chatMessages: state.chatMessages.map(m => m.id === id ? { ...m, delivery: 'failed' } : m) }));
+      throw error;
+    }
+  }, () => showFeedback('error', tl('录音或发送失败，请检查麦克风设备、系统隐私设置和网络', 'Recording or sending failed. Check the microphone, system privacy settings and network')), `${currentPlayerId}:${chatTab}:${privatePeerId}`);
 
   // @ 提及候选列表（其他玩家 + 所有人）
   const mentionCandidates: string[] = (() => {
@@ -704,9 +727,9 @@ export const ChatRoom: React.FC = () => {
 
   const sendImageDataUrl = useCallback(async (dataUrl: string, content = tl('[图片]', '[Image]')) => {
     if (!currentPlayerId || (chatTab === 'private' && !privatePeerId)) throw new Error('NO_RECIPIENT');
-    const normalizedDataUrl = isSafeImageDataUrl(dataUrl)
+    const normalizedDataUrl = dataUrl.startsWith('data:')
       ? dataUrl
-      : await fileToChatImageDataUrl(await (await fetch(dataUrl)).blob());
+      : await fileToOutgoingImageDataUrl(await (await fetch(dataUrl)).blob());
     const messageContent = buildReplyContent(content);
     const recipientId = chatTab === 'private' ? privatePeerId : undefined;
     const optimisticMessage: ChatMessage = {
@@ -718,12 +741,21 @@ export const ChatRoom: React.FC = () => {
       type: 'image',
       imageData: normalizedDataUrl,
       recipientId,
+      delivery: 'sending',
     };
     addChatMessage(optimisticMessage);
+    isAtBottomRef.current = true;
+    scrollToBottom(false);
     try {
-      await p2pChatService.sendImageMessage(normalizedDataUrl, messageContent, optimisticMessage.id, recipientId);
+      await p2pChatService.sendImageMessage(normalizedDataUrl, messageContent, optimisticMessage.id, recipientId, prepared => {
+        const ready = prepared.attachment
+          ? { ...optimisticMessage, type: 'file', content: JSON.stringify(prepared.attachment), attachment: prepared.attachment, imageData: undefined }
+          : { ...optimisticMessage, imageData: prepared.imageData };
+        useAppStore.setState(state => ({ chatMessages: state.chatMessages.map(m => m.id === optimisticMessage.id ? { ...ready, type: prepared.attachment ? 'file' : 'image' } : m) }));
+      });
+      useAppStore.setState(state => ({ chatMessages: state.chatMessages.map(m => m.id === optimisticMessage.id ? { ...m, delivery: undefined } : m) }));
     } catch (error) {
-      deleteChatMessage(optimisticMessage.id);
+      useAppStore.setState(state => ({ chatMessages: state.chatMessages.map(m => m.id === optimisticMessage.id ? { ...m, delivery: 'failed' } : m) }));
       throw error;
     }
     setReplyTo(null);
@@ -732,7 +764,7 @@ export const ChatRoom: React.FC = () => {
   }, [currentPlayerId, chatTab, privatePeerId, config.playerName, addChatMessage, deleteChatMessage, buildReplyContent, scrollToBottom]);
 
   const sendImageFile = useCallback(async (file: File) => {
-    await sendImageDataUrl(await fileToChatImageDataUrl(file));
+    await sendImageDataUrl(await fileToOutgoingImageDataUrl(file));
   }, [sendImageDataUrl]);
 
   const fetchAttachmentPath = useCallback(async (message: ChatMessage) => {
@@ -758,10 +790,12 @@ export const ChatRoom: React.FC = () => {
 
   const handleFileUpload = useCallback(async () => {
     if (isUploading || !currentPlayerId || (chatTab === 'private' && !privatePeerId)) return;
+    const sendingLobbyId = useAppStore.getState().lobby?.id;
     const recipientId = chatTab === 'private' ? privatePeerId : undefined;
     setIsUploading(true);
     try {
       const attachment = await invoke<ChatAttachment | null>('select_chat_attachment', { recipientId: recipientId ?? null });
+      if (useAppStore.getState().lobby?.id !== sendingLobbyId || useAppStore.getState().currentPlayerId !== currentPlayerId) throw new Error(tl('聊天会话已变化，请重新发送', 'The chat session changed. Please send again.'));
       const safe = parseChatAttachment(attachment);
       if (!safe) return;
       const id = createChatMessageId(currentPlayerId);
@@ -938,7 +972,26 @@ export const ChatRoom: React.FC = () => {
 
   // 处理Emoji选择
   const handleEmojiSelect = async (emoji: EmojiItem) => {
-    try { await sendImageDataUrl(emoji.dataUrl, tl('[表情]', '[Emoji]')); }
+    try {
+      if (emoji.builtin || emoji.categoryId === 'builtin') {
+        if (!currentPlayerId || (chatTab === 'private' && !privatePeerId)) throw new Error('CHAT_NOT_READY');
+        // Only the locally bundled index can authorize an ID as a built-in emoji.
+        if (!(await syncBuiltinEmojiItems()).some(item => item.id === emoji.id)) throw new Error('UNKNOWN_BUILTIN_EMOJI');
+        const content = encodeBuiltinEmoji(emoji.id);
+        const recipientId = chatTab === 'private' ? privatePeerId : undefined;
+        const id = createChatMessageId(currentPlayerId);
+        addChatMessage({ id, playerId: currentPlayerId, playerName: config.playerName || tl('我', 'Me'), content, timestamp: Date.now(), type: 'text', recipientId });
+        try {
+          const result = await p2pChatService.sendTextMessage(content, id, recipientId);
+          if (result.total > 0 && result.delivered === 0) showFeedback('warning', tl('表情可能未送达', 'The emoji may not have been delivered'));
+        } catch (error) { deleteChatMessage(id); throw error; }
+        setReplyTo(null);
+        isAtBottomRef.current = true;
+        scrollToBottom(false);
+      } else {
+        await sendImageDataUrl(emoji.dataUrl, tl('[表情]', '[Emoji]'));
+      }
+    }
     catch (error) {
       showFeedback('error', tl('表情发送失败', 'Failed to send emoji'));
       throw error;
@@ -1002,6 +1055,14 @@ export const ChatRoom: React.FC = () => {
       showFeedback('error', tl('下载图片失败', 'Failed to download image'));
       setDownloadingImageId(null);
     }
+  };
+
+  const handleDownloadBuiltinEmoji = async (emoji: EmojiItem, messageId: string) => {
+    try {
+      const response = await fetch(emoji.dataUrl);
+      if (!response.ok) throw new Error('EMOJI_READ_FAILED');
+      await handleDownloadImage(await fileToChatImageDataUrl(await response.blob()), messageId);
+    } catch { showFeedback('error', tl('保存表情失败', 'Failed to save emoji')); }
   };
 
   // 格式化时间
@@ -1114,6 +1175,7 @@ export const ChatRoom: React.FC = () => {
       </section>}
       <div 
         className="chat-messages" 
+        onPointerDownCapture={() => setShowEmojiPicker(false)}
         ref={messagesContainerRef}
         onScroll={handleScroll}
       >
@@ -1162,9 +1224,11 @@ export const ChatRoom: React.FC = () => {
         <AnimatePresence mode="popLayout">
           {displayedMessages.map((message) => {
             const isOwnMessage = message.playerId === currentPlayerId;
-            const canRecallMessage = isOwnMessage && !message.recalled && isWithinRecallWindow(message.timestamp, recallClock);
+            const canRecallMessage = isOwnMessage && !message.delivery && !message.recalled && isWithinRecallWindow(message.timestamp, recallClock);
             const showUnreadDivider = firstUnreadId && message.id === firstUnreadId;
             const imageData = isSafeImageDataUrl(message.imageData) ? message.imageData : undefined;
+            const builtinId = message.type === 'text' && !message.recalled ? decodeBuiltinEmoji(message.content) : null;
+            const builtinEmoji = builtinId ? builtinEmojis.get(builtinId) : undefined;
             
             return (
               <React.Fragment key={message.id}>
@@ -1208,9 +1272,21 @@ export const ChatRoom: React.FC = () => {
                 </span>
                 
                 <div className="message-bubble-stack">
-                <div className={`message-content${message.type === 'image' && imageData ? ' message-content-image' : ''}${message.type === 'voice' ? ' message-content-voice' : ''}${message.type === 'file' ? ' message-content-file' : ''}${message.recalled ? ' message-content-recalled' : ''}`}>
+                <div className={`message-content${(message.type === 'image' && imageData) || builtinId ? ' message-content-image' : ''}${message.type === 'voice' ? ' message-content-voice' : ''}${message.type === 'file' ? ' message-content-file' : ''}${message.recalled ? ' message-content-recalled' : ''}`}>
                   {message.recalled ? (
                     <span className="message-recalled-text message-text-body">{tl('此消息已撤回', 'This message was recalled')}</span>
+                  ) : builtinId ? (
+                    builtinEmoji ? <ChatImageBubble
+                      src={builtinEmoji.dataUrl}
+                      name={tl('内置表情', 'Built-in emoji')}
+                      onOpen={() => setPreviewImage({ src: builtinEmoji.dataUrl, name: tl('内置表情', 'Built-in emoji'), download: () => void handleDownloadBuiltinEmoji(builtinEmoji, message.id) })}
+                      onDownload={() => void handleDownloadBuiltinEmoji(builtinEmoji, message.id)}
+                      downloading={downloadingImageId === message.id}
+                      downloadedPath={downloadedImages.get(message.id)}
+                      onLoad={() => { if (isAtBottom) scrollToBottom(); }}
+                    /> : <button type="button" className="chat-visual-attachment loading" disabled={builtinEmojiStatus !== 'error'} onClick={() => void loadBuiltinEmojis()}>
+                      {builtinEmojiStatus === 'loading' ? tl('正在准备内置表情…', 'Preparing built-in emoji…') : builtinEmojiStatus === 'error' ? tl('表情准备失败，点击重试', 'Emoji preparation failed. Click to retry') : tl('此内置表情不可用，请更新应用', 'This emoji is unavailable. Please update the app')}
+                    </button>
                   ) : message.type === 'voice' && safeVoiceUrl(message.imageData) ? (
                     <div className={`voice-message-stack${isOwnMessage ? ' own' : ' other'}`}>
                       <VoiceMessageBubble src={message.imageData} own={isOwnMessage} duration={voiceMetadata(message.content)?.duration} />
@@ -1303,7 +1379,9 @@ export const ChatRoom: React.FC = () => {
                 )}
                 
                 <span className="message-time-below">
-                  {formatTime(message.timestamp)}
+                    {formatTime(message.timestamp)}
+                    {message.delivery === 'sending' && ` · ${tl('发送中…', 'Sending…')}`}
+                    {message.delivery === 'failed' && ` · ${tl('发送失败', 'Send failed')}`}
                 </span>
                 </div>
               </motion.div>
@@ -1426,7 +1504,7 @@ export const ChatRoom: React.FC = () => {
                 : filePreview.error ? <div className="file-preview-status error">{filePreview.error}</div>
                 : filePreview.kind === 'audio' ? <FileAudioBubble src={filePreview.url} file={filePreview.file} own={false} />
                 : filePreview.kind === 'video' ? <FileVideoPlayer src={filePreview.url} name={filePreview.file.name} />
-                : filePreview.kind === 'pdf' ? <iframe className="file-preview-pdf" src={filePreview.url} title={filePreview.file.name} />
+                : filePreview.kind === 'pdf' ? <React.Suspense fallback={<div className="file-preview-status">{tl('正在加载 PDF…', 'Loading PDF…')}</div>}><PdfPreview key={filePreview.file.id} url={filePreview.url} /></React.Suspense>
                 : filePreview.kind === 'slides' || filePreview.kind === 'archive' ? <LocalFilePreview key={filePreview.file.id} url={filePreview.url} name={filePreview.file.name} kind={filePreview.kind} />
                 : filePreview.sections ? <FileDocumentViewer kind={filePreview.kind} sections={filePreview.sections} />
                 : <div className="file-preview-status">{tl('此格式暂无内嵌内容视图，可通过消息右键菜单下载后使用系统应用打开。', 'This format has no embedded content view. Download it from the message menu and open it with a system app.')}</div>}
@@ -1450,7 +1528,7 @@ export const ChatRoom: React.FC = () => {
           <div className="reply-preview-bar" />
           <div className="reply-preview-body">
             <div className="reply-preview-name">{tl('\u56de\u590d ', 'Reply to ')}{replyTo.playerName}</div>
-            <div className="reply-preview-text">{replyTo.type === 'image' ? tl('[\u56fe\u7247]', '[Image]') : replyTo.type === 'file' ? replyTo.attachment?.name ?? tl('[文件]', '[File]') : replyTo.content}</div>
+            <div className="reply-preview-text">{replyTo.type === 'image' ? tl('[\u56fe\u7247]', '[Image]') : replyTo.type === 'file' ? replyTo.attachment?.name ?? tl('[文件]', '[File]') : getVisibleMessageContent(replyTo.content)}</div>
           </div>
           <button className="reply-preview-close" onClick={() => setReplyTo(null)} title={tl('取消引用', 'Cancel reply')} aria-label={tl('取消引用', 'Cancel reply')}>
             <CloseOutlined />

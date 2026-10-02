@@ -315,6 +315,10 @@
   padding: 8px 0;
 }
 
+.start-share-modal-content .modal-option {
+  position: relative;
+}
+
 .modal-option {
   display: flex;
   justify-content: space-between;

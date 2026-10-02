@@ -6,6 +6,7 @@
 
 import { VoiceChanger, type VoicePreset } from './voiceChanger';
 import { isBypassPreset, requiresOutputRebuild } from './voicePresetPolicy';
+import { captureVoiceStream } from './nvidiaNoise';
 
 const LS_KEY = 'mctier_voice_preset';
 
@@ -96,11 +97,8 @@ class VoiceChangerService {
     // 之后再取本次代次——顺序反了的话本次会被自己的 stopAudition 作废，试听永远开不起来。
     await this.stopAudition();
     const generation = ++this.auditionGeneration;
-    // 试听必须与实际发送链路一致：桌面端已取消全部降噪/回声消除/自动增益，
-    // 若这里仍开启处理，用户试听到的音色就不是对方真正听到的声音。
-    const raw = await navigator.mediaDevices.getUserMedia({
-      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
+    // Use the same native device and processing selection as calls and voice messages.
+    const raw = await captureVoiceStream();
 
     // 期间又发生了一次切换/停止，本次结果已作废，直接释放麦克风。
     if (generation !== this.auditionGeneration) {
@@ -109,7 +107,11 @@ class VoiceChangerService {
     }
 
     this.auditionMic = raw;
+    raw.getAudioTracks()[0]?.addEventListener('ended', () => {
+      if (this.auditionMic === raw) void this.stopAudition();
+    }, { once: true });
 
+    try {
     // 「原声」的发送链路已经不接变声图，试听也必须一致地直接回放原始流，
     // 否则试听到的是经过 WebAudio 往返的声音，而对方听到的是原始轨道。
     let processed = raw;
@@ -125,7 +127,13 @@ class VoiceChangerService {
     // 实时回放（不加延迟，避免输出被麦克风再次采集形成叠加回声）
     src.connect(ctx.destination);
     try { await ctx.resume(); } catch { /* ignore */ }
+    if (generation !== this.auditionGeneration) return;
     this.auditioning = true;
+    } catch (error) {
+      if (this.auditionMic === raw) await this.stopAudition();
+      else raw.getTracks().forEach(track => track.stop());
+      throw error;
+    }
   }
 
   /** 停止试听并释放麦克风/音频资源 */

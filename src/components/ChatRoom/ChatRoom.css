@@ -443,6 +443,9 @@
   width: auto;
   height: auto;
   border-radius: 8px;
+  /* 透明表情直接透出聊天背景，不添加图片底板或矩形阴影。 */
+  background: transparent;
+  box-shadow: none;
   cursor: pointer;
   object-fit: contain;
 }
@@ -1174,15 +1177,6 @@ html[data-theme='light'] .new-message-indicator .anticon {
 html[data-theme='light'] .new-message-badge {
   background: #ef4444;
   border-color: #f4f6f8;
-}
-
-/* ---------- 图片消息卡片 ---------- */
-html[data-theme='light'] .chat-image {
-  background: #eef2f5;
-}
-
-html[data-theme='light'] .message-content-image .chat-image {
-  box-shadow: 0 1px 3px rgba(24, 32, 43, 0.12);
 }
 
 /* 浅色图片操作使用实心浅底，避免透明背景与图片混色。 */

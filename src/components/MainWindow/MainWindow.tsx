@@ -8,6 +8,8 @@ import { open } from '@tauri-apps/plugin-shell';
 import { useAppStore } from '../../stores';
 import { LobbyForm } from '../LobbyForm/LobbyForm';
 import { AboutWindow } from '../AboutWindow/AboutWindow';
+import { QuarkSupportEntry } from '../QuarkSupport/QuarkSupport';
+import { OPEN_QUARK_SUPPORT } from '../QuarkSupport/QuarkStartupPrompt';
 import { SettingsWindow } from '../SettingsWindow';
 import { OnboardingWizard, isOnboardingDone } from '../OnboardingWizard/OnboardingWizard';
 import { CloseIcon } from '../icons';
@@ -235,6 +237,7 @@ export const MainWindow: React.FC = () => {
     <div className={`main-window ${!enableGpuRendering ? 'gpu-rendering-disabled' : ''}`}>
       {/* 拖拽区域 - 只在顶部 */}
       <div className="main-window-drag-area" data-tauri-drag-region>
+        <QuarkSupportEntry onClick={() => window.dispatchEvent(new Event(OPEN_QUARK_SUPPORT))} />
         <div className="main-window-controls">
           <button className="main-window-control-btn" onClick={handleMinimizeToTray} title={tl('最小化到系统托盘', 'Minimize to system tray')}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -354,6 +357,7 @@ export const MainWindow: React.FC = () => {
           {tl('按 ESC 可快速返回上一页', 'Press ESC to go back')}
         </motion.div>
       </motion.div>
+
 
       {/* 新手引导向导 */}
       <OnboardingWizard visible={showOnboarding} onClose={() => setShowOnboarding(false)} />

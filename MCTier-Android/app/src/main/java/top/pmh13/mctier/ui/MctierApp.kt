@@ -1,5 +1,8 @@
 package top.pmh13.mctier.ui
 
+import top.pmh13.mctier.network.ScreenShareQuality
+import top.pmh13.mctier.data.BuiltinEmojiMessage
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.content.Intent
 import android.net.Uri
 import android.media.MediaPlayer
@@ -355,6 +358,7 @@ fun MctierApp(repository: MctierRepository, onConsentGranted: () -> Unit = {}) {
     val state by repository.state.collectAsState()
     val consentCtx = androidx.compose.ui.platform.LocalContext.current
     var agreed by remember { mutableStateOf(ConsentStore.isAgreed(consentCtx)) }
+    var showQuarkSupport by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     // An external invite launches the activity and leaves a pending join form. Do not
     // connect to the separately saved auto-join lobby in the same startup pass.
     LaunchedEffect(Unit) {
@@ -428,7 +432,7 @@ fun MctierApp(repository: MctierRepository, onConsentGranted: () -> Unit = {}) {
                 },
                 label = "mctier-root",
             ) { inLobby ->
-                if (inLobby) LobbyScreen(state, repository) else HomeScreen(state, repository)
+                if (inLobby) LobbyScreen(state, repository) else HomeScreen(state, repository, onQuarkSupport = { showQuarkSupport = true })
             }
             if (state.showOnboarding) OnboardingDialog { repository.dismissOnboarding() }
             // 启动加载动画（淡出）
@@ -437,6 +441,12 @@ fun MctierApp(repository: MctierRepository, onConsentGranted: () -> Unit = {}) {
                 enter = fadeIn(),
                 exit = fadeOut(),
             ) { SplashScreen() }
+            val quarkBlocked = state.versionError != null || state.updateAvailable != null || state.showOnboarding
+            QuarkStartupPrompt(
+                blocked = quarkBlocked || showQuarkSupport,
+                onSupport = { showQuarkSupport = true },
+            )
+            if (showQuarkSupport && !quarkBlocked) QuarkSupportDialog { showQuarkSupport = false }
             // 版本过低（信令服务器要求）：强制更新，阻断使用
             state.versionError?.let { VersionErrorDialog(it, repository) }
             // Gitee 检测到新版本：可选更新提示（无强制更新弹窗时才显示）
@@ -549,10 +559,12 @@ private fun RcToolBtn(icon: ImageVector, desc: String, active: Boolean = false, 
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
-private fun RemoteControlControllerView(repository: MctierRepository, peerName: String) {
+internal fun RemoteControlControllerView(repository: MctierRepository, peerName: String) {
     val controller = repository.remoteControl
     val ctx = LocalContext.current
     var track by remember { mutableStateOf<VideoTrack?>(null) }
+    val boundTrack = remember(controller) { arrayOfNulls<VideoTrack>(1) }
+    var frameRendered by remember(controller) { mutableStateOf(false) }
     var frameW by remember { mutableStateOf(0) }
     var frameH by remember { mutableStateOf(0) }
     var viewW by remember { mutableStateOf(1) }
@@ -682,7 +694,7 @@ private fun RemoteControlControllerView(repository: MctierRepository, peerName: 
                         factory = { c ->
                             SurfaceViewRenderer(c).apply {
                                 init(controller.eglBase.eglBaseContext, object : RendererCommon.RendererEvents {
-                                    override fun onFirstFrameRendered() {}
+                                    override fun onFirstFrameRendered() { mainHandler.post { frameRendered = true } }
                                     override fun onFrameResolutionChanged(w: Int, h: Int, rotation: Int) {
                                         mainHandler.post {
                                             if (rotation % 180 == 0) { frameW = w; frameH = h } else { frameW = h; frameH = w }
@@ -691,14 +703,27 @@ private fun RemoteControlControllerView(repository: MctierRepository, peerName: 
                                 })
                                 setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
                                 setEnableHardwareScaler(true)
-                                track?.let { runCatching { it.addSink(this) } }
                             }
                         },
-                        update = { view -> track?.let { runCatching { it.addSink(view) } } },
+                        update = { view ->
+                            if (boundTrack[0] !== track) {
+                                boundTrack[0]?.let { it.removeSink(view) }
+                                boundTrack[0] = track
+                                track?.addSink(view)
+                            }
+                        },
+                        // The AndroidView owns the EGL renderer. A DisposableEffect
+                        // keyed by mutable renderer state can release the newly
+                        // created renderer during its first recomposition.
+                        onRelease = { view ->
+                            boundTrack[0]?.let { it.removeSink(view) }
+                            boundTrack[0] = null
+                            view.release()
+                        },
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
-                if (track == null) {
+                if (!frameRendered) {
                     Text(L("等待对方接受并共享屏幕…", "Waiting for the other side to accept and share..."), color = TextPrimary.copy(alpha = 0.5f))
                 }
             }
@@ -864,7 +889,7 @@ private fun OnboardStep(num: String, text: String) {
 
 // ============================ 首页 ============================
 @Composable
-private fun HomeScreen(state: MctierUiState, repository: MctierRepository) {
+private fun HomeScreen(state: MctierUiState, repository: MctierRepository, onQuarkSupport: () -> Unit) {
     var lobbyName by remember { mutableStateOf(state.settings.autoLobbyName) }
     var password by remember { mutableStateOf(state.settings.autoLobbyPassword) }
     var manualPassword by remember { mutableStateOf(false) }
@@ -993,8 +1018,9 @@ private fun HomeScreen(state: MctierUiState, repository: MctierRepository) {
                     Spacer(Modifier.height(12.dp))
                     // 创建 / 加入 模式切换
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ToggleChip(L("创建大厅", "Create"), mode == "create", Icons.Rounded.Add, Modifier.weight(1f)) { mode = "create"; joinNodeOverride = null; joinSignalingOverride = null }
-                        ToggleChip(L("加入大厅", "Join"), mode == "join", Icons.AutoMirrored.Rounded.Login, Modifier.weight(1f)) { mode = "join" }
+                        HomeLobbyModeButton(L("创建大厅", "Create"), mode == "create", Icons.Rounded.Add, Modifier.weight(1f)) { mode = "create"; joinNodeOverride = null; joinSignalingOverride = null }
+                        QuarkSupportEntry(onQuarkSupport)
+                        HomeLobbyModeButton(L("加入大厅", "Join"), mode == "join", Icons.AutoMirrored.Rounded.Login, Modifier.weight(1f)) { mode = "join" }
                     }
                     Spacer(Modifier.height(14.dp))
                     // 操作按钮行：常用 / 最近 / 广场 / 随机或识别（对齐桌面端 lobby-action-bar）
@@ -2529,6 +2555,7 @@ private fun parseChatReply(content: String): ParsedChatReply? {
 }
 
 private fun visibleChatContent(content: String): String {
+    if (BuiltinEmojiMessage.decode(content) != null) return L("[内置表情]", "[Built-in emoji]")
     val parsed = parseChatReply(content) ?: return content
     return "> ${parsed.quoteLine}\n${parsed.body}"
 }
@@ -2573,7 +2600,7 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
     var privateMode by remember { mutableStateOf(false) }
     var privatePeerId by remember { mutableStateOf<String?>(null) }
     val conversation = if (!privateMode) "lobby" else privatePeerId?.let { "private:$it" }
-    val voiceRecorder = remember { top.pmh13.mctier.audio.VoiceMessageRecorder() }
+    val voiceRecorder = remember { top.pmh13.mctier.audio.VoiceMessageRecorder(context.applicationContext) }
     var recordingVoice by remember { mutableStateOf(false) }
     var cancelVoice by remember { mutableStateOf(false) }
     var voiceSeconds by remember { mutableStateOf(0) }
@@ -2598,7 +2625,7 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
         recordingVoice = false
         cancelVoice = false
         voiceSeconds = 0
-        if (bytes != null) repository.sendVoiceChat(bytes, seconds, if (privateMode) privatePeerId else null)
+        if (bytes != null) repository.sendVoiceChat(bytes.bytes, seconds, if (privateMode) privatePeerId else null, bytes.mime)
         else if (!cancel) android.widget.Toast.makeText(context, L("录音过短或未采集到声音，请按住后再说话", "Recording too short or unavailable. Hold before speaking"), android.widget.Toast.LENGTH_SHORT).show()
     }
     DisposableEffect(conversation) { onDispose { voiceHoldJob?.cancel(); finishVoice(true) } }
@@ -2672,7 +2699,7 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
         if (text.isEmpty()) return
         val r = replyTo
         val content = if (r != null) {
-            val quoted = if (r.type == "image") L("[图片]", "[Image]") else if (r.type == "file") r.attachment?.name ?: L("[文件]", "[File]") else (parseChatReply(r.content)?.body ?: r.content).lineSequence().firstOrNull()?.take(40).orEmpty()
+            val quoted = if (r.type == "image") L("[图片]", "[Image]") else if (r.type == "file") r.attachment?.name ?: L("[文件]", "[File]") else visibleChatContent(parseChatReply(r.content)?.body ?: r.content).lineSequence().firstOrNull()?.take(40).orEmpty()
             "> [reply:${Uri.encode(r.id)}] @${r.playerName} $quoted\n$text"
         } else text
         if (privateMode && privatePeerId == null) return
@@ -2741,7 +2768,7 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
                 for (index in sourceIndex - 1 downTo 0) {
                     val candidate = visibleMessages[index]
                     val candidateSummary = if (candidate.type == "image") L("[图片]", "[Image]")
-                    else (parseChatReply(candidate.content)?.body ?: candidate.content).lineSequence().firstOrNull()?.take(40).orEmpty()
+                    else visibleChatContent(parseChatReply(candidate.content)?.body ?: candidate.content).lineSequence().firstOrNull()?.take(40).orEmpty()
                     if (candidate.playerName == playerName && candidateSummary == summary) {
                         targetIndex = index
                         break
@@ -2889,7 +2916,15 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
                 }
             }
         }
-        if (!privateMode || privatePeerId != null) Box(Modifier.weight(1f).onSizeChanged { messageViewportHeight = it.height }) {
+        if (!privateMode || privatePeerId != null) Box(Modifier.weight(1f).onSizeChanged { messageViewportHeight = it.height }
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                        if (event.changes.any { it.pressed && !it.previousPressed }) showEmoji = false
+                    }
+                }
+            }) {
         LazyColumn(Modifier.fillMaxSize(), state = listState, verticalArrangement = Arrangement.spacedBy(8.dp)) {
             items(visibleMessages, key = { it.id }) {
                 ChatBubble(
@@ -2948,7 +2983,7 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
                         Text(L("回复 ${r.playerName}", "Reply to ${r.playerName}"), fontSize = 11.sp, color = AccentText)
-                        Text(if (r.type == "image") L("[图片]", "[Image]") else r.content, fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(if (r.type == "image") L("[图片]", "[Image]") else visibleChatContent(r.content), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     Icon(Icons.Rounded.Close, L("取消引用", "Cancel quote"), tint = TextPrimary.copy(alpha = 0.6f), modifier = Modifier.size(18.dp).clickable { replyTo = null })
                 }
@@ -3903,6 +3938,7 @@ private fun ChatBubble(
     onJumpToQuote: (ChatMessage) -> Unit = {},
     privatePeerId: String? = null,
 ) {
+    val builtinId = if (message.type == "text" && !message.recalled) BuiltinEmojiMessage.decode(message.content) else null
     // 名字与时间戳与气泡左/右边缘对齐：需避开头像占用的宽度（头像 34dp + 间距 8dp = 42dp，再留 4dp 视觉内缩）
     val labelStart = if (message.mine) 4.dp else 46.dp
     val labelEnd = if (message.mine) 46.dp else 4.dp
@@ -3914,7 +3950,7 @@ private fun ChatBubble(
     var voiceTranscript by remember(message.id) { mutableStateOf<String?>(null) }
     var voiceTranscriptError by remember(message.id) { mutableStateOf<String?>(null) }
     var recallClock by remember(message.id) { mutableStateOf(System.currentTimeMillis()) }
-    val canRecall = message.mine && !message.recalled && recallClock - message.timestamp <= ChatRecallWindowMs
+    val canRecall = message.mine && message.delivery == null && !message.recalled && recallClock - message.timestamp <= ChatRecallWindowMs
     fun openActions() {
         recallClock = System.currentTimeMillis()
         showActions = true
@@ -3963,7 +3999,7 @@ private fun ChatBubble(
             horizontalArrangement = if (message.mine) Arrangement.End else Arrangement.Start,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            val visualMessage = !message.recalled && (message.type == "image" || (message.type == "file" && message.attachment?.let { chatAttachmentKind(it) in setOf("image", "video") } == true))
+            val visualMessage = !message.recalled && (builtinId != null || message.type == "image" || (message.type == "file" && message.attachment?.let { chatAttachmentKind(it) in setOf("image", "video") } == true))
             if (!message.mine) { ChatAvatar(message, avatarData); Spacer(Modifier.width(6.dp)); if (!visualMessage) BubbleTail(mine = false) }
             Box(
                 modifier = Modifier
@@ -3982,6 +4018,23 @@ private fun ChatBubble(
                             fontWeight = FontWeight.SemiBold,
                             modifier = Modifier.graphicsLayer { alpha = highlightAlpha.value },
                         )
+                    }
+                } else if (builtinId != null) {
+                    val emojiState by repository.state.collectAsStateWithLifecycle()
+                    val emojiFile = repository.builtinEmojiFile(builtinId)
+                    if (emojiFile != null) {
+                        ChatImageBubble(
+                            model = emojiFile, description = L("内置表情", "Built-in emoji"), onLongClick = ::openActions, alpha = highlightAlpha.value,
+                            onDownload = { repository.saveBuiltinEmojiToGallery(builtinId) { ok -> android.widget.Toast.makeText(context, if (ok) L("已保存到相册 Pictures/MCTier", "Saved to Pictures/MCTier") else L("保存失败", "Save failed"), android.widget.Toast.LENGTH_SHORT).show() } },
+                        )
+                    } else {
+                        TextButton(onClick = { repository.retryBuiltinEmojiSync() }, enabled = emojiState.emojiBuiltinError != null) {
+                            Text(when {
+                                emojiState.emojiBuiltinSyncing -> L("正在准备内置表情…", "Preparing built-in emoji…")
+                                emojiState.emojiBuiltinError != null -> L("表情准备失败，点击重试", "Emoji preparation failed. Tap to retry")
+                                else -> L("此内置表情不可用，请更新应用", "This emoji is unavailable. Please update the app")
+                            }, color = TextPrimary)
+                        }
                     }
                 } else if (message.type == "voice" && message.imageBase64 != null) {
                     Column(
@@ -4075,7 +4128,7 @@ private fun ChatBubble(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(formatChatClock(message.timestamp), fontSize = 10.sp, color = TextPrimary.copy(alpha = 0.32f))
+            Text(formatChatClock(message.timestamp) + when (message.delivery) { "sending" -> L(" · 发送中…", " · Sending…"); "failed" -> L(" · 发送失败", " · Send failed"); else -> "" }, fontSize = 10.sp, color = TextPrimary.copy(alpha = 0.32f))
         }
         DropdownMenu(expanded = showActions, onDismissRequest = { showActions = false }) {
             if (!message.recalled) {
@@ -4404,10 +4457,30 @@ private fun formatSize(size: Long): String = when {
 
 // ============================ 屏幕共享 ============================
 @Composable
+private fun ScreenQualityChoice(label: String, selected: Int, options: List<Int>, optionLabel: (Int) -> String, onSelect: (Int) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = TextPrimary, modifier = Modifier.weight(1f))
+        Box {
+            TextButton(onClick = { expanded = true }) {
+                Text(optionLabel(selected), color = GrassGreen)
+                Icon(Icons.Rounded.ArrowDropDown, null, tint = GrassGreen)
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, containerColor = PanelHigh) {
+                options.forEach { option ->
+                    DropdownMenuItem(text = { Text(optionLabel(option), color = TextPrimary) }, onClick = { onSelect(option); expanded = false })
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ScreenTab(state: MctierUiState, repository: MctierRepository) {
     val context = LocalContext.current
     var requirePassword by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf("") }
+    var quality by remember { mutableStateOf(repository.screenShareQuality()) }
     val viewingId = state.viewingShareId
     if (viewingId != null) {
         ScreenViewer(state, repository, viewingId)
@@ -4416,7 +4489,7 @@ private fun ScreenTab(state: MctierUiState, repository: MctierRepository) {
     val iAmSharing = state.screenShares.any { it.playerId == state.playerId }
     val mpLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
-            repository.startScreenCapture(result.data!!, requirePassword, password)
+            repository.startScreenCapture(result.data!!, requirePassword, password, quality)
         }
     }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -4438,6 +4511,17 @@ private fun ScreenTab(state: MctierUiState, repository: MctierRepository) {
                         colors = ButtonDefaults.buttonColors(containerColor = DangerRed),
                     ) { Text(L("停止共享", "Stop Sharing")) }
                 } else {
+                    Text(L("共享画质", "Share quality"), fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                    Spacer(Modifier.height(6.dp))
+                    ScreenQualityChoice(L("分辨率上限", "Resolution limit"), quality.resolution, ScreenShareQuality.resolutions,
+                        { if (it == 1440) "2K (1440p)" else if (it == 2160) "4K (2160p)" else "${it}p" }) { quality = quality.copy(resolution = it) }
+                    ScreenQualityChoice(L("帧率上限", "Frame rate limit"), quality.frameRate, ScreenShareQuality.frameRates,
+                        { "$it FPS" }) { quality = quality.copy(frameRate = it) }
+                    ScreenQualityChoice(L("码率上限", "Bitrate limit"), quality.bitrateMbps, ScreenShareQuality.bitrates,
+                        { if (it == 0) L("自动推荐", "Recommended") else "$it Mbps" }) { quality = quality.copy(bitrateMbps = it) }
+                    Text(L("当前码率上限 ${quality.maxBitrate() / 1_000_000} Mbps。低配或低带宽建议 720p/30 FPS。实际画质和帧率受屏幕、编码器与网络限制，不会放大原画面。", "Bitrate limit: ${quality.maxBitrate() / 1_000_000} Mbps. Use 720p/30 FPS on slower devices or networks. Actual quality depends on the display, encoder and network; the source is never upscaled."),
+                        fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.65f))
+                    Spacer(Modifier.height(10.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(L("需要观看密码", "Viewing password required"), color = TextPrimary.copy(alpha = 0.85f), modifier = Modifier.weight(1f))
                         Switch(requirePassword, { requirePassword = it }, colors = switchColors())
@@ -5276,6 +5360,7 @@ private fun HudSettingsSection(settings: UserSettings, onChange: (UserSettings) 
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun DanmakuSettingsSection(settings: UserSettings, onChange: (UserSettings) -> Unit) {
     val ctx = LocalContext.current
     var hasPerm by remember { mutableStateOf(DanmakuOverlay.hasPermission(ctx)) }
@@ -5344,7 +5429,7 @@ private fun DanmakuSettingsSection(settings: UserSettings, onChange: (UserSettin
     Spacer(Modifier.height(8.dp))
     Text(L("弹幕颜色", "Danmaku Color"), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.6f))
     Spacer(Modifier.height(6.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         listOf("#FFFFFF", "#52C41A", "#1890FF", "#FAAD14", "#FF4D4F", "#EB2F96").forEach { hex ->
             val selected = settings.danmakuColor.equals(hex, ignoreCase = true)
             Box(
@@ -5356,7 +5441,9 @@ private fun DanmakuSettingsSection(settings: UserSettings, onChange: (UserSettin
                         shape = RoundedCornerShape(50),
                     )
                     .clickable { onChange(settings.copy(danmakuColor = hex)) },
-            )
+                contentAlignment = Alignment.Center,
+            ) { if (selected) Text("✓", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+                modifier = Modifier.clip(RoundedCornerShape(50)).background(Color(0xFF16311F)).padding(horizontal = 3.dp)) }
         }
         // 彩色（每条随机）
         val rainbowSelected = settings.danmakuColor.equals("rainbow", ignoreCase = true)
@@ -5376,7 +5463,9 @@ private fun DanmakuSettingsSection(settings: UserSettings, onChange: (UserSettin
                     shape = RoundedCornerShape(50),
                 )
                 .clickable { onChange(settings.copy(danmakuColor = "rainbow")) },
-        )
+            contentAlignment = Alignment.Center,
+        ) { if (rainbowSelected) Text("✓", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
+            modifier = Modifier.clip(RoundedCornerShape(50)).background(Color(0xFF16311F)).padding(horizontal = 3.dp)) }
         // 自定义颜色（打开取色器）
         val presetColors = listOf("#FFFFFF", "#52C41A", "#1890FF", "#FAAD14", "#FF4D4F", "#EB2F96", "rainbow")
         val isCustom = presetColors.none { it.equals(settings.danmakuColor, ignoreCase = true) }
@@ -6222,7 +6311,7 @@ private fun AboutScreen(onBack: () -> Unit) {
             containerColor = Panel,
             title = { Text(L("赞助支持开发者", "Sponsor the developer"), color = TextPrimary, fontWeight = FontWeight.Bold) },
             text = {
-                Column {
+                Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
                     Text(L("点击二维码可放大查看", "Tap the QR code to enlarge"), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.6f))
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -6491,6 +6580,20 @@ private fun FlowRowChips(items: List<String>, big: Boolean = false, selectedLabe
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun HomeLobbyModeButton(text: String, active: Boolean, icon: ImageVector, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Column(
+        modifier.heightIn(min = 58.dp).clip(RoundedCornerShape(12.dp))
+            .background(if (active) GrassGreen.copy(alpha = 0.18f) else PanelHigh)
+            .border(1.dp, if (active) GrassGreen.copy(alpha = 0.5f) else Color.Transparent, RoundedCornerShape(12.dp))
+            .clickable(role = androidx.compose.ui.semantics.Role.Tab, onClick = onClick).padding(horizontal = 6.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
+    ) {
+        Icon(icon, null, tint = if (active) AccentText else TextPrimary.copy(alpha = 0.6f), modifier = Modifier.size(18.dp))
+        Text(text, fontSize = 12.sp, color = if (active) AccentText else TextPrimary.copy(alpha = 0.7f), textAlign = TextAlign.Center)
     }
 }
 

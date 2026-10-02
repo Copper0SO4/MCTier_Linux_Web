@@ -1,65 +1,69 @@
 package top.pmh13.mctier.audio
 
-import android.media.AudioFormat
-import android.media.AudioRecord
+import android.content.Context
 import android.media.MediaRecorder
-import java.io.ByteArrayOutputStream
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import android.os.Build
+import android.os.SystemClock
+import java.io.File
 
-/** Bounded PCM recording in memory; microphone samples never touch disk. */
-class VoiceMessageRecorder {
-    private var record: AudioRecord? = null
-    private var worker: Thread? = null
-    private val pcm = ByteArrayOutputStream()
-    @Volatile private var recording = false
-    @Volatile var seconds: Double = 0.0
-        private set
+/** Compress while recording so releasing the microphone only finalizes the container. */
+class VoiceMessageRecorder(private val context: Context) {
+    private var recorder: MediaRecorder? = null
+    private var output: File? = null
+    private var mime = "audio/mp4"
+    private var started = 0L
+    @Volatile private var completedByLimit = false
+    @Volatile private var recordingFailed = false
+    val seconds: Double get() = if (recorder == null) 0.0 else ((SystemClock.elapsedRealtime() - started) / 1000.0).coerceAtMost(60.0)
 
     @Synchronized
     fun start() {
-        check(record == null)
-        val size = maxOf(4096, AudioRecord.getMinBufferSize(16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT))
-        val source = AudioRecord(MediaRecorder.AudioSource.VOICE_COMMUNICATION, 16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, size)
-        if (source.state != AudioRecord.STATE_INITIALIZED) { source.release(); error("Microphone unavailable") }
-        try { source.startRecording() } catch (error: Exception) { source.release(); throw error }
-        record = source
-        pcm.reset()
-        seconds = 0.0
-        recording = true
-        worker = Thread {
-            val buffer = ByteArray(size)
-            try {
-                while (recording && pcm.size() < 16000 * 2 * 60) {
-                    val count = source.read(buffer, 0, minOf(buffer.size, 16000 * 2 * 60 - pcm.size()))
-                    if (count <= 0) break
-                    pcm.write(buffer, 0, count)
-                    seconds = pcm.size() / 32000.0
-                }
-            } catch (_: Exception) {
-                // Device removal and permission revocation must not crash the app.
-            } finally {
-                recording = false
-            }
-        }.apply { start() }
+        check(recorder == null)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && runCatching { startCodec(true) }.isSuccess) return
+        startCodec(false)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun startCodec(opus: Boolean) {
+        val file = File.createTempFile("voice-recording-", if (opus) ".ogg" else ".m4a", context.cacheDir)
+        val native = try { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) MediaRecorder(context) else MediaRecorder() }
+            catch (error: Exception) { file.delete(); throw error }
+        try {
+            completedByLimit = false
+            recordingFailed = false
+            native.setOnErrorListener { _, _, _ -> recordingFailed = true }
+            native.setOnInfoListener { _, what, _ -> if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) completedByLimit = true }
+            native.setAudioSource(MediaRecorder.AudioSource.VOICE_COMMUNICATION)
+            native.setOutputFormat(if (opus) MediaRecorder.OutputFormat.OGG else MediaRecorder.OutputFormat.MPEG_4)
+            native.setAudioEncoder(if (opus) MediaRecorder.AudioEncoder.OPUS else MediaRecorder.AudioEncoder.AAC)
+            native.setAudioChannels(1)
+            native.setAudioSamplingRate(16000)
+            native.setAudioEncodingBitRate(if (opus) 16000 else 24000)
+            native.setMaxDuration(60000)
+            native.setOutputFile(file.absolutePath)
+            native.prepare()
+            native.start()
+            output = file; recorder = native; mime = if (opus) "audio/ogg" else "audio/mp4"
+            started = SystemClock.elapsedRealtime()
+        } catch (error: Exception) {
+            runCatching { native.release() }; file.delete(); throw error
+        }
     }
 
     @Synchronized
-    fun finish(cancel: Boolean): ByteArray? {
-        recording = false
-        val source = record ?: return null
-        runCatching { source.stop() }
-        worker?.join(1000)
-        source.release()
-        record = null
-        worker = null
-        if (cancel || seconds < 0.5) { pcm.reset(); return null }
-        val samples = pcm.toByteArray()
-        pcm.reset()
-        val wav = ByteBuffer.allocate(44 + samples.size).order(ByteOrder.LITTLE_ENDIAN)
-        wav.put("RIFF".toByteArray()).putInt(36 + samples.size).put("WAVEfmt ".toByteArray())
-        wav.putInt(16).putShort(1).putShort(1).putInt(16000).putInt(32000).putShort(2).putShort(16)
-        wav.put("data".toByteArray()).putInt(samples.size).put(samples)
-        return wav.array()
+    fun finish(cancel: Boolean): EncodedVoice? {
+        val native = recorder ?: return null
+        val file = output
+        val duration = seconds
+        recorder = null; output = null
+        try {
+            val stopped = completedByLimit || runCatching { native.stop() }.isSuccess
+            if (cancel || recordingFailed || duration < 0.5 || !stopped || file == null || file.length() !in 1..(2 * 1024 * 1024).toLong()) return null
+            return EncodedVoice(file.readBytes(), mime)
+        } catch (_: Exception) {
+            return null
+        } finally {
+            runCatching { native.release() }; file?.delete()
+        }
     }
 }

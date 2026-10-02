@@ -178,8 +178,8 @@ class ChatP2PClient(
     fun sendImage(playerName: String, imageBytes: List<Int>, recipientId: String? = null, content: String = "[Image]"): ChatWireMessage? =
         sendInternal(playerName, content, "image", imageBytes, recipientId)
 
-    fun sendVoice(playerName: String, bytes: ByteArray, duration: Double, recipientId: String?): ChatWireMessage? =
-        sendInternal(playerName, org.json.JSONObject().put("mime", "audio/wav").put("duration", duration).toString(), "voice", bytes.map { it.toInt() and 255 }, recipientId)
+    fun sendVoice(playerName: String, bytes: ByteArray, duration: Double, recipientId: String?, mime: String = "audio/wav"): ChatWireMessage? =
+        sendInternal(playerName, org.json.JSONObject().put("mime", mime).put("duration", duration).toString(), "voice", bytes.map { it.toInt() and 255 }, recipientId)
 
     fun sendFile(playerName: String, meta: ChatAttachmentMeta, file: File, recipientId: String?): ChatWireMessage? {
         if (!validChatAttachment(meta) || !server.registerAttachment(meta, file, recipientId)) return null

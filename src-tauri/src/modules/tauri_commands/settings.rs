@@ -441,11 +441,8 @@ pub async fn set_avatar_data(
 
 #[tauri::command]
 pub async fn clear_avatar_cache() -> Result<(), String> {
-    let Some(data_dir) = dirs::data_local_dir() else {
-        return Ok(());
-    };
-
-    let cache_dir = data_dir.join("MCTier").join("avatar-cache");
+    let cache_dir = crate::modules::app_paths::data_root()
+        .map_err(|e| e.to_string())?.join("avatar-cache");
     match tokio::fs::remove_dir_all(&cache_dir).await {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),

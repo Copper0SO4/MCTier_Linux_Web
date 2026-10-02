@@ -89,6 +89,8 @@ export interface PeerConnection {
   healthChannel?: RTCDataChannel;
   remoteAudioPackets?: { packets: number; at: number };
   playPending?: boolean;
+  lastPlaybackError?: string;
+  lastAudioDiagnosticAt?: number;
 }
 
 const SIGNALING_PROTOCOL_VERSION = 3;
@@ -138,10 +140,19 @@ export class WebRTCClient {
   private voiceReconnectAfter = new Map<string, number>();
   private micTransitions = 0;
   private captureRepairAfter = 0;
+  private lastEmptyAudioDiagnosticAt = -Infinity;
+
+  private audioDiagnostic(event: string, peerId: string, detail: string): void {
+    // No SDP, ICE credentials, chat content or captured audio in the disk log.
+    void Promise.resolve().then(() => invoke('report_audio_diagnostic', {
+      stage: 'realtime', detail: `${event} peer=${peerId.slice(0, 12)} ${detail}`.slice(0, 512),
+    })).catch(() => {});
+  }
   /** 正在进行「手动语音重连」的玩家，用于防止重复点击并驱动 UI 的加载态 */
   private manualReconnectingPeers: Set<string> = new Set();
   /** 麦克风的期望状态（界面/后端要求的状态） */
   private desiredMicEnabled: boolean = false;
+  private hostMutedLocal = false;
   /** 麦克风的实际生效状态（音轨层面），用于与期望状态比对收敛 */
   private micActuallyEnabled: boolean = false;
   /** 麦克风开关操作的串行队列，避免快速连续切换时交叠执行导致状态错乱 */
@@ -173,7 +184,8 @@ export class WebRTCClient {
   // 旧配置使用 Google 的 STUN（stun.l.google.com），在国内被墙：
   //   - 每次建立 / 重连 ICE 都要等它超时，拖慢连接、加剧断连重连；
   //   - 还可能选中不稳定的公网反射候选路径，导致语音忽断忽续。
-  // 这里清空公网 STUN，只使用 host 候选，让连接固定走稳定的虚拟局域网直连路径。
+  // Windows 另外使用本机 Rust STUN 探测虚拟网卡路由，避免原生采集后 Chromium
+  // 隐藏非默认网卡，导致双方只有不可跨网络解析的 .local 候选。
   private iceServers: RTCIceServer[] = [];
 
   // 虚拟IP地址
@@ -304,6 +316,7 @@ export class WebRTCClient {
 
       // 重置麦克风的期望/实际状态，避免上一次大厅的残留状态导致本次关麦被误判为"无需操作"
       this.desiredMicEnabled = false;
+      this.hostMutedLocal = false;
       this.micActuallyEnabled = false;
       this.chatToken = '';
       this.chatTokenEpoch = 0;
@@ -385,6 +398,21 @@ export class WebRTCClient {
       }
 
       // 设置信令服务器地址（优先使用传入的参数，否则使用默认值）
+      // Native microphone capture does not grant Chromium permission to enumerate
+      // every interface. Discover the EasyTier route through a local Rust STUN
+      // endpoint before signaling can create any peer connections.
+      this.iceServers = [];
+      try {
+        const localDiscovery = await invoke<string | null>('voice_ice_server');
+        if (localDiscovery) this.iceServers = [{ urls: localDiscovery }];
+        this.audioDiagnostic('ice-discovery', '', localDiscovery ?? 'platform-default');
+      } catch (error) {
+        this.audioDiagnostic('ice-discovery-error', '', String(error));
+        // The backend already waits for Windows to install the virtual address.
+        // Continuing without this route silently strands every native-mic call.
+        throw new Error(tl(`实时语音网络初始化失败：${String(error)}，请重新加入大厅`, `Voice network initialization failed: ${String(error)}. Please rejoin the lobby.`));
+      }
+      lobbySessionCoordinator.assertCurrent(activeTicket);
       // 预取版本号：注册消息在 onopen 同步回调中发送，无法 await（见 src/services/version/appVersion.ts）
       await loadAppVersion();
       lobbySessionCoordinator.assertCurrent(activeTicket);
@@ -1255,6 +1283,7 @@ export class WebRTCClient {
           this.virtualDomain = this.useDomain ? `${this.localPlayerId.slice(0, 32)}.mct.net` : null;
           const registeredHostId = isSafeIdentifier(message.hostId) ? message.hostId : undefined;
           this.chatHostId = registeredHostId;
+          this.applyHostMute(this.localPlayerId, Array.isArray(message.mutedPlayers) && message.mutedPlayers.includes(this.localPlayerId));
           // A validated register-success is the authority for this transport.
           // The signaling server is intentionally in-memory, so after a server
           // restart its lobby token epoch can restart at 1 with a new token.
@@ -1355,6 +1384,8 @@ export class WebRTCClient {
           const changedHostId = message.hostId;
           if (!isSafeIdentifier(changedHostId) || !this.isKnownPlayer(changedHostId)) break;
           this.chatHostId = changedHostId;
+          // Also tolerate older servers that retain the promoted player's mute entry.
+          this.applyHostMute(changedHostId, false);
           try {
             await this.syncChatPeers();
           } catch (error) {
@@ -1368,10 +1399,10 @@ export class WebRTCClient {
         case 'player-mute-changed':
           // 禁言状态变化
           const mutedPlayerId = message.playerId;
-          if (!this.isKnownPlayer(mutedPlayerId, false) || typeof message.muted !== 'boolean')
+          if (!this.isKnownPlayer(mutedPlayerId) || typeof message.muted !== 'boolean')
             break;
           console.log('🔇 禁言状态变化');
-          this.onMuteChangedCallback?.(mutedPlayerId, message.muted);
+          this.applyHostMute(mutedPlayerId, message.muted);
           break;
 
         case 'lobby-options-changed':
@@ -2536,11 +2567,7 @@ export class WebRTCClient {
                 break;
               }
               case 'remote-control-stop': {
-                if (
-                  !session ||
-                  !remoteControlService.isSessionForPeer(session.sessionId, session.peerId)
-                )
-                  break;
+                if (!session) break;
                 remoteControlService.handleStop(
                   session.sessionId,
                   session.peerId,
@@ -2690,7 +2717,11 @@ export class WebRTCClient {
    */
   private async handleWebSocketOffer(message: any): Promise<void> {
     const peerId = this.authenticatedPeerId(message);
-    if (!peerId || !this.isSafeSessionDescription(message.offer, 'offer')) return;
+    if (!peerId || !this.isSafeSessionDescription(message.offer, 'offer')) {
+      this.audioDiagnostic('offer-rejected', '', `authenticated=${!!peerId}, validSdp=${this.isSafeSessionDescription(message.offer, 'offer')}`);
+      return;
+    }
+    this.audioDiagnostic('offer-received', peerId, '');
     let peer = this.peerConnections.get(peerId);
     try {
       if (
@@ -2730,6 +2761,7 @@ export class WebRTCClient {
       if (!current()) return;
       await peer.connection.setLocalDescription(answer);
       if (!current()) return;
+      this.audioDiagnostic('answer-created', peerId, `audio=${sendingAudioTransceiver(peer.connection)?.currentDirection}`);
       if (
         !this.sendWebSocketMessage({
           type: 'answer',
@@ -2742,6 +2774,7 @@ export class WebRTCClient {
       }
     } catch (error) {
       console.warn(`[WebRTC] offer failed: ${peerId}`, error);
+      this.audioDiagnostic('offer-error', peerId, String(error));
       if (peer && this.peerConnections.get(peerId) === peer) void this.reconnectPeerVoice(peerId);
     } finally {
       if (peer) peer.isNegotiating = false;
@@ -2756,6 +2789,7 @@ export class WebRTCClient {
       const peerId = this.authenticatedPeerId(message);
       if (!peerId || !this.isSafeSessionDescription(message.answer, 'answer')) {
         console.warn('⚠️ 忽略未认证或格式无效的 Answer');
+        this.audioDiagnostic('answer-rejected', '', `authenticated=${!!peerId}`);
         return;
       }
       const peer = this.peerConnections.get(peerId);
@@ -2770,11 +2804,13 @@ export class WebRTCClient {
       await peer.connection.setRemoteDescription(new RTCSessionDescription(message.answer));
       if (this.peerConnections.get(peerId) !== peer) return;
       peer.remoteDescriptionSet = true;
+      this.audioDiagnostic('answer-applied', peerId, `audio=${sendingAudioTransceiver(peer.connection)?.currentDirection}`);
       console.log(`✅ 已设置 Remote Description (Answer) from ${peerId}`);
 
       await this.flushIceCandidateQueue(peer);
     } catch (error) {
       console.error(`❌ 处理 Answer 失败:`, error);
+      this.audioDiagnostic('answer-error', '', String(error));
     }
   }
 
@@ -2823,6 +2859,7 @@ export class WebRTCClient {
       const peerId = this.authenticatedPeerId(message);
       if (!peerId || !this.isSafeIceCandidate(message.candidate)) {
         console.warn('⚠️ 忽略未认证或格式无效的 ICE Candidate');
+        this.audioDiagnostic('ice-rejected', '', `authenticated=${!!peerId}`);
         return;
       }
       const peer = this.peerConnections.get(peerId);
@@ -2833,6 +2870,7 @@ export class WebRTCClient {
       }
 
       const candidate = new RTCIceCandidate(message.candidate);
+      this.audioDiagnostic('ice-received', peerId, `${candidate.type}/${candidate.protocol} ${candidate.address}:${candidate.port}`);
 
       // 如果远程描述还没设置，将候选加入队列
       if (!peer.remoteDescriptionSet) {
@@ -2848,6 +2886,7 @@ export class WebRTCClient {
       console.log(`✅ ICE Candidate 已添加 from ${peerId}`);
     } catch (error) {
       console.error(`❌ 处理 ICE Candidate 失败:`, error);
+      this.audioDiagnostic('ice-error', '', String(error));
     }
   }
 
@@ -2940,6 +2979,7 @@ export class WebRTCClient {
       if (!current()) return false;
       await peer.connection.setLocalDescription(offer);
       if (!current()) return false;
+      this.audioDiagnostic('offer-created', peerId, `restart=${iceRestart}`);
       return await this.sendOfferWithRetry(peerId, offer, 'voice', peer);
     } finally {
       peer.makingOffer = false;
@@ -3131,6 +3171,7 @@ export class WebRTCClient {
     audio.srcObject = stream;
     peer.audioElement = audio;
     peer.audioStream = stream;
+    this.audioDiagnostic('track-received', peerId, `state=${track.readyState}, muted=${track.muted}`);
     peer.playPending = false;
     void (async () => {
       const output = audioDevices.getOutputDeviceId();
@@ -3139,6 +3180,9 @@ export class WebRTCClient {
           await audio.setSinkId(output);
         } catch (error) {
           console.warn('音频输出设备不可用，使用默认设备:', error);
+          // Reset explicitly; a removed output must not leave this element bound to it.
+          await audio.setSinkId('').catch(() => {});
+          void invoke('report_audio_diagnostic', { stage: 'playback-error', detail: `Output device unavailable, default selected: ${String(error)}` }).catch(() => {});
         }
       }
       await this.applyCurrentAudioState(peerId, audio);
@@ -3154,8 +3198,20 @@ export class WebRTCClient {
     peer.playPending = true;
     void audio
       .play()
-      .catch(() => {
+      .then(() => {
+        if (peer.lastPlaybackError) {
+          peer.lastPlaybackError = undefined;
+          void invoke('report_audio_diagnostic', { stage: 'playback-ready', detail: 'Remote audio playback recovered' }).catch(() => {});
+        }
+      })
+      .catch((error) => {
         // Autoplay/device errors are local playback failures, not reasons to tear down ICE.
+        const detail = String(error);
+        if (peer.lastPlaybackError !== detail) {
+          peer.lastPlaybackError = detail;
+          console.warn('[VoiceHealth] remote audio playback failed:', error);
+          void invoke('report_audio_diagnostic', { stage: 'playback-error', detail }).catch(() => {});
+        }
       })
       .finally(() => {
         if (peer.audioElement === audio) peer.playPending = false;
@@ -3174,6 +3230,10 @@ export class WebRTCClient {
     this.voiceHealthCheckRunning = true;
     try {
       const now = performance.now();
+      if (this.peerConnections.size === 0 && now - this.lastEmptyAudioDiagnosticAt >= 10000) {
+        this.lastEmptyAudioDiagnosticAt = now;
+        this.audioDiagnostic('no-peers', '', `known=${this.knownPlayers.size}, signaling=${this.websocket?.readyState}, mic=${this.micActuallyEnabled}, virtualIp=${this.virtualIp}`);
+      }
       if (
         !this.micTransitions &&
         this.desiredMicEnabled &&
@@ -3189,16 +3249,27 @@ export class WebRTCClient {
         );
       }
       for (const [peerId, peer] of this.peerConnections) {
-        if (peer.connection.connectionState !== 'connected') continue;
+        const logSample = now - (peer.lastAudioDiagnosticAt ?? -Infinity) >= 10000;
+        if (peer.connection.connectionState !== 'connected') {
+          if (logSample) {
+            peer.lastAudioDiagnosticAt = now;
+            this.audioDiagnostic('waiting', peerId, `pc=${peer.connection.connectionState}, ice=${peer.connection.iceConnectionState}, sdp=${peer.connection.signalingState}, mic=${this.micActuallyEnabled}, virtualIp=${this.virtualIp}`);
+          }
+          continue;
+        }
         try {
           const stats = await peer.connection.getStats();
           if (this.peerConnections.get(peerId) !== peer) continue;
           let packets = 0;
           let sent = 0;
           let remoteSent: number | null = null;
+          let receivedEnergy = 0;
           stats.forEach((report) => {
             if ((report.kind ?? report.mediaType) !== 'audio') return;
-            if (report.type === 'inbound-rtp') packets += Number(report.packetsReceived ?? 0);
+            if (report.type === 'inbound-rtp') {
+              packets += Number(report.packetsReceived ?? 0);
+              receivedEnergy += Number(report.totalAudioEnergy ?? 0);
+            }
             if (report.type === 'outbound-rtp') sent += Number(report.packetsSent ?? 0);
             if (report.type === 'remote-outbound-rtp' && Number.isFinite(report.packetsSent))
               remoteSent = (remoteSent ?? 0) + report.packetsSent;
@@ -3212,6 +3283,12 @@ export class WebRTCClient {
           if (peer.remoteAudioPackets && now - peer.remoteAudioPackets.at < 6000)
             remoteSent = peer.remoteAudioPackets.packets;
           const transceiver = sendingAudioTransceiver(peer.connection);
+          if (logSample) {
+            peer.lastAudioDiagnosticAt = now;
+            const track = transceiver?.sender.track;
+            const audio = peer.audioElement;
+            this.audioDiagnostic('rtp', peerId, `rx=${packets}, tx=${sent}, energy=${receivedEnergy.toFixed(5)}, direction=${transceiver?.currentDirection}, track=${track?.readyState}/${track?.enabled}, playback=${audio?.paused ? 'paused' : 'playing'}, muted=${audio?.muted}, volume=${audio?.volume}, sink=${audio?.sinkId || 'default'}`);
+          }
           const receiver = transceiver?.receiver.track;
           if (
             receiver?.readyState === 'live' &&
@@ -3464,6 +3541,7 @@ export class WebRTCClient {
       };
 
       const pc = new RTCPeerConnection(config);
+      this.audioDiagnostic('peer-created', peerId, `virtualIp=${this.virtualIp}, mic=${this.micActuallyEnabled}`);
       console.log('RTCPeerConnection 实例已创建');
       console.log('虚拟IP:', this.virtualIp || '未设置');
       console.log('ICE Servers:', config.iceServers);
@@ -3494,6 +3572,7 @@ export class WebRTCClient {
       pc.onicecandidate = async (event) => {
         if (this.peerConnections.get(peerId)?.connection !== pc) return;
         if (event.candidate) {
+          this.audioDiagnostic('ice-local', peerId, `${event.candidate.type}/${event.candidate.protocol} ${event.candidate.address}:${event.candidate.port}`);
           console.log(`🧊 ICE Candidate 生成 for ${peerId}:`);
           console.log('  - Type:', event.candidate.type);
           console.log('  - Protocol:', event.candidate.protocol);
@@ -3533,6 +3612,8 @@ export class WebRTCClient {
           console.warn(`⚠️ 连接状态变化时未找到 peer: ${peerId}`);
           return;
         }
+
+        this.audioDiagnostic('connection', peerId, `pc=${pc.connectionState}, ice=${pc.iceConnectionState}, sdp=${pc.signalingState}`);
 
         if (pc.connectionState === 'connected') {
           console.log(`✅ 与 ${peerId} 的连接已建立`);
@@ -3577,6 +3658,7 @@ export class WebRTCClient {
       // 监听 ICE 连接状态
       pc.oniceconnectionstatechange = () => {
         if (this.peerConnections.get(peerId)?.connection !== pc) return;
+        this.audioDiagnostic('ice-state', peerId, pc.iceConnectionState);
         console.log(`❄️ ICE 连接状态 (${peerId}): ${pc.iceConnectionState}`);
         if (pc.iceConnectionState === 'failed') {
           console.error(`❌ ICE 连接失败 with ${peerId}`);
@@ -3757,20 +3839,20 @@ export class WebRTCClient {
     }
   }
 
-  /** 请求麦克风权限。拒绝后交给全局权限恢复界面处理，不做无意义的循环请求。 */
+  /** Windows 使用原生麦克风；系统阻止访问时显示设置帮助，不循环重试。 */
   private async requestMicrophonePermission(notifyPermissionRequired = true): Promise<MediaStream> {
     try {
-      console.log('🎤 正在请求麦克风权限...');
+      console.log('🎤 正在打开麦克风...');
       const { captureVoiceStream } = await import('../voice/nvidiaNoise');
       const stream = await captureVoiceStream();
-      console.log('✅ 麦克风权限已获取');
+      console.log('✅ 麦克风已打开');
       return stream;
     } catch (error: any) {
       if (
         notifyPermissionRequired &&
         (error?.name === 'NotAllowedError' || error?.name === 'PermissionDeniedError')
       ) {
-        console.warn('⚠️ 麦克风权限被拒绝，显示权限恢复入口');
+        console.warn('⚠️ 系统阻止麦克风访问，显示设置帮助');
         window.dispatchEvent(
           new CustomEvent('mctier-microphone-permission-required', {
             detail: { resumeMic: this.desiredMicEnabled },
@@ -3781,7 +3863,7 @@ export class WebRTCClient {
     }
   }
 
-  /** 供设置页和权限恢复弹窗主动重新触发系统授权。 */
+  /** 验证麦克风能否打开，验证完成后立即释放设备。 */
   async requestMicrophoneAccess(notifyPermissionRequired = true): Promise<void> {
     const stream = await this.requestMicrophonePermission(notifyPermissionRequired);
     stream.getTracks().forEach((track) => track.stop());
@@ -3800,6 +3882,7 @@ export class WebRTCClient {
    * 状态又变了就继续收敛，保证最终实际状态与界面/后端一致。
    */
   async setMicEnabled(enabled: boolean): Promise<void> {
+    if (enabled && this.hostMutedLocal) throw new Error(tl('你已被房主禁言', 'You have been muted by the host'));
     this.desiredMicEnabled = enabled;
     const run = this.micOpChain.then(() => this.convergeMicState());
     // 保存链尾（吞掉异常，避免一次失败后整条链被 reject 而后续操作全部不执行）
@@ -3807,6 +3890,28 @@ export class WebRTCClient {
       /* 错误已在内部记录 */
     });
     return run;
+  }
+
+  private applyHostMute(playerId: string, muted: boolean): void {
+    const effective = muted && playerId !== this.chatHostId;
+    if (playerId === this.localPlayerId) {
+      this.hostMutedLocal = effective;
+      if (effective) {
+        // Silence immediately, including while a slower enable/replaceTrack is pending.
+        this.desiredMicEnabled = false;
+        for (const stream of [this.localStream, this.rawMicStream]) {
+          stream?.getAudioTracks().forEach(track => { track.enabled = false; });
+        }
+        for (const peer of this.peerConnections.values()) {
+          peer.connection.getTransceivers().forEach(transceiver => {
+            const track = transceiver.sender.track;
+            if (track?.kind === 'audio') track.enabled = false;
+          });
+        }
+        void this.setMicEnabled(false).catch(error => console.warn('关闭被禁言的麦克风失败:', error));
+      }
+    }
+    this.onMuteChangedCallback?.(playerId, effective);
   }
 
   async refreshMicrophoneProcessing(): Promise<void> {
@@ -3886,21 +3991,27 @@ export class WebRTCClient {
       console.log('🎤 设置麦克风状态:', enabled ? '开启' : '关闭');
 
       if (enabled) {
-        console.log('正在获取麦克风权限...');
+        console.log('正在打开麦克风...');
 
-        // 使用带重试机制的权限请求
+        // Explicit microphone action; native failure never falls back to browser capture.
         const rawStream = await this.requestMicrophonePermission();
         if (!this.desiredMicEnabled || this.isIntentionalDisconnect) {
           rawStream.getTracks().forEach((track) => track.stop());
           return;
         }
 
-        console.log('✅ 麦克风权限已获取');
+        console.log('✅ 麦克风已打开');
         // 应用变声器：对原始麦克风做实时变声，输出处理后的流用于发送
         if (this.rawMicStream) {
           this.rawMicStream.getTracks().forEach((t) => t.stop());
         }
         this.rawMicStream = rawStream;
+        rawStream.getAudioTracks()[0]?.addEventListener('ended', () => {
+          if (this.rawMicStream !== rawStream) return;
+          void this.setMicEnabled(false).catch(console.warn);
+          void import('../../stores').then(({ useAppStore }) => useAppStore.getState().setMicEnabled(false));
+          window.dispatchEvent(new CustomEvent('mctier-microphone-permission-required'));
+        }, { once: true });
         // 「原声」直接发送原始轨道，不接任何中间处理层；仅在用户主动选择变声音色时
         // 才接入变声图（变声是用户要的效果，不是降噪处理层）。
         const newStream = voiceChangerService.process(rawStream);
@@ -4328,6 +4439,7 @@ export class WebRTCClient {
           await el.setSinkId(deviceId || '');
         } catch (e) {
           console.warn(`应用输出设备到 ${peerId} 失败:`, e);
+          throw e;
         }
       }
     }
@@ -4639,6 +4751,7 @@ export class WebRTCClient {
       // 复位麦克风期望/实际状态，避免残留状态影响下次进入大厅
       this.desiredMicEnabled = false;
       this.micActuallyEnabled = false;
+      this.hostMutedLocal = false;
 
       // 重置重连计数
       this.reconnectAttempts = 0;
@@ -4741,6 +4854,7 @@ export class WebRTCClient {
       this.localPlayerId = '';
       this.localPlayerName = '';
       this.virtualIp = null;
+      this.iceServers = [];
       if (!preserveSigningIdentity) this.lobbySessionTicket = null;
 
       // 清理文件共享服务
