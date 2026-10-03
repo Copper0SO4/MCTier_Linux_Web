@@ -1,8 +1,15 @@
 --- a/services/screenShare/nativeCapture.ts
 +++ b/services/screenShare/nativeCapture.ts
-@@ -1,0 +2 @@
+@@ -1,4 +1,5 @@
+ import { invoke } from '@tauri-apps/api/core';
 +import { isLocalWeb } from '../platform/localWeb';
-@@ -106,0 +108,15 @@
+ import { normalizeScreenQuality, type ScreenShareQuality } from './quality';
+ 
+ export interface CaptureSource {
+@@ -104,6 +105,21 @@
+   signal?: AbortSignal,
+   recording = false
+ ): Promise<MediaStream> {
 +  if (isLocalWeb()) {
 +    if (remote) throw new Error('Linux 浏览器被控端的输入授权尚未实现');
 +    if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
@@ -18,3 +25,6 @@
 +    stream.getVideoTracks()[0]?.addEventListener('ended', () => signal?.removeEventListener('abort', stop), { once: true });
 +    return stream;
 +  }
+   const source = await selectSource(remote, signal, recording);
+   if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
+   const q = normalizeScreenQuality(quality);

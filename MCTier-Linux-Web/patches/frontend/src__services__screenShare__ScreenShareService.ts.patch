@@ -1,6 +1,9 @@
 --- a/services/screenShare/ScreenShareService.ts
 +++ b/services/screenShare/ScreenShareService.ts
-@@ -641,0 +642,12 @@
+@@ -639,6 +639,18 @@
+       }))
+     );
+     return shares;
 +  }
 +
 +  /** Explicit refresh uses the existing cross-platform broadcast protocol. */
@@ -13,3 +16,6 @@
 +      .filter(([key]) => key.startsWith(`${shareId}-in-`) || key.startsWith(`${shareId}-viewer-`))
 +      .map(([, pc]) => ({ connection: pc.connectionState, ice: pc.iceConnectionState, signaling: pc.signalingState }));
 +    return { connections, track: this.remoteStreams.get(shareId)?.getVideoTracks()[0]?.readyState ?? 'pending' };
+   }
+ 
+   /**

@@ -1,17 +1,44 @@
 --- a/services/chat/P2PChatService.ts
 +++ b/services/chat/P2PChatService.ts
-@@ -8,0 +9 @@
+@@ -6,6 +6,7 @@
+  */
+ 
+ import { invoke } from '@tauri-apps/api/core';
 +import { isLocalWeb, localHeaders } from '../platform/localWeb';
-@@ -52,0 +54,3 @@
+ import type { ChatMessage } from '../../types';
+ import { isWithinRecallWindow } from './recallPolicy';
+ import {
+@@ -50,6 +51,9 @@
+   private lastFullHistory = 0;
+   private streamWatchdog: number | null = null;
+   private lastStreamActivity = 0;
 +  private streamState = 'stopped';
 +  private receiveError = '';
 +  private receivedMessages = 0;
-@@ -125,0 +130,2 @@
+   private isListening: boolean = false;
+   private onMessageCallback?: (message: ChatMessage) => void;
+   private peerIps: string[] = [];
+@@ -123,6 +127,8 @@
+     this.pendingRecalls.clear();
+     this.historySince = 0;
+     this.lastFullHistory = 0;
 +    this.receivedMessages = 0;
 +    this.receiveError = '';
-@@ -140,0 +147 @@
+     console.log('🔄 [P2PChatService] 服务已重置');
+   }
+ 
+@@ -138,6 +144,7 @@
+   }
+ 
+   startPolling(): void {
 +    if (this.isListening) return;
-@@ -171,0 +179,7 @@
+     this.isListening = true;
+     void this.connectToSelfStream();
+     this.scheduleHistoryReconcile();
+@@ -169,6 +176,13 @@
+     }, 2500);
+   }
+ 
 +  getReceiveDiagnostics() {
 +    return { listening: this.isListening, stream: this.streamState,
 +      identityReady: !!this.currentPlayerId && !!this.myVirtualIp,
@@ -19,7 +46,13 @@
 +      receivedMessages: this.receivedMessages, error: this.receiveError };
 +  }
 +
-@@ -179,0 +194,8 @@
+   private async reconcileHistory(): Promise<void> {
+     if (this.historyReconcileInFlight || !this.isListening || !this.currentPlayerId) return;
+     this.historyReconcileInFlight = true;
+@@ -177,12 +191,21 @@
+     // reads recover messages missed by a cursor advanced by a faster clock.
+     const full = Date.now() - this.lastFullHistory >= 30000;
+     try {
 +      // Recover local inbound history independently of remote HTTP availability.
 +      if (isLocalWeb()) {
 +        const local = await invoke<BackendChatMessage[]>('get_local_p2p_chat_messages', {
@@ -28,25 +61,80 @@
 +        if (!this.isListening || generation !== this.listeningGeneration) return;
 +        if (Array.isArray(local)) for (const message of local) this.handleMessage(message);
 +      }
-@@ -185,0 +208 @@
+       const messages = await invoke<BackendChatMessage[]>('get_p2p_chat_messages', {
+         peerIps: this.peerIps,
+         since: full ? null : Math.max(0, this.historySince - 2),
+       });
+       if (!this.isListening || generation !== this.listeningGeneration) return;
+       if (!Array.isArray(messages)) return;
 +      this.receiveError = '';
-@@ -199,0 +223 @@
+       if (full) this.lastFullHistory = Date.now();
+       const snapshotIds = full ? new Set<string>() : null;
+       for (const message of messages) {
+@@ -197,6 +220,7 @@
+       // Keep the last bounded snapshot too, so full recovery never replays it.
+       if (snapshotIds) this.reconciledMessageIds = snapshotIds;
+     } catch (error) {
 +      this.receiveError = error instanceof Error ? error.message : '聊天历史读取失败';
-@@ -222 +246 @@
+       console.warn('⚠️ [P2PChatService] 聊天历史对账失败:', error instanceof Error ? error.message : '请求失败');
+     } finally {
+       if (generation === this.listeningGeneration) this.historyReconcileInFlight = false;
+@@ -219,10 +243,11 @@
+       return;
+     }
+ 
 -    const streamUrl = `http://${this.myVirtualIp}:${CHAT_SERVER_PORT}/api/chat/stream`;
 +    const streamUrl = isLocalWeb() ? '/api/chat/stream' : `http://${this.myVirtualIp}:${CHAT_SERVER_PORT}/api/chat/stream`;
-@@ -225,0 +250 @@
+     const controller = new AbortController();
+     this.selfStreamAbortController = controller;
+     this.lastStreamActivity = Date.now();
 +    this.streamState = 'connecting';
-@@ -234,0 +260 @@
+     console.log('📡 [P2PChatService] 连接到本机认证消息流');
+ 
+     try {
+@@ -232,6 +257,7 @@
+           Accept: 'text/event-stream',
+           'Cache-Control': 'no-cache',
+           'x-mctier-chat-token': this.chatToken,
 +          ...(isLocalWeb() ? await localHeaders() : {}),
-@@ -242,0 +269,2 @@
+         },
+         cache: 'no-store',
+         signal: controller.signal,
+@@ -240,6 +266,8 @@
+         throw new Error(`聊天消息流返回 HTTP ${response.status}`);
+       }
+       if (!response.body) throw new Error('聊天消息流缺少响应体');
 +      this.streamState = 'open';
 +      this.receiveError = '';
-@@ -259,0 +288 @@
+ 
+       const reader = response.body.getReader();
+       const decoder = new TextDecoder();
+@@ -257,10 +285,12 @@
+     } catch (error) {
+       if (!controller.signal.aborted && this.isListening) {
+         const detail = error instanceof Error ? error.message : '连接失败';
 +        this.receiveError = detail;
-@@ -263,0 +293 @@
+         console.warn(`⚠️ [P2PChatService] 本机消息流连接错误，将重连: ${detail}`);
+       }
+     } finally {
+       if (this.selfStreamAbortController === controller) {
 +        this.streamState = this.isListening ? 'reconnecting' : 'stopped';
-@@ -410,0 +441 @@
+         this.selfStreamAbortController = null;
+         if (this.isListening) this.scheduleSelfReconnect();
+       }
+@@ -408,6 +438,7 @@
+     // 回调通知新消息
+     if (this.onMessageCallback) {
+       this.onMessageCallback(chatMessage);
 +      this.receivedMessages++;
-@@ -518,0 +550 @@
+     }
+ 
+     // The registered UI callback applies conversation/mention notification
+@@ -516,6 +547,7 @@
+    */
+   private stopListening(): void {
+     this.isListening = false;
 +    this.streamState = 'stopped';
+     this.listeningGeneration++;
+     if (this.streamWatchdog) window.clearInterval(this.streamWatchdog);
+     this.streamWatchdog = null;
