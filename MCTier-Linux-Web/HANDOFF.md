@@ -146,6 +146,6 @@ Linux Web Vite 构建钩子现在每次准备并校验原版 566 项 GIF，构�
 
 按用户验收反馈，功能菜单将组网/大厅、聊天、文件发送、双向麦克风、双向屏幕和邀请显示“已接入 · 用户已验收”；每项说明仍标出未验证的 ICE/重连或浏览器限制。文件夹共享、房间工具、图片/表情等保持“已接入 · 实验性”，未实现项目保留封锁牌。功能本身与上游协议逻辑未变。页面增加卡片层级、留白、悬停/焦点状态、减少动态效果偏好和窄屏适配。
 
-根 `README.md` 已改为 Linux Web 下载/依赖/源码构建说明，子 README 与 `README-Linux.txt` 同步；包内中文文件说明 Debian/Ubuntu 运行库、浏览器、D-Bus/密钥环、TUN、浏览器启动与 capability 授权边界。`package-release.sh` 接受 `v` 前缀，生成 `mctier-linux-web-linux-x86_64-v3.5.0.zip` 及 SHA-256。ZIP 构建和内容校验通过。
+根 `README.md` 已改为 Linux Web 下载/依赖/源码构建说明，子 README 与 `README-Linux.txt` 同步；包内中文文件说明 Debian/Ubuntu 运行库、浏览器、D-Bus/密钥环、TUN、浏览器启动与 capability 授权边界。`package-release.sh` 接受 `v` 前缀，生成 `mctier-linux-web-linux-x86_64-v3.5.0.zip` 及 SHA-256。ZIP 构建和内容校验通过。首次上传时发现校验清单含构建机绝对路径，随后已改为相对文件名并在 Release 附件中替换，下载后可直接运行 `sha256sum -c`。
 
 用户真实验收范围来自本轮回复，不把自动化结果或尚未测试的目录共享、房间工具同步、Firefox、ICE/断线重连记作通过。上游历史里也有 `v3.5.0` 标签；已只读查询用户 `origin` 未发现 `v3.5.0` 标签；本地标签来自上游仓库的旧源码历史。可将本次分支 HEAD 作为用户 fork 独立仓库中的 `v3.5.0` 标签，不触碰上游。发行说明保存于 `RELEASE-v3.5.0.md`。

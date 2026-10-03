@@ -26,6 +26,6 @@ mkdir -p "$DIST"
 ARCHIVE="$DIST/${NAME}.zip"
 [[ ! -e "$ARCHIVE" ]] || { echo "Refusing to overwrite existing archive: $ARCHIVE" >&2; exit 1; }
 (cd "$STAGE" && zip -qr -9 "$ARCHIVE" "$NAME")
-sha256sum "$ARCHIVE" > "$ARCHIVE.sha256"
+(cd "$DIST" && sha256sum "${NAME}.zip" > "${NAME}.zip.sha256")
 printf 'Release archive: %s\n' "$ARCHIVE"
 cat "$ARCHIVE.sha256"
