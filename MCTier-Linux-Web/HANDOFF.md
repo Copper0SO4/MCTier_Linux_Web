@@ -36,7 +36,7 @@
 
 ## 功能矩阵
 
-界面实际状态定义在 `web/featureAvailability.ts`。**22 项：12 项实验性接入，10 项封锁。**“实验性”不等于真实环境已验收。
+界面实际状态定义在 `web/featureAvailability.ts`。**22 项：12 项实验性接入，10 项封锁。**菜单徽标会另外注明有明确用户实测反馈的功能，不代表完整协议专项测试。
 
 | 状态 | 功能 |
 | --- | --- |
@@ -99,7 +99,7 @@ npm ci
 ./MCTier-Linux-Web/scripts/run-web-server.sh --debug
 ```
 
-自动化命令为 `./MCTier-Linux-Web/scripts/test.sh`，包含前端准备、Node 测试和离线 Cargo 测试。也可以运行 TypeScript 检查：`npx tsc --project MCTier-Linux-Web/tsconfig.web.json`。本轮维护中，前端 10 个测试文件与 Rust 92 项测试通过。TypeScript、Vite 与本地 debug 构建通过。这些不等同于 Debian 打包验收或真实网络/媒体验收。本轮检查了 Chromium 静态布局和动画表情资源，不包含 Agent 主动真实房间或媒体测试。
+自动化命令为 `./MCTier-Linux-Web/scripts/test.sh`，包含前端准备、Node 测试和离线 Cargo 测试。也可以运行 TypeScript 检查：`npx tsc --project MCTier-Linux-Web/tsconfig.web.json`。本轮维护中，前端 10 个测试文件与 Rust 92 项测试通过。正式 release 包以 v3.5.0 参数完成构建，ZIP SHA-256 为 `e4662a2b8f975314de6295c2e4a203e12264ca4f63f1e52b2a0a6ac7ab9f45ee`。归档检查确认启动器、服务、EasyTier core/CLI 及中文依赖说明齐全；没有在干净 Debian 系统实测安装依赖后的首次启动。Chromium 静态布局检查菜单和窄屏，没有连接房间或媒体。
 
 ## 当前验收状态
 
@@ -141,3 +141,11 @@ npm ci
 依据用户截图定位两项直接原因：功能卡片的 `height: 100%` 和卡片外追加的操作按钮使按钮越界重叠；单独 Vite 重建清空产物后，旧运行二进制没有嵌入表情资源。操作按钮现放入卡片，卡片按内容高度排列，侧栏不再压缩子元素；聊天消息区使用有界独立滚动，发送栏采用响应式网格，900 像素及以下采用单列并保留功能入口，弹窗控件换行。保持原版 CSS/协议复用，未修改 Windows/Android 或信令、EasyTier、WebRTC 协议。
 
 Linux Web Vite 构建钩子现在每次准备并校验原版 566 项 GIF，构建脚本移除重复准备步骤；Rust 嵌入构建会拒绝没有 GIF 的产物。资源异常时聊天与选择器显示文字提示，避免仅有破图。完整 debug 构建和单独 Vite 构建均已验证；单独构建后 GIF 数量为 566。前端 10 个测试文件、Rust 92 项通过，静态浏览器验证见上文。用户确认后已重启 debug 服务，页面与代表 GIF 均 HTTP 200，GIF MIME/文件签名正确，只监听 `127.0.0.1:14700`，未自动加入房间。未构建发行压缩包；真实目录共享、房间工具同步、Firefox 断连和媒体稳定性专项仍待验收。
+
+## 最近一次维护：正式版菜单、界面和 v3.5.0 包
+
+按用户验收反馈，功能菜单将组网/大厅、聊天、文件发送、双向麦克风、双向屏幕和邀请显示“已接入 · 用户已验收”；每项说明仍标出未验证的 ICE/重连或浏览器限制。文件夹共享、房间工具、图片/表情等保持“已接入 · 实验性”，未实现项目保留封锁牌。功能本身与上游协议逻辑未变。页面增加卡片层级、留白、悬停/焦点状态、减少动态效果偏好和窄屏适配。
+
+根 `README.md` 已改为 Linux Web 下载/依赖/源码构建说明，子 README 与 `README-Linux.txt` 同步；包内中文文件说明 Debian/Ubuntu 运行库、浏览器、D-Bus/密钥环、TUN、浏览器启动与 capability 授权边界。`package-release.sh` 接受 `v` 前缀，生成 `mctier-linux-web-linux-x86_64-v3.5.0.zip` 及 SHA-256。ZIP 构建和内容校验通过。
+
+用户真实验收范围来自本轮回复，不把自动化结果或尚未测试的目录共享、房间工具同步、Firefox、ICE/断线重连记作通过。上游历史里也有 `v3.5.0` 标签；已只读查询用户 `origin` 未发现 `v3.5.0` 标签；本地标签来自上游仓库的旧源码历史。可将本次分支 HEAD 作为用户 fork 独立仓库中的 `v3.5.0` 标签，不触碰上游。发行说明保存于 `RELEASE-v3.5.0.md`。

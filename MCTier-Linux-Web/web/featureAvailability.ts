@@ -6,25 +6,25 @@ export const FEATURES = [
     id: 'network',
     name: '虚拟组网与大厅',
     state: 'experimental',
-    reason: '已接入原版节点和信令协议；接口、对端收发仍需验收。',
+    reason: '用户已实测组网正常；信令大厅与 EasyTier 虚拟数据链路仍需分别判断。',
   },
   {
     id: 'chat',
     name: '文字聊天与附件下载',
     state: 'experimental',
-    reason: '公开、私聊和附件下载已接入；附件最大 64 MiB，跨端仍需验收。',
+    reason: '用户已实测消息收发正常；附件最大 64 MiB，消息经 EasyTier 数据链路传输。',
   },
   {
     id: 'voice',
     name: '麦克风与变声',
     state: 'experimental',
-    reason: '已接入浏览器音频；双向语音、ICE、断线恢复仍需验收。',
+    reason: '用户已实测双向麦克风正常；ICE 诊断和长时间断线恢复尚未专项验收。',
   },
   {
     id: 'screen',
     name: '屏幕共享与观看手机',
     state: 'experimental',
-    reason: '可共享视频和观看对端画面；手机互看与重连仍需验收。',
+    reason: '用户已实测双向屏幕共享正常；长期稳定性和断线重连尚未专项验收。',
   },
   {
     id: 'firefox',
@@ -45,7 +45,7 @@ export const FEATURES = [
     state: 'blocked',
     reason: '远程输入授权与 Linux 输入注入尚未实现；仅开放屏幕观看。',
   },
-  { id: 'send-file', name: '发送文件', state: 'experimental', reason: '已接入 64 MiB 附件上传及原版加密取件协议；跨端送达待验收。' },
+  { id: 'send-file', name: '发送文件', state: 'experimental', reason: '用户已实测文件收发正常；沿用原版附件协议，单文件上限 64 MiB。' },
   {
     id: 'send-image',
     name: '发送图片 / 表情',
@@ -80,7 +80,7 @@ export const FEATURES = [
     id: 'invite',
     name: '大厅二维码 / 邀请',
     state: 'experimental',
-    reason: '原版 v3 邀请生成、复制、二维码保存和文字导入已接入；二维码图片识别取决于浏览器。',
+    reason: '用户已确认大厅邀请码正常；二维码图片识别仍取决于浏览器 BarcodeDetector。',
   },
   {
     id: 'lobby-history',

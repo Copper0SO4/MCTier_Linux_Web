@@ -74,6 +74,7 @@ export function setupShell() {
     }
   });
 
+  const userAccepted = new Set(['network', 'chat', 'voice', 'screen', 'send-file', 'invite']);
   function featureCard(id: string) {
     const feature = FEATURES.find((value) => value.id === id);
     if (!feature) throw new Error(`Unknown Linux feature: ${id}`);
@@ -85,7 +86,8 @@ export function setupShell() {
     name.textContent = feature.name;
     const state = document.createElement('span');
     state.className = 'feature-state';
-    state.textContent = feature.state === 'blocked' ? '暂未开放' : '实验性 · 待验收';
+    state.textContent = feature.state === 'blocked' ? '暂未开放' : userAccepted.has(id) ? '已接入 · 用户已验收' : '已接入 · 实验性';
+    if (userAccepted.has(id)) state.classList.add('user-accepted');
     header.append(name, state);
     const reason = document.createElement('p');
     reason.textContent = feature.reason;

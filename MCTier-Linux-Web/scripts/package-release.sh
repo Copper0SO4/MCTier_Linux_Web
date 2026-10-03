@@ -3,7 +3,7 @@ set -Eeuo pipefail
 ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
 VERSION="${1:-0.1.0}"
-[[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || { echo "Usage: $0 VERSION" >&2; exit 2; }
+[[ "$VERSION" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]] || { echo "Usage: $0 VERSION" >&2; exit 2; }
 for tool in node npm cargo zip sha256sum; do command -v "$tool" >/dev/null || { echo "Missing build tool: $tool" >&2; exit 1; }; done
 ./MCTier-Linux-Web/scripts/build-web-server.sh
 CORE="$ROOT/MCTier-Linux-Web/resources/binaries/easytier-core"

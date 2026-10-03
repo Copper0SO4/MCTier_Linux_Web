@@ -193,7 +193,7 @@ Download the latest build from [GitHub Releases](https://github.com/pmh1314520/M
 - Windows Installer: download `MCTier_x.y.z_x64-setup.exe` and double-click to install.
 - Windows Portable: download `MCTier.exe` and run it directly.
 - Android: download `MCTier-Android.apk` and install it on your phone.
-- Linux (Debian family): see [MCTier-Linux/README.md](MCTier-Linux/README.md) for build and packaging steps. The app itself runs as a normal user and only needs `cap_net_admin` granted once to `easytier-core`; voice, screen sharing and remote control are not yet usable on stock Debian — see the per-feature status matrix in that directory.
+- Linux browser edition (Debian/Ubuntu x86_64): download the `MCTier Linux Web v3.5.0` archive from [this fork's Releases](https://github.com/Copper0SO4/MCTier_Linux_Web/releases), extract it, read the bundled Chinese `README-Linux.txt`, then run `./mctier-linux-web` as a normal user. Chrome/Chromium is recommended; Firefox room entry is currently blocked because of unresolved signaling WebSocket 1006 disconnects. User testing confirms networking, chat/files, bidirectional microphone/screen sharing, and lobby invites. See the Chinese [Linux Web README](README.md) for requirements, build steps, and limitations. The upstream native Linux build remains documented in [MCTier-Linux/README.md](MCTier-Linux/README.md).
 
 ### Create or Join a Lobby
 

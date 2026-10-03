@@ -881,3 +881,36 @@ h2[tabindex='-1']:focus {
 .community-dialog input[type="checkbox"] { width: auto; flex: none; }
 .community-dialog button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .header-actions { flex-wrap: wrap; }
+
+/* Release UI polish: strengthen hierarchy, spacing, responsive controls and keyboard affordances. */
+:root { --surface: rgba(25, 30, 46, .92); --surface-raised: rgba(255,255,255,.055); --accent: #79c943; --radius-card: 14px; }
+body { background: radial-gradient(ellipse at 12% -12%, rgba(66,100,157,.28), transparent 42%), linear-gradient(145deg,#151a2b,#1a2340 58%,#151c31); }
+.app-header { position: sticky; top: 0; z-index: 20; backdrop-filter: blur(18px); background: rgba(20,24,37,.9); box-shadow: 0 8px 28px rgba(0,0,0,.12); }
+.brand { min-height: 38px; }
+button, input, select { transition: border-color .16s ease, background-color .16s ease, box-shadow .16s ease, transform .16s ease; }
+button:hover:enabled { border-color: rgba(137,216,101,.38); }
+button:active:enabled { transform: translateY(1px); }
+.primary { box-shadow: 0 5px 16px rgba(82,196,26,.16); }
+.notice { position: relative; }
+.lobby-form-card, .settings-card, .about-card, .mini-window, .lobby-panel { border-radius: var(--radius-card); box-shadow: 0 12px 36px rgba(0,0,0,.16); }
+.feature-card { border-radius: 12px; padding: 15px; background: linear-gradient(150deg,rgba(255,255,255,.045),rgba(255,255,255,.018)); transition: border-color .18s ease, transform .18s ease, background .18s ease; }
+.feature-card:hover { border-color: rgba(137,216,101,.26); background: linear-gradient(150deg,rgba(255,255,255,.065),rgba(255,255,255,.025)); }
+.feature-heading strong { font-size: 13px; }
+.feature-state { white-space: normal; text-align: right; }
+.feature-state.user-accepted { color: #9be27a; }
+#capabilities-view { width: min(1160px, calc(100% - 32px)); margin: 22px auto 42px; }
+#capabilities-view > .hint { padding: 14px 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); }
+#feature-matrix { gap: 14px; }
+.utility-header { margin-bottom: 18px; }
+.app-footer { padding-top: 14px; border-top: 1px solid var(--border); }
+@media (max-width: 600px) {
+ .app-header { position: static; align-items: flex-start; }
+ .header-actions { max-width: 68%; }
+ .notice { font-size: 11px; }
+ #capabilities-view { width: calc(100% - 24px); margin: 14px auto 28px; }
+ .feature-card { padding: 13px; }
+ .feature-heading { align-items: flex-start; }
+ .feature-state { text-align: left; }
+ .app-footer { padding: 12px; flex-wrap: wrap; }
+}
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; animation-duration: .01ms !important; } }
