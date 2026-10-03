@@ -1,0 +1,8 @@
+/web-dist/
+/server/target/
+/.runtime/
+
+frontend-src/
+verification/
+resources/binaries/
+resources/speech-model/

@@ -1,0 +1,52 @@
+--- a/services/chat/P2PChatService.ts
++++ b/services/chat/P2PChatService.ts
+@@ -8,0 +9 @@
++import { isLocalWeb, localHeaders } from '../platform/localWeb';
+@@ -52,0 +54,3 @@
++  private streamState = 'stopped';
++  private receiveError = '';
++  private receivedMessages = 0;
+@@ -125,0 +130,2 @@
++    this.receivedMessages = 0;
++    this.receiveError = '';
+@@ -140,0 +147 @@
++    if (this.isListening) return;
+@@ -171,0 +179,7 @@
++  getReceiveDiagnostics() {
++    return { listening: this.isListening, stream: this.streamState,
++      identityReady: !!this.currentPlayerId && !!this.myVirtualIp,
++      tokenReady: isSafeChatToken(this.chatToken), callbackAttached: !!this.onMessageCallback,
++      receivedMessages: this.receivedMessages, error: this.receiveError };
++  }
++
+@@ -179,0 +194,8 @@
++      // Recover local inbound history independently of remote HTTP availability.
++      if (isLocalWeb()) {
++        const local = await invoke<BackendChatMessage[]>('get_local_p2p_chat_messages', {
++          since: full ? null : Math.max(0, this.historySince - 2),
++        });
++        if (!this.isListening || generation !== this.listeningGeneration) return;
++        if (Array.isArray(local)) for (const message of local) this.handleMessage(message);
++      }
+@@ -185,0 +208 @@
++      this.receiveError = '';
+@@ -199,0 +223 @@
++      this.receiveError = error instanceof Error ? error.message : '聊天历史读取失败';
+@@ -222 +246 @@
+-    const streamUrl = `http://${this.myVirtualIp}:${CHAT_SERVER_PORT}/api/chat/stream`;
++    const streamUrl = isLocalWeb() ? '/api/chat/stream' : `http://${this.myVirtualIp}:${CHAT_SERVER_PORT}/api/chat/stream`;
+@@ -225,0 +250 @@
++    this.streamState = 'connecting';
+@@ -234,0 +260 @@
++          ...(isLocalWeb() ? await localHeaders() : {}),
+@@ -242,0 +269,2 @@
++      this.streamState = 'open';
++      this.receiveError = '';
+@@ -259,0 +288 @@
++        this.receiveError = detail;
+@@ -263,0 +293 @@
++        this.streamState = this.isListening ? 'reconnecting' : 'stopped';
+@@ -410,0 +441 @@
++      this.receivedMessages++;
+@@ -518,0 +550 @@
++    this.streamState = 'stopped';

@@ -1,0 +1,142 @@
+--- a/services/webrtc/WebRTCClient.ts
++++ b/services/webrtc/WebRTCClient.ts
+@@ -132,0 +133,5 @@
++  private lastSignalingClose: { code: number; wasClean: boolean; aliveMs: number; silentMs: number; queuedFrames: number; pongPending: boolean } | null = null;
++
++  getSignalingDiagnostics() {
++    return this.lastSignalingClose ? { ...this.lastSignalingClose } : null;
++  }
+@@ -218,0 +224 @@
++  private backendStatusUnlisten: (() => void) | null = null;
+@@ -562,0 +569 @@
++        let openedAt = 0, lastFrameAt = 0;
+@@ -606,0 +614 @@
++          openedAt = lastFrameAt = Date.now();
+@@ -615,0 +624 @@
++          lastFrameAt = Date.now();
+@@ -622,0 +632,7 @@
++            // Transport liveness must not wait for serialized SDP/ICE handlers.
++            // Screen negotiation can await browser operations while a pong is
++            // already received; queueing that pong caused false 5s timeouts.
++            if (message?.type === 'pong') {
++              this.handleWebSocketPong();
++              return;
++            }
+@@ -731,0 +748,8 @@
++          this.lastSignalingClose = {
++            code: event?.code ?? 0, wasClean: event?.wasClean === true,
++            aliveMs: openedAt ? Math.max(0, Date.now() - openedAt) : 0,
++            silentMs: lastFrameAt ? Math.max(0, Date.now() - lastFrameAt) : 0,
++            queuedFrames: this.queuedWebSocketFrames,
++            pongPending: this.websocketPongTimeout !== null,
++          };
++          console.warn('信令断开诊断（不含凭证或媒体内容）', this.lastSignalingClose);
+@@ -1188 +1212,2 @@
+-    p2pChatService.setChatToken(token);
++    // Publish to the renderer only after configureChatSession commits the
++    // backend credential. Otherwise SSE reconnects with a not-yet-valid token.
+@@ -1298 +1322,0 @@
+-          p2pChatService.setChatToken(message.chatToken);
+@@ -3040,0 +3065,3 @@
++    const ticket = this.lobbySessionTicket;
++    this.backendStatusUnlisten?.();
++    this.backendStatusUnlisten = null;
+@@ -3043 +3070,2 @@
+-      await listen<SignalingMessage>('player-status-update', (event) => {
++      const unlisten = await listen<SignalingMessage>('player-status-update', (event) => {
++        if (!ticket || !lobbySessionCoordinator.isCurrent(ticket)) return;
+@@ -3054,0 +3083,5 @@
++      if (!ticket || !lobbySessionCoordinator.isCurrent(ticket)) {
++        unlisten();
++        throw new DOMException('大厅会话已取消', 'AbortError');
++      }
++      this.backendStatusUnlisten = unlisten;
+@@ -4308,0 +4342 @@
++        const socket = this.websocket;
+@@ -4310 +4344,2 @@
+-          this.websocket.send(JSON.stringify({ type: 'ping' }));
++          socket.send(JSON.stringify({ type: 'ping' }));
++          if (this.websocketPongTimeout !== null) clearTimeout(this.websocketPongTimeout);
+@@ -4315,2 +4350,2 @@
+-            if (this.websocket) {
+-              this.websocket.close();
++            if (this.websocket === socket && socket.readyState === WebSocket.OPEN) {
++              socket.close(4000, 'signaling-heartbeat-timeout');
+@@ -4682,0 +4718,49 @@
++  /** A local diagnostic view; never exposes SDP, addresses or ICE credentials. */
++  async getVoiceDiagnostics(): Promise<Array<{
++    playerId: string; connection: RTCPeerConnectionState; ice: RTCIceConnectionState;
++    signaling: RTCSignalingState; selectedPair: boolean; localType?: string;
++    remoteType?: string; protocol?: string; roundTripTime?: number;
++    sentPackets: number; receivedPackets: number; sentBytes: number; receivedBytes: number;
++    playbackBlocked: boolean; playbackError?: string;
++  }>> {
++    const entries = [...this.peerConnections.entries()];
++    return Promise.all(entries.map(async ([playerId, peer]) => {
++      const diagnostic = {
++        playerId, connection: peer.connection.connectionState, ice: peer.connection.iceConnectionState,
++        signaling: peer.connection.signalingState, selectedPair: false,
++        localType: undefined as string | undefined, remoteType: undefined as string | undefined,
++        protocol: undefined as string | undefined, roundTripTime: undefined as number | undefined,
++        sentPackets: 0, receivedPackets: 0, sentBytes: 0, receivedBytes: 0,
++        playbackBlocked: !!peer.lastPlaybackError, playbackError: peer.lastPlaybackError,
++      };
++      try {
++        const stats = await peer.connection.getStats();
++        let pairId: string | undefined;
++        stats.forEach(report => {
++          if (report.type === 'transport') pairId = report.selectedCandidatePairId;
++          if ((report.kind ?? report.mediaType) === 'audio') {
++            if (report.type === 'outbound-rtp') { diagnostic.sentPackets += report.packetsSent || 0; diagnostic.sentBytes += report.bytesSent || 0; }
++            if (report.type === 'inbound-rtp') { diagnostic.receivedPackets += report.packetsReceived || 0; diagnostic.receivedBytes += report.bytesReceived || 0; }
++          }
++        });
++        let pair = pairId ? stats.get(pairId) : undefined;
++        if (!pair) stats.forEach(report => { if (report.type === 'candidate-pair' && report.nominated && report.state === 'succeeded') pair = report; });
++        if (pair) {
++          diagnostic.selectedPair = pair.state === 'succeeded';
++          const local = stats.get(pair.localCandidateId);
++          const remote = stats.get(pair.remoteCandidateId);
++          diagnostic.localType = local?.candidateType;
++          diagnostic.remoteType = remote?.candidateType;
++          diagnostic.protocol = local?.protocol;
++          diagnostic.roundTripTime = pair.currentRoundTripTime;
++        }
++      } catch { /* The peer can close while a diagnostic snapshot is in flight. */ }
++      return diagnostic;
++    }));
++  }
++
++  /** Retry blocked remote playback from an explicit user gesture. */
++  resumeAudioPlayback(): void {
++    for (const peer of this.peerConnections.values()) this.resumePeerAudio(peer);
++  }
++
+@@ -4686,0 +4771,4 @@
++    this.backendStatusUnlisten?.();
++    this.backendStatusUnlisten = null;
++    // Release capture before any async IPC/import: closing a browser tab must
++    // not keep the microphone live while cleanup requests are outstanding.
+@@ -4687,0 +4776,6 @@
++    const captureTracks = new Set([
++      ...(this.localStream?.getTracks() ?? []), ...(this.rawMicStream?.getTracks() ?? []),
++    ]);
++    this.localStream = null;
++    this.rawMicStream = null;
++    captureTracks.forEach(track => track.stop());
+@@ -4794,14 +4888 @@
+-      // 停止本地音频流
+-      if (this.localStream) {
+-        const trackCount = this.localStream.getTracks().length;
+-        this.localStream.getTracks().forEach((track) => {
+-          track.stop();
+-        });
+-        this.localStream = null;
+-        console.log(`✅ 本地音频流已停止 (${trackCount} 个轨道)`);
+-      }
+-      // 停止原始麦克风流并释放变声器
+-      if (this.rawMicStream) {
+-        this.rawMicStream.getTracks().forEach((t) => t.stop());
+-        this.rawMicStream = null;
+-      }
++      // 音轨已在首次 await 前同步停止；继续释放变声器。

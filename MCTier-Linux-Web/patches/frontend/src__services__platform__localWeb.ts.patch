@@ -1,0 +1,49 @@
+--- a/services/platform/localWeb.ts
++++ b/services/platform/localWeb.ts
+@@ -0,0 +1,46 @@
++/** The separate Linux browser build enables this adapter; desktop builds retain IPC. */
++export const isLocalWeb = (): boolean => import.meta.env?.VITE_MCTIER_LOCAL_WEB === '1';
++
++export interface LocalBootstrap {
++  csrf: string;
++  defaults: { serverNode: string; signalingServer: string; version: string };
++}
++let boot: Promise<LocalBootstrap> | undefined;
++export function localBootstrap(): Promise<LocalBootstrap> {
++  return boot ??= fetch('/api/bootstrap', { cache: 'no-store', credentials: 'same-origin' })
++    .then(async response => {
++      if (!response.ok) throw new Error(`本地服务返回 HTTP ${response.status}`);
++      const value = await response.json() as LocalBootstrap;
++      if (!/^[a-f0-9]{64}$/.test(value.csrf)) throw new Error('本地服务认证响应无效');
++      return value;
++    }).catch(error => { boot = undefined; throw error; });
++}
++export function localClientId(): string {
++  const key = 'mctier_linux_web_tab';
++  let id = sessionStorage.getItem(key);
++  if (!id || !/^[a-f0-9]{32}$/.test(id)) {
++    id = crypto.randomUUID().replace(/-/g, '');
++    sessionStorage.setItem(key, id);
++  }
++  return id;
++}
++export async function localHeaders(): Promise<Record<string, string>> {
++  return { 'x-mctier-csrf': (await localBootstrap()).csrf, 'x-mctier-client': localClientId() };
++}
++export async function localInvoke<T>(command: string, args: Record<string, unknown> = {}, keepalive = false): Promise<T> {
++  const response = await fetch('/api/invoke', {
++    method: 'POST', credentials: 'same-origin', cache: 'no-store', keepalive,
++    headers: { 'Content-Type': 'application/json', ...await localHeaders() },
++    body: JSON.stringify({ command, args }),
++  });
++  const value = await response.json().catch(() => null);
++  if (!response.ok) {
++    if (response.status === 403) boot = undefined;
++    throw new Error(value?.error || `本地服务返回 HTTP ${response.status}，请刷新页面后重试`);
++  }
++  return value as T;
++}
++export async function renewLocalLease(): Promise<void> {
++  const response = await fetch('/api/lease', { method: 'POST', credentials: 'same-origin', headers: await localHeaders() });
++  if (!response.ok) throw new Error('本地服务连接已断开或由其它页面控制');
++}

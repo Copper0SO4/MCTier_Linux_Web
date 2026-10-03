@@ -1,0 +1,31 @@
+{
+  "baseCommit": "dbb7bbd8da1323f5414e921020a6f33dd1630381",
+  "frontendLinuxPatches": [
+    "src/services/chat/P2PChatService.ts",
+    "src/services/webrtc/WebRTCClient.ts",
+    "src/services/screenShare/nativeCapture.ts",
+    "src/services/screenShare/ScreenShareService.ts"
+  ],
+  "restoredTrackedFiles": [
+    "src/services/chat/P2PChatService.ts",
+    "src/services/webrtc/WebRTCClient.ts",
+    "src/services/screenShare/nativeCapture.ts",
+    "src/services/screenShare/ScreenShareService.ts",
+    "MCTier-Linux/README.md",
+    "src-tauri/src/modules/chat_service.rs",
+    "src-tauri/src/modules/config_manager.rs",
+    "src-tauri/src/modules/mod.rs",
+    "src-tauri/src/modules/network_service.rs",
+    "src-tauri/src/modules/tauri_commands/chat.rs",
+    "src-tauri/src/modules/tauri_commands/shared.rs",
+    "scripts/prepare-speech-model.mjs",
+    "docs/bundled-small-chinese-speech-20260917.md",
+    "tests/chat-receive-recovery.test.mjs",
+    "tests/signaling-registration.test.mjs",
+    "tests/voice-recovery.test.mjs",
+    "tests/bundled-speech-model.test.mjs",
+    "tests/helpers/tauriCommandsSource.mjs",
+    "tests/tauri-command-security.test.mjs"
+  ],
+  "note": "Original diffs preserved in ignored verification/before-directory-migration.patch. Generated frontend-src merges current upstream src with the isolated overrides."
+}
