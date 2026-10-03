@@ -42,5 +42,9 @@ also reported with a clean Firefox profile and AdBlock disabled. The cause is
 unknown and this build does not claim the Firefox issue is fixed. Chrome
 working in a user test does not by itself validate Firefox or WebRTC.
 
+The current source temporarily blocks Firefox room entry and labels other
+unfinished features as unavailable. If your default browser is Firefox, open
+http://127.0.0.1:14700 manually in Chrome or Chromium while the service is running.
+
 Bundled EasyTier core SHA-256:
   f1bd60be7a50da84f50732ed4b826b70284c84f05dadbd3fe448429dfe184322

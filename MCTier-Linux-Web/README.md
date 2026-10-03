@@ -1,11 +1,13 @@
 # MCTier Linux Web
 
-MCTier Linux 的独立浏览器入口与本地服务端。它使用 Chromium/Chrome 或 Firefox 作为媒体运行环境：用户手动启动服务，再手动访问 `http://127.0.0.1:14700`。不会自动启动浏览器、加入房间或运行 EasyTier。
+MCTier Linux 的独立浏览器入口与本地服务端。当前推荐 Chromium/Chrome；Firefox 存在未解决的信令断连，界面暂时封锁其大厅入口。源码运行脚本需用户手动启动服务并访问 `http://127.0.0.1:14700`；发行压缩包的启动器会在服务就绪后打开默认浏览器。进入大厅及运行 EasyTier 仍需用户主动操作。
 
 本目录位于你的 MCTier 分支仓库中。当前宿主代码已快进到分支 `master` 的 `6c73b564`（MCTier 3.9.0）；Linux 功能最初以官方 `dbb7bbd8`（3.8.0）为基线，已将共享前端补丁重新套到当前 3.9.0 源码并复核构建。它是供继续放在 MCTier 源码仓库中、单独向官方上游提交的 Linux 功能目录；构建时从仓库根目录读取共享的 `src/`、`src-tauri/src/modules/`、`package.json` 和锁文件。单独克隆本目录的 GitHub 仓库时，还需要相同版本的 MCTier 上游源码作为宿主。
 
 ## 当前进展
 
+- 界面直接引用当前上游的 `MainWindow`、`LobbyForm`、`MiniWindow` 和 `ChatRoom` CSS：主界面恢复 Logo、创建/加入、设置与关于入口；大厅使用成员侧栏和独立聊天、屏幕、诊断页面。浏览器宽屏采用侧栏布局，未挂载原版 Tauri 窗口组件，不承诺窗口布局逐像素一致。
+- `web/featureAvailability.ts` 集中管理功能牌。22 项状态中，4 项已接入但仍为实验性、18 项暂未开放；不可用入口使用禁用按钮并显示原因。文件夹共享、远程操控、发送附件、系统音频、房间工具及桌面集成等暂时封锁。Firefox 入口同时有提示、按钮禁用和连接处理器检查；这只是暂时封锁，不是根因修复。
 - 独立 Rust/Axum 服务默认只监听 `127.0.0.1:14700`；验证 Host、Origin、CSRF、浏览器会话和请求范围，不提供任意本机路径接口。拒绝以 root 启动。
 - 大厅、成员、MCTier 信令注册、聊天签名/加密、EasyTier 参数和 WebRTC 逻辑沿用 MCTier 现有协议及共享实现。信令服务负责大厅和 WebRTC 信令；EasyTier 节点负责虚拟组网。
 - 用户点击后才启动指定 EasyTier 节点并注册信令。未加入房间不会触发网络连接。
@@ -13,11 +15,12 @@ MCTier Linux 的独立浏览器入口与本地服务端。它使用 Chromium/Chr
 - 聊天附件下载使用原版签名、成员认证和加密附件端点，浏览器保存时限为 64 MiB；发送附件和共享文件夹暂未迁移。
 - 屏幕共享/观看沿用原版信令和 WebRTC 屏幕协议，界面有共享列表刷新、播放恢复和连接诊断。手机对 Linux、Linux 对手机的画面均未在本轮真实联机验收。
 - 远程输入操控尚未接入。屏幕共享只采集视频，不采集系统音频。Magic DNS、快捷键与自动启动也未迁移。
-- 构建和自动化测试通过；尚无真实房间、Firefox/Chrome 人工测试、跨端聊天/附件、EasyTier 对端数据收发或 WebRTC 语音/屏幕验收。本目录不宣称这些能力已通过。
+- 构建和自动化测试通过；本轮已进行 Chromium 静态界面的导航与禁用状态检查，未连接真实房间。跨端聊天/附件、EasyTier 对端数据收发及 WebRTC 语音/屏幕仍未完成验收。
 
 ## 目录安排与上游更新
 
 - `web/`：本地浏览器界面。
+- `web/shell.ts`：页面导航与可用性展示；不发起网络、麦克风或屏幕捕获。`web/main.ts` 继续负责已接入功能的实际生命周期。
 - `server/`：独立本地服务、嵌入式静态资源和 Linux 服务测试。
 - `patches/frontend/`：仅保存 Linux 适配对共享前端文件的小补丁；构建准备器不调用 Tauri，直接基于当前上游树应用补丁。
 - `server/shared/`：服务端抽出的共享 Rust 实现。
@@ -94,7 +97,9 @@ node --test MCTier-Linux-Web/tests/*.test.mjs
 cargo test --locked --offline --manifest-path MCTier-Linux-Web/server/Cargo.toml
 ```
 
-截至 2026-10-03，前端 5 个测试文件通过，服务端 71 项测试通过；TypeScript 检查及 release 构建通过。构建日志与测试记录位于忽略提交的 `MCTier-Linux-Web/verification/`。
+截至 2026-10-03，前端 6 个测试文件通过，服务端 71 项测试通过；TypeScript 检查及 release 构建通过。新增可用性测试保护 Firefox 封锁和未迁移功能的状态。构建日志与测试记录位于忽略提交的 `MCTier-Linux-Web/verification/`。
+
+以后迁移某功能时，应先接通原版实现、补齐权限和资源清理，再更新功能表及验收记录。功能表属于界面提示，不替代服务端的命令、文件访问或同源权限检查。Firefox 断连原因解决并完成真实测试后，才能解除其大厅封锁。
 
 ## 真实环境验收仍待完成
 

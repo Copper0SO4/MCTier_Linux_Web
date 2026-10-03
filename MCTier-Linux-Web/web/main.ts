@@ -1,4 +1,10 @@
+// Reuse upstream presentation without mounting its native-window lifecycle.
+import '../frontend-src/components/MainWindow/MainWindow.css';
+import '../frontend-src/components/LobbyForm/LobbyForm.css';
+import '../frontend-src/components/MiniWindow/MiniWindow.css';
+import '../frontend-src/components/ChatRoom/ChatRoom.css';
 import './styles.css';
+import { setupShell } from './shell';
 import { downloadAttachment } from './download';
 import { parseChatAttachment, formatFileSize } from '../frontend-src/services/chat/fileAttachment';
 import { probeSignaling } from './signalingProbe';
@@ -23,12 +29,13 @@ function controlState(online: boolean) {
   for (const id of ['mic', 'speaker', 'resume-audio', 'voice-group', 'send', 'chat-text', 'recipient', 'peer-query', 'share-screen', 'refresh-shares']) {
     (el(id) as HTMLButtonElement).disabled = !online;
   }
-  el<HTMLButtonElement>('join').disabled = busy || online;
+  el<HTMLButtonElement>('join').disabled = busy || online || !shell.canJoin || !serviceReady;
   el<HTMLButtonElement>('leave').disabled = !busy && !online;
-  el<HTMLButtonElement>('signal-probe').disabled = busy || online;
+  el<HTMLButtonElement>('signal-probe').disabled = busy || online || !serviceReady;
   for (const id of ['player-name', 'lobby-name', 'lobby-password', 'server-node', 'signaling-server']) el<HTMLInputElement>(id).readOnly = busy || online;
+  shell.setSessionState(online ? 'online' : busy ? 'connecting' : 'idle');
 }
-let busy = false, online = false, leaving = false, localId = '', localName = '', hostId = '';
+let busy = false, online = false, leaving = false, serviceReady = false, localId = '', localName = '', hostId = '';
 let ticket: LobbySessionTicket | null = null;
 let leaseTimer: number | null = null;
 let localShare: string | null = null, viewedShare: string | null = null;
@@ -39,6 +46,13 @@ const players = new Map<string, Player>();
 const messages = new Map<string, ChatMessage>();
 const receipts = new Map<string, string>();
 let statsRunning = false;
+const shell = setupShell();
+
+el('copy-ip').onclick = async () => {
+  if (!online) return;
+  try { await navigator.clipboard.writeText(el('virtual-ip').textContent || ''); notice('虚拟 IP 已复制。'); }
+  catch { notice('浏览器未允许复制，请手动选择虚拟 IP。', true); }
+};
 
 function installMessageListener() { p2pChatService.onMessage(message => { messages.set(message.id, message); renderMessages(); }); }
 function renderMessages() {
@@ -47,10 +61,10 @@ function renderMessages() {
   container.replaceChildren();
   const ordered = [...messages.values()].sort((a, b) => a.timestamp - b.timestamp).slice(-300);
   for (const message of ordered) {
-    const row = document.createElement('div'); row.className = `message${message.playerId === localId ? ' me' : ''}`;
+    const row = document.createElement('div'); row.className = `message chat-message ${message.playerId === localId ? 'me own' : 'other'}`;
     const meta = document.createElement('div'); meta.className = 'meta';
     meta.textContent = `${message.playerName} · ${new Date(message.timestamp).toLocaleTimeString()}${message.recipientId ? ' · 私聊' : ''}${receipts.has(message.id) ? ' · ' + receipts.get(message.id) : ''}`;
-    const content = document.createElement('div'); content.className = 'text'; content.textContent = message.recalled ? '消息已撤回' : message.content;
+    const content = document.createElement('div'); content.className = 'text message-content'; content.textContent = message.recalled ? '消息已撤回' : message.content;
     row.append(meta, content);
     if (message.imageData && message.type === 'image') { const image = document.createElement('img'); image.src = message.imageData; image.alt = '聊天图片'; row.append(image); }
     if (message.imageData && message.type === 'voice') { const audio = document.createElement('audio'); audio.src = message.imageData; audio.controls = true; row.append(audio); }
@@ -84,11 +98,15 @@ function renderMembers() {
   const recipient = el<HTMLSelectElement>('recipient'); const selected = recipient.value;
   recipient.replaceChildren(new Option('所有成员', ''));
   for (const player of players.values()) {
-    const row = document.createElement('li');
-    const name = document.createElement('div'); name.className = 'member-name';
+    const row = document.createElement('li'); row.className = 'mini-player-item';
+    const info = document.createElement('div'); info.className = 'mini-player-info';
+    const avatar = document.createElement('span'); avatar.className = 'player-avatar'; avatar.textContent = player.name.slice(0, 1);
+    const details = document.createElement('div'); details.className = 'player-details';
+    const name = document.createElement('div'); name.className = 'member-name mini-player-name';
     name.textContent = `${player.name}${player.id === localId ? '（你）' : ''}${player.id === hostId ? ' · 房主' : ''}`;
     const mic = document.createElement('span'); mic.textContent = player.micEnabled ? '🎙' : '关麦'; name.append(mic);
-    const address = document.createElement('small'); address.textContent = player.virtualIp || '地址未知'; row.append(name, address);
+    const address = document.createElement('small'); address.className = 'player-ip-row'; address.textContent = player.virtualIp || '地址未知';
+    details.append(name, address); info.append(avatar, details); row.append(info);
     if (player.id !== localId) {
       recipient.append(new Option(player.name, player.id));
       if (hostId === localId) {
@@ -139,6 +157,8 @@ async function startNetwork(attempt: number): Promise<Lobby> {
     serverNode: input('server-node').trim(), signalingServer: input('signaling-server').trim() };
 }
 async function join() {
+  if (!shell.canJoin) { notice(shell.blockedReason, true); return; }
+  if (!serviceReady) { notice('本地服务尚未就绪，请确认服务已启动后刷新页面。', true); return; }
   if (busy || online) return;
   busy = true; controlState(false); ticket = lobbySessionCoordinator.begin();
   const current = ticket;
@@ -213,7 +233,7 @@ el('signal-probe').onclick = async () => {
   notice('正在检查当前信令地址的浏览器 WebSocket 握手，不启动 EasyTier、不注册房间…');
   try { notice(await probeSignaling(input('signaling-server').trim())); }
   catch (error) { notice(`信令握手检查失败：${label(error)}`, true); }
-  finally { button.disabled = busy || online; }
+  finally { button.disabled = busy || online || !serviceReady; }
 };
 el('leave').onclick = () => { void leave(); };
 el('mic').onclick = async () => {
@@ -382,6 +402,8 @@ window.addEventListener('pagehide', () => {
 async function initialize() {
   try {
     const boot = await localBootstrap();
+    serviceReady = true;
+    controlState(false);
     el<HTMLInputElement>('server-node').value = boot.defaults.serverNode;
     el<HTMLInputElement>('signaling-server').value = boot.defaults.signalingServer;
     el<HTMLInputElement>('player-name').value = localStorage.getItem('mctier_linux_player_name') || '';
@@ -390,8 +412,14 @@ async function initialize() {
     text('service-state', '本地服务在线');
     const response = await fetch('/api/status', { cache: 'no-store' }); const status = await response.json();
     if (status.session) notice('本地服务已有大厅会话。若是本页面刷新留下的会话，请先点击退出，再手动重新加入。');
-    if (status.session) el<HTMLButtonElement>('leave').disabled = false;
+    if (status.session) {
+      shell.setSessionState('orphaned');
+      el<HTMLButtonElement>('leave').disabled = false;
+      el<HTMLButtonElement>('join').disabled = true;
+      el<HTMLButtonElement>('signal-probe').disabled = true;
+    }
     window.setInterval(() => { void refreshDiagnostics(); }, 2500);
-  } catch (error) { notice(`本地服务初始化失败：${label(error)}`, true); }
+  } catch (error) { serviceReady = false; controlState(false); text('service-state', '本地服务不可达'); notice(`本地服务初始化失败：${label(error)}`, true); }
 }
+controlState(false);
 void initialize();

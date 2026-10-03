@@ -1,23 +1,334 @@
 <!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>MCTier Linux</title></head>
-<body><main class="app">
-<header class="topbar"><div class="brand"><span class="logo">M</span><div><strong>MCTier</strong><small>LINUX · BROWSER CLIENT</small></div></div><div class="top-right"><span id="service-state" class="badge">连接本地服务…</span><span class="version">实验性支持</span></div></header>
-<div id="notice" class="notice" role="status">浏览器入口已就绪。创建或加入大厅后，分别检查虚拟网络与媒体连接。</div>
-<div class="workspace"><aside class="sidebar">
-<div class="section-head"><span class="eyebrow">CONNECT</span><h1>进入大厅</h1></div>
-<form id="lobby-form"><label>你的昵称<input id="player-name" required maxlength="32" placeholder="玩家昵称" autocomplete="nickname"></label><label>大厅名称<input id="lobby-name" required minlength="4" maxlength="32" placeholder="与对端使用相同名称" autocomplete="off"></label><label>大厅密码 <small>可留空</small><input id="lobby-password" type="password" maxlength="32" placeholder="非空时需含字母和数字" autocomplete="off"></label>
-<details open><summary>连接地址</summary><label>EasyTier 节点<input id="server-node" required spellcheck="false" autocomplete="off"></label><p class="hint">负责虚拟组网；只连接此处指定的节点。</p><label>MCTier 信令服务<input id="signaling-server" required spellcheck="false" autocomplete="off"></label><p class="hint">负责大厅成员与 WebRTC 信令。</p><button id="signal-probe" type="button">检查信令握手（不加入房间）</button></details>
-<div class="connect-buttons"><button id="join" class="primary" type="submit">创建 / 加入大厅</button><button id="leave" type="button" disabled>退出 / 取消</button></div></form>
-<div class="cap-note"><span>⌁</span><p>随包 EasyTier 以普通用户运行。缺少网络 capability 时会明确报错，授权须由用户确认。</p></div>
-<div class="section-head small"><span class="eyebrow">MEMBERS</span><h2>大厅成员 <span id="member-count">0</span></h2></div><ul id="members" class="members"><li class="empty">尚未进入大厅</li></ul>
-</aside><section class="content">
-<div class="room-head"><div><span class="eyebrow">YOUR LOBBY</span><h2 id="room-name">等待连接</h2></div><div class="network-chip"><i id="network-dot"></i><span id="network-state">EasyTier 未启动</span></div></div>
-<div class="status-grid"><div><small>信令</small><strong id="signal-state">未连接</strong><small id="signal-details">暂无断开记录</small></div><div><small>虚拟地址</small><strong id="virtual-ip">—</strong></div><div><small>媒体连接</small><strong id="media-state">未建立</strong></div></div>
-<div class="voice-bar"><button id="mic" disabled>开启麦克风</button><button id="speaker" disabled>全部静音</button><button id="resume-audio" disabled>恢复音频播放</button><select id="voice-group" aria-label="语音小队" disabled><option value="0">公共语音</option><option value="1">小队 1</option><option value="2">小队 2</option><option value="3">小队 3</option><option value="4">小队 4</option></select></div>
-<details class="devices"><summary>音频设备与变声</summary><div class="device-grid"><label>麦克风<select id="audio-input"><option value="">系统默认</option></select></label><label>扬声器<select id="audio-output"><option value="">系统默认</option></select></label><label>音色<select id="voice-preset"></select></label></div><p class="hint">设备名称在授予麦克风权限后显示。输出设备选择取决于浏览器支持。</p><p id="capture-state" class="hint">麦克风尚未申请；只有点击开启时才会请求权限。</p></details>
-<section class="chat-panel"><div class="panel-head"><h3>大厅聊天</h3><span id="chat-state" class="subtle">经 EasyTier 加密传输</span></div><div id="messages" class="messages" role="log" aria-live="polite"><div class="chat-empty"><span>◌</span><p>连接大厅后开始聊天</p><small>聊天送达和媒体通话会分别报告状态。</small></div></div><form id="chat-form"><select id="recipient" aria-label="聊天接收者" disabled><option value="">所有成员</option></select><input id="chat-text" placeholder="输入消息…" maxlength="4096" disabled autocomplete="off"><button id="send" class="primary" disabled>发送</button></form></section>
-<details class="diagnostics" open><summary>语音与网络诊断 <span>用于首轮互通验证</span></summary><p class="hint">ICE 成功和 RTP 增长仍需结合两端实际听音确认。这里不显示 SDP、ICE 密钥或完整候选地址。</p><div id="voice-diagnostics" class="diag-empty">暂无对端媒体连接。</div><button id="peer-query" disabled>查询 EasyTier 对端</button><pre id="peer-report"></pre></details>
-<section class="screens"><div class="panel-head"><h3>屏幕共享 / 观看手机</h3><div><button id="refresh-shares" disabled>刷新共享列表</button><button id="share-screen" disabled>共享电脑屏幕</button></div></div><p class="hint">电脑共享由浏览器显示选择窗口，只采集视频。观看手机：在手机端启动屏幕共享并允许录屏，然后刷新列表并点击观看。远程操控暂未接入。</p><p id="screen-status" class="hint">未观看屏幕</p><div id="shares"></div><video id="screen-video" controls playsinline hidden></video><button id="resume-screen" hidden>播放画面</button><button id="stop-view" hidden>停止观看</button></section>
-<p class="limitations">远程协作：浏览器被控端输入授权与注入尚未接入，当前界面不提供开启入口。聊天文件附件支持下载（最大 64 MB），发送附件和共享文件夹尚未接入。Magic DNS、桌面快捷键及自动启动功能也尚未迁移。</p>
-</section></div><footer><span>本地服务 · <code>127.0.0.1:14700</code></span><span>网络与媒体功能待真实对端验收</span></footer>
-</main><script type="module" src="/main.ts"></script></body></html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>MCTier · Linux Web</title>
+  </head>
+  <body>
+    <div class="web-app">
+      <header class="app-header">
+        <a class="brand" href="#" id="home-link"
+          ><img src="/MCTierIcon.png" alt="" /><strong>MCTier</strong><span>Linux Web</span></a
+        >
+        <div class="header-actions">
+          <span id="service-state" class="badge">连接本地服务…</span
+          ><button type="button" data-view="capabilities">功能状态</button
+          ><button type="button" id="leave" disabled hidden>退出 / 取消</button>
+        </div>
+      </header>
+      <div id="notice" class="notice" role="status">
+        Linux Web 为实验性支持，已接入功能仍需跨设备验收。
+      </div>
+      <div id="browser-warning" class="browser-warning" role="status" hidden></div>
+      <main>
+        <section id="home-view" class="main-window web-view" aria-label="主界面">
+          <div class="main-window-content">
+            <div class="main-window-logo"><img src="/MCTierIcon.png" alt="MCTier Logo" /></div>
+            <h1 class="main-window-title">MCTier</h1>
+            <p class="main-window-subtitle">虚拟局域网通用联机工具</p>
+            <div class="home-buttons">
+              <button type="button" class="main-window-button create-button" data-connect="create">
+                创建大厅
+              </button>
+              <button type="button" class="main-window-button join-button" data-connect="join">
+                加入大厅
+              </button>
+              <button
+                type="button"
+                class="main-window-button settings-entry-button"
+                data-view="settings"
+              >
+                软件设置
+              </button>
+              <button type="button" class="main-window-button about-button" data-view="about">
+                关于软件
+              </button>
+            </div>
+            <p class="main-window-version">Linux Web · 实验性</p>
+            <p class="main-window-hint">按 ESC 可快速返回上一页</p>
+          </div>
+        </section>
+        <section
+          id="connect-view"
+          class="lobby-form-container web-view"
+          hidden
+          aria-label="连接大厅"
+        >
+          <div class="lobby-form-card">
+            <button type="button" class="back-button" data-back>← 返回</button>
+            <h2 id="form-title" class="lobby-form-title">加入大厅</h2>
+            <form id="lobby-form" class="lobby-form">
+              <label
+                >你的昵称<input
+                  id="player-name"
+                  required
+                  maxlength="32"
+                  placeholder="玩家昵称"
+                  autocomplete="nickname"
+              /></label>
+              <label
+                >大厅名称<input
+                  id="lobby-name"
+                  required
+                  minlength="4"
+                  maxlength="32"
+                  placeholder="与对端使用相同名称"
+                  autocomplete="off"
+              /></label>
+              <label
+                >大厅密码 <small>可留空</small
+                ><input
+                  id="lobby-password"
+                  type="password"
+                  maxlength="32"
+                  placeholder="非空时需含字母和数字"
+                  autocomplete="off"
+              /></label>
+              <details>
+                <summary>节点与信令服务</summary>
+                <label
+                  >EasyTier 节点<input
+                    id="server-node"
+                    required
+                    spellcheck="false"
+                    autocomplete="off"
+                /></label>
+                <p class="hint">负责虚拟组网，仅连接指定节点。</p>
+                <label
+                  >MCTier 信令服务<input
+                    id="signaling-server"
+                    required
+                    spellcheck="false"
+                    autocomplete="off"
+                /></label>
+                <p class="hint">负责大厅和 WebRTC 信令。</p>
+                <button id="signal-probe" type="button">检查信令握手</button>
+              </details>
+              <p class="hint">使用原版名称与密码连接大厅。房主身份以信令服务返回的成员信息为准。</p>
+              <button id="join" class="primary connect-submit" type="submit">加入大厅</button>
+            </form>
+            <div class="form-locks">
+              <div data-feature="lobby-history"></div>
+              <div data-feature="magic-dns"></div>
+              <div data-feature="advanced-network"></div>
+            </div>
+            <p class="hint">
+              EasyTier 以普通用户运行。缺少网络权限时会明确报错，系统授权需由你确认。
+            </p>
+          </div>
+        </section>
+        <section id="lobby-view" class="lobby-layout web-view" hidden aria-label="大厅">
+          <aside class="mini-window web-lobby-sidebar">
+            <header class="mini-window-header">
+              <h2 class="mini-window-title">MCTier · 大厅</h2>
+              <span class="badge experimental">实验性</span>
+            </header>
+            <div class="mini-window-content">
+              <div class="mini-lobby-card">
+                <div class="lobby-card-header">
+                  <h3 id="room-name" class="lobby-card-title">等待连接</h3>
+                  <button type="button" id="copy-ip" title="复制虚拟 IP" disabled>复制 IP</button>
+                </div>
+                <div class="lobby-card-info">
+                  <span class="lobby-info-label">您的虚拟 IP：</span
+                  ><strong id="virtual-ip" class="virtual-ip-btn">—</strong>
+                </div>
+              </div>
+              <div class="connection-status">
+                <div class="network-chip">
+                  <i id="network-dot"></i><span id="network-state">EasyTier 未启动</span>
+                </div>
+                <div><small>信令</small><strong id="signal-state">未连接</strong></div>
+                <div><small>媒体</small><strong id="media-state">未建立</strong></div>
+              </div>
+              <section class="mini-players-section">
+                <h3 class="mini-section-title">大厅成员 <span id="member-count">0</span></h3>
+                <ul id="members" class="mini-player-list members">
+                  <li class="empty">尚未进入大厅</li>
+                </ul>
+              </section>
+              <div class="voice-bar mini-voice-controls">
+                <button id="mic" class="mini-voice-btn" disabled>开启麦克风</button
+                ><button id="speaker" class="mini-voice-btn" disabled>全部静音</button>
+              </div>
+              <label class="group-label"
+                >语音小队<select id="voice-group" disabled>
+                  <option value="0">公共语音</option>
+                  <option value="1">小队 1</option>
+                  <option value="2">小队 2</option>
+                  <option value="3">小队 3</option>
+                  <option value="4">小队 4</option>
+                </select></label
+              >
+              <button id="resume-audio" disabled>恢复音频播放</button>
+              <button type="button" data-view="settings">音频设备与软件设置</button>
+              <div class="sidebar-locks">
+                <div data-feature="lobby-management"></div>
+                <div data-feature="invite"></div>
+              </div>
+            </div>
+          </aside>
+          <div class="lobby-content">
+            <nav class="lobby-nav" aria-label="大厅功能">
+              <button type="button" data-panel="chat" aria-pressed="true">聊天室</button
+              ><button type="button" data-panel="screen" aria-pressed="false">屏幕共享</button
+              ><button type="button" data-panel="diagnostics" aria-pressed="false">连接诊断</button
+              ><button type="button" data-view="capabilities">更多功能 · 暂未开放</button>
+            </nav>
+            <section id="chat-panel" class="chat-room-view lobby-panel" aria-label="聊天室">
+              <header class="chat-header">
+                <h2>聊天室</h2>
+                <span class="badge experimental">实验性</span>
+              </header>
+              <div id="messages" class="chat-messages messages" role="log" aria-live="polite">
+                <div class="chat-empty">
+                  <p>连接大厅后开始聊天</p>
+                  <small>文字和已收到的附件可用；送达状态以实际对端为准。</small>
+                </div>
+              </div>
+              <div class="chat-tools">
+                <div data-feature="send-file"></div>
+                <div data-feature="send-image"></div>
+                <div data-feature="record-voice"></div>
+              </div>
+              <form id="chat-form">
+                <select id="recipient" aria-label="聊天接收者" disabled>
+                  <option value="">所有成员</option></select
+                ><input
+                  id="chat-text"
+                  placeholder="输入消息…"
+                  maxlength="4096"
+                  disabled
+                  autocomplete="off"
+                  aria-label="消息内容"
+                /><button id="send" class="primary" disabled>发送</button>
+              </form>
+              <p id="chat-state" class="chat-status">聊天经 EasyTier 加密传输。</p>
+            </section>
+            <section
+              id="screen-panel"
+              class="screen-share-view lobby-panel"
+              hidden
+              aria-label="屏幕共享"
+            >
+              <header class="panel-head">
+                <h2>屏幕共享</h2>
+                <span class="badge experimental">实验性 · 待跨端验收</span>
+              </header>
+              <div class="panel-body screens">
+                <div class="screen-actions">
+                  <button id="refresh-shares" disabled>刷新共享列表</button
+                  ><button id="share-screen" class="primary" disabled>共享电脑屏幕</button>
+                </div>
+                <p class="hint">
+                  电脑共享由浏览器选择窗口，只采集视频。观看手机前，请先在手机端共享屏幕并允许录屏，再刷新列表。
+                </p>
+                <div data-feature="system-audio"></div>
+                <div data-feature="remote-control"></div>
+                <p id="screen-status" class="hint">未观看屏幕</p>
+                <div id="shares" class="share-list">暂无共享画面</div>
+                <video id="screen-video" controls playsinline hidden></video
+                ><button id="resume-screen" hidden>播放画面</button
+                ><button id="stop-view" hidden>停止观看</button>
+              </div>
+            </section>
+            <section id="diagnostics-panel" class="lobby-panel" hidden aria-label="连接诊断">
+              <header class="panel-head">
+                <h2>连接诊断</h2>
+                <span class="subtle">网络与媒体分别检查</span>
+              </header>
+              <div class="panel-body">
+                <h3>信令连接</h3>
+                <p id="signal-details" class="hint">暂无断开记录</p>
+                <h3>WebRTC 语音</h3>
+                <p class="hint">
+                  ICE 成功、RTP 增长还需结合两端实际听音确认。不显示 SDP、ICE 密钥或完整候选地址。
+                </p>
+                <div id="voice-diagnostics" class="diag-empty">暂无对端媒体连接。</div>
+                <h3>EasyTier 数据链路</h3>
+                <p class="hint">信令在线不代表虚拟网络互通。查询对端后仍需验证数据收发。</p>
+                <button id="peer-query" disabled>查询 EasyTier 对端</button>
+                <pre id="peer-report"></pre>
+                <div data-feature="network-fix"></div>
+              </div>
+            </section>
+          </div>
+        </section>
+        <section id="settings-view" class="utility-view web-view" hidden aria-label="软件设置">
+          <header class="utility-header">
+            <button type="button" class="back-button" data-back>← 返回</button>
+            <h2>软件设置</h2>
+          </header>
+          <div class="settings-card">
+            <h3>音频设备与变声</h3>
+            <p class="hint">设备名称在授予麦克风权限后显示；仅点击开启麦克风时才会请求权限。</p>
+            <div class="device-grid">
+              <label
+                >麦克风<select id="audio-input">
+                  <option value="">系统默认</option>
+                </select></label
+              ><label
+                >扬声器<select id="audio-output">
+                  <option value="">系统默认</option></select
+                ><small id="output-support"></small></label
+              ><label>音色<select id="voice-preset"></select></label>
+            </div>
+            <p id="capture-state" class="hint">麦克风尚未申请。</p>
+            <p class="hint">音频与变声已接入，仍需双向听音、ICE、重连和资源清理验收。</p>
+          </div>
+          <div class="feature-grid">
+            <div data-feature="desktop-integration"></div>
+            <div data-feature="appearance"></div>
+            <div data-feature="avatar"></div>
+            <div data-feature="auto-lobby"></div>
+          </div>
+        </section>
+        <section id="capabilities-view" class="utility-view web-view" hidden aria-label="功能状态">
+          <header class="utility-header">
+            <button type="button" class="back-button" data-back>← 返回</button>
+            <h2>Linux 功能状态</h2>
+          </header>
+          <p class="hint">已接入功能仍为实验性支持。未接入功能保留入口与说明，暂不开放操作。</p>
+          <div id="feature-matrix" class="feature-grid"></div>
+        </section>
+        <section id="about-view" class="utility-view web-view" hidden aria-label="关于软件">
+          <header class="utility-header">
+            <button type="button" class="back-button" data-back>← 返回</button>
+            <h2>关于 MCTier</h2>
+          </header>
+          <div class="about-card">
+            <img src="/MCTierIcon.png" alt="MCTier" />
+            <h3>MCTier Linux Web</h3>
+            <p>虚拟局域网通用联机工具 · Linux 浏览器版</p>
+            <p>
+              界面复用当前 MCTier
+              的主界面、大厅与聊天样式；本地服务仅监听回环地址，组网与媒体逻辑沿用共享实现。
+            </p>
+            <p>
+              <a
+                href="https://github.com/pmh1314520/MCTier"
+                target="_blank"
+                rel="noopener noreferrer"
+                >官方项目</a
+              >
+              ·
+              <a
+                href="https://github.com/Copper0SO4/MCTier_Linux_Web"
+                target="_blank"
+                rel="noopener noreferrer"
+                >Linux Web 分支</a
+              >
+            </p>
+            <p class="hint">Firefox 持续断开问题尚未修复。请查看功能状态了解浏览器限制。</p>
+          </div>
+        </section>
+      </main>
+      <footer class="app-footer">
+        <span>本地服务 · <code>127.0.0.1:14700</code></span
+        ><span>Linux 实验性支持</span>
+      </footer>
+    </div>
+    <script type="module" src="/main.ts"></script>
+  </body>
+</html>
