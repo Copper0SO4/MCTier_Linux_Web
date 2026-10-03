@@ -276,6 +276,17 @@
             <h2>软件设置</h2>
           </header>
           <div class="settings-card">
+            <h3>界面主题</h3>
+            <label
+              >外观<select id="theme-preference" aria-describedby="theme-status">
+                <option value="system">跟随系统</option>
+                <option value="light">浅色</option>
+                <option value="dark">深色</option>
+              </select></label
+            >
+            <p id="theme-status" class="hint" role="status"></p>
+          </div>
+          <div class="settings-card">
             <h3>音频设备与变声</h3>
             <p class="hint">设备名称在授予麦克风权限后显示；仅点击开启麦克风时才会请求权限。</p>
             <div class="device-grid">

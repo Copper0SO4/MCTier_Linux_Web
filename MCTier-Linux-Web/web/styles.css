@@ -630,6 +630,12 @@ pre:empty {
 .utility-header h2 {
   margin: 0;
 }
+.utility-header .back-button {
+  flex: none;
+  width: auto;
+  height: auto;
+  white-space: nowrap;
+}
 .settings-card,
 .about-card {
   border: 1px solid var(--border);

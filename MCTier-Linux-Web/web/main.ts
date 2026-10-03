@@ -6,6 +6,8 @@ import '../frontend-src/components/LobbyForm/LobbyForm.css';
 import '../frontend-src/components/MiniWindow/MiniWindow.css';
 import '../frontend-src/components/ChatRoom/ChatRoom.css';
 import './styles.css';
+import './theme.css';
+import { setupTheme } from './theme';
 import { setupComposer } from './chatComposer';
 import { voiceDataUrl, voiceMetadata } from '../frontend-src/services/chat/voiceMessage';
 import { sniffImageMime } from '../frontend-src/services/chat/imageData';
@@ -55,6 +57,7 @@ const messages = new Map<string, ChatMessage>();
 const receipts = new Map<string, string>();
 let statsRunning = false;
 const shell = setupShell();
+setupTheme();
 
 async function sendOutgoing(message: Omit<ChatMessage, 'id' | 'playerId' | 'playerName' | 'timestamp'>, send: (id: string) => Promise<{delivered:number;total:number} | void>) {
   if (!online) throw new Error('请先加入大厅');

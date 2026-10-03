@@ -115,8 +115,8 @@ export const FEATURES = [
   {
     id: 'appearance',
     name: '主题 / 界面语言',
-    state: 'blocked',
-    reason: '当前使用原版深色样式和中文界面；设置切换尚未接入。',
+    state: 'experimental',
+    reason: '已接入浅色、深色和跟随系统，保存本浏览器偏好；界面语言仍为中文，语言切换尚未开放。',
   },
   {
     id: 'avatar',
