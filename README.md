@@ -40,6 +40,40 @@
 
 ---
 
+## Linux 浏览器版进展
+
+Linux 目前是实验性支持。本分支在仓库内新增独立的 `MCTier-Linux-Web/`：本地 Rust 服务只监听 `127.0.0.1:14700`，用户以普通权限手动启动服务，再自行用 Chrome/Chromium 或 Firefox 打开页面。不会自动启动浏览器、加入房间或启动 EasyTier。
+
+当前已接入大厅/信令、EasyTier 虚拟组网入口、聊天、浏览器麦克风与 WebRTC、屏幕共享/观看入口，以及聊天附件下载。附件下载上限为 64 MiB。远程输入操控、发送附件、共享文件夹和系统音频采集还未迁移。
+
+自动化检查：TypeScript 检查、Linux Web release 构建、5 个前端测试文件和 71 项 Rust 测试通过。真实环境尚未验收，包括跨端虚拟网络数据收发、文件下载、双向语音与 ICE/重连、手机与电脑互看屏幕。Firefox 此前出现持续 WebSocket 1006 断开，原因未确认；Chrome 的完整跨端稳定性也未通过本轮真实联机测试。
+
+### Linux Web 编译
+
+在 MCTier 仓库根目录安装 Node.js 20+、npm、Rust stable、C 编译器、`pkg-config` 与 OpenSSL 开发包，然后运行：
+
+```bash
+npm ci
+./MCTier-Linux-Web/scripts/fetch-binaries.sh
+./MCTier-Linux-Web/scripts/build-web-server.sh
+```
+
+EasyTier 下载脚本会校验固定版本及 SHA-256。若该 core 缺少 TUN 所需 capability，再由用户单独授权并用 `getcap` 复核；服务和 EasyTier 都以普通用户运行。
+
+构建后手动启动：
+
+```bash
+./MCTier-Linux-Web/scripts/run-web-server.sh
+```
+
+然后自行访问 `http://127.0.0.1:14700`。自动化测试命令：
+
+```bash
+./MCTier-Linux-Web/scripts/test.sh
+```
+
+详细设计、上游更新方法和功能限制见 [MCTier-Linux-Web/README.md](MCTier-Linux-Web/README.md)。此入口复用 MCTier 信令与 EasyTier 网络协议；信令成员在线不代表虚拟网络数据链路或 WebRTC 媒体连接已成功。
+
 ## 项目简介
 
 MCTier 基于 EasyTier 与 WebRTC，用来把不同网络环境下的设备组到同一个虚拟局域网中。它不是 Minecraft 专属工具，也不只服务游戏场景；只要你需要跨网络访问局域网服务、临时协作、语音沟通、文件夹共享或屏幕共享，都可以用 MCTier 搭一个轻量大厅。
@@ -192,7 +226,7 @@ MCTier 基于 EasyTier 与 WebRTC，用来把不同网络环境下的设备组�
 - Windows 安装包：下载 `MCTier_x.y.z_x64-setup.exe` 后双击安装。
 - Windows 便携版：下载 `MCTier.exe` 后直接运行。
 - Android：下载 `MCTier-Android.apk` 后在手机上安装。
-- Linux（Debian 家族）：构建与打包方式见 [MCTier-Linux/README.md](MCTier-Linux/README.md)。应用本体以普通用户运行，只需为 `easytier-core` 授予一次 `cap_net_admin` 能力；语音、屏幕共享与远程控制在标准 Debian 上暂不可用，逐项状态见该目录的状态矩阵。
+- Linux（Debian 系 x86_64，实验性）：可按上方 Linux Web 说明构建手动打开的浏览器版；旧 Tauri 构建目录仍保留。语音、屏幕共享、远程操控及跨端稳定性仍需按实际平台验收，不能视为功能完整。
 
 ### 创建或加入大厅
 
