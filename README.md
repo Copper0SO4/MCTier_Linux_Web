@@ -90,7 +90,7 @@ EasyTier 下载脚本会校验固定版本及 SHA-256。若该 core 缺少 TUN �
 ./MCTier-Linux-Web/scripts/test.sh
 ```
 
-详细设计、上游更新方法和功能限制见 [MCTier-Linux-Web/README.md](MCTier-Linux-Web/README.md)。此入口复用 MCTier 信令与 EasyTier 网络协议；信令成员在线不代表虚拟网络数据链路或 WebRTC 媒体连接已成功。
+维护者接手说明、当前功能矩阵、验收边界与上游维护流程见 [MCTier-Linux-Web/HANDOFF.md](MCTier-Linux-Web/HANDOFF.md)；构建细节见 [MCTier-Linux-Web/README.md](MCTier-Linux-Web/README.md)。此入口复用 MCTier 信令与 EasyTier 网络协议；信令成员在线不代表虚拟网络数据链路或 WebRTC 媒体连接已成功。
 
 ## 项目简介
 
