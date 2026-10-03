@@ -66,6 +66,7 @@ pub struct App {
     pub runtime: Mutex<Runtime>,
     pub chat: Arc<Mutex<ChatService>>,
     pub chat_generation: watch::Sender<u64>,
+    pub upload_budget: Mutex<(u64, u32)>,
     pub core: PathBuf,
 }
 
@@ -91,6 +92,7 @@ impl App {
             }),
             chat: Arc::new(Mutex::new(ChatService::new())),
             chat_generation,
+            upload_budget: Mutex::new((0, 0)),
             core,
         })
     }
@@ -122,6 +124,7 @@ impl App {
             .send_modify(|generation| *generation = generation.wrapping_add(1));
         let chat = self.chat.lock().await;
         chat.stop_server().await;
+        *self.upload_budget.lock().await = (0, 0);
         chat.clear_session();
         chat.clear_local_messages();
         drop(chat);

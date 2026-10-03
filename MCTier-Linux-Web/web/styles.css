@@ -828,3 +828,12 @@ h1[tabindex='-1']:focus,
 h2[tabindex='-1']:focus {
   outline: none;
 }
+
+.chat-tools { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 16px; }
+#emoji-panel { padding: 12px 16px; background: #202631; }
+#emoji-grid { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 8px; }
+#emoji-grid button { font-size: 24px; padding: 6px; }
+#emoji-panel small { display: block; padding-top: 8px; }
+.chat-tools > button { display: inline-block; }
+#builtin-emoji-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(58px,1fr)); gap: 6px; max-height: 240px; overflow: auto; margin: 8px 0; }
+#builtin-emoji-grid img { width: 48px; height: 48px; object-fit: contain; }

@@ -188,9 +188,22 @@
                 </div>
               </div>
               <div class="chat-tools">
-                <div data-feature="send-file"></div>
-                <div data-feature="send-image"></div>
-                <div data-feature="record-voice"></div>
+                <button type="button" id="send-file" disabled>发送文件</button>
+                <button type="button" id="send-image" disabled>发送图片</button>
+                <button type="button" id="send-emoji" disabled>表情</button>
+                <button type="button" id="record-voice" disabled>录制语音</button>
+                <button type="button" id="finish-voice" hidden>发送录音</button>
+                <button type="button" id="cancel-voice" hidden>取消录音</button>
+                <button type="button" id="cancel-upload" hidden>取消本地上传</button>
+                <input id="file-input" type="file" hidden />
+                <input id="image-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
+                <input id="emoji-input" type="file" accept="image/png,image/jpeg,image/gif,image/webp" hidden />
+              </div>
+              <div id="emoji-panel" hidden aria-label="表情面板">
+                <div id="emoji-grid"></div>
+                <div id="builtin-emoji-grid" aria-label="原版动画表情"></div>
+                <button type="button" id="custom-emoji">选择图片表情</button>
+                <small>内置动画使用原版 v3 标识；自选图片使用原版图片协议。</small>
               </div>
               <form id="chat-form">
                 <select id="recipient" aria-label="聊天接收者" disabled>

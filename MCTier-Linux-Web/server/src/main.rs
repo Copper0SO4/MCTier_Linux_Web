@@ -87,6 +87,10 @@ fn asset(url: &str) -> Response {
         "text/css; charset=utf-8"
     } else if url.ends_with(".svg") {
         "image/svg+xml"
+    } else if url.ends_with(".gif") {
+        "image/gif"
+    } else if url.ends_with(".png") {
+        "image/png"
     } else if url.ends_with(".mp3") {
         "audio/mpeg"
     } else {
@@ -271,15 +275,23 @@ async fn invoke(
                 chat.reset_auth_baseline().await;
             } else {
                 chat.stop_server().await;
+                *app.upload_budget.lock().await = (0, 0);
                 chat.clear_session();
             }
             Value::Null
         }
+        "prepare_chat_image" => {
+            #[derive(Deserialize)]
+            #[serde(rename_all = "camelCase", deny_unknown_fields)]
+            struct ImageInput { image_data: String, recipient_id: Option<String> }
+            let args: ImageInput = value(input.args)?;
+            let chat = app.chat.lock().await;
+            if chat.get_chat_token().is_none() { return Err("聊天会话未就绪".to_string().into()); }
+            if args.recipient_id.as_deref().is_some_and(|id| chat.peer_by_player_id(id).is_none()) { return Err("收件人已离线".to_string().into()); }
+            attachments::prepare_image(&args.image_data)?
+        }
         "send_p2p_chat_message" => {
             let args: Send = value(input.args)?;
-            if args.message_type == "file" {
-                return Err("浏览器文件附件尚未接入".to_string().into());
-            }
             chat_transport::send_p2p_chat_message(
                 args.player_id,
                 args.player_name,
@@ -408,6 +420,7 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/lease", post(lease))
         .route("/api/chat/stream", get(chat_stream))
         .route("/api/chat/attachment", post(attachments::download))
+        .route("/api/chat/upload", post(attachments::upload))
         .route("/*path", get(assets))
         .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
         .layer(tower::limit::ConcurrencyLimitLayer::new(16))

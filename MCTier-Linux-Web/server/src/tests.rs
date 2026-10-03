@@ -374,3 +374,94 @@ async fn local_history_is_authenticated_bounded_session_data_and_cleans_up() {
         StatusCode::BAD_REQUEST
     );
 }
+
+#[tokio::test]
+async fn upload_is_authenticated_bounded_and_session_scoped() {
+    let app = app();
+    let chat = app.chat.lock().await;
+    chat.set_virtual_ip("10.126.126.2".into());
+    let (id, _) = chat.signaling_identity().unwrap();
+    chat.set_session("b".repeat(64), 1, id.clone(), "Local".into(), Some(id.clone()), vec![]).unwrap();
+    drop(chat);
+    let upload_req = |uri: &str, data: Vec<u8>| {
+        let mut req = request(&app, uri, Some(json!({})));
+        req.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
+        *req.body_mut() = Body::from(data);
+        req
+    };
+    let uri = "/api/chat/upload?name=example.txt&mime=text%2Fplain";
+    let mut req = upload_req(uri, b"abc".to_vec()); req.headers_mut().remove("x-mctier-csrf");
+    assert_eq!(router(app.clone()).oneshot(req).await.unwrap().status(), StatusCode::FORBIDDEN);
+    for (uri, bytes) in [
+        ("/api/chat/upload?name=..%2Fsecret&mime=text%2Fplain", b"abc".to_vec()),
+        ("/api/chat/upload?name=a&mime=text%2Fplain&path=%2Fetc%2Fpasswd", b"abc".to_vec()),
+        ("/api/chat/upload?name=a&mime=text%2Fplain&recipientId=unknown", b"abc".to_vec()),
+        (uri, vec![]),
+    ] {
+        assert!(!router(app.clone()).oneshot(upload_req(uri, bytes)).await.unwrap().status().is_success());
+    }
+    // Raw upload is independent of the 16 MiB invoke JSON budget.
+    let response = router(app.clone()).oneshot(upload_req(uri, vec![7;17*1024*1024])).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let meta: modules::chat_service::ChatAttachmentMeta = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
+    let path = app.chat.lock().await.local_attachment_path(&meta).unwrap();
+    use std::os::unix::fs::PermissionsExt;
+    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert!(app.chat.lock().await.has_attachment(&meta.id, None));
+    assert!(!app.chat.lock().await.has_attachment(&meta.id, Some("other")));
+    let response = router(app.clone()).oneshot(request(&app, "/api/chat/attachment", Some(json!({"ownerPlayerId":id,"attachment":meta})))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(axum::body::to_bytes(response.into_body(), 18*1024*1024).await.unwrap().len(), 17*1024*1024);
+    assert!(!router(app.clone()).oneshot(upload_req(uri, vec![1;64*1024*1024+1])).await.unwrap().status().is_success());
+    *app.upload_budget.lock().await = (0, 128);
+    assert!(!router(app.clone()).oneshot(upload_req(uri, vec![1])).await.unwrap().status().is_success());
+    app.leave().await;
+    assert!(!path.exists());
+    assert_eq!(*app.upload_budget.lock().await, (0, 0));
+    assert!(!router(app.clone()).oneshot(upload_req(uri, vec![1])).await.unwrap().status().is_success());
+}
+
+#[test]
+fn browser_image_preparation_checks_format_and_inline_budget() {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    for (bytes, mime) in [(b"\x89PNG\r\n\x1a\n".as_slice(), "image/png"), (b"GIF89a".as_slice(), "image/gif"), (&[0xff,0xd8,0xff],"image/jpeg"), (b"RIFFxxxxWEBP".as_slice(),"image/webp")] {
+        assert!(attachments::prepare_image(&STANDARD.encode(bytes)).unwrap()["imageDataUrl"].as_str().unwrap().starts_with(&format!("data:{mime};base64,")));
+    }
+    assert!(attachments::prepare_image("bad encoding!").is_err());
+    assert!(attachments::prepare_image(&STANDARD.encode(b"<svg></svg>")).is_err());
+    assert!(attachments::prepare_image(&STANDARD.encode(vec![1;2*1024*1024+1])).is_err());
+}
+
+#[tokio::test]
+async fn delayed_upload_cannot_register_in_a_rejoined_room_with_the_same_token() {
+    let app = app();
+    let id = {
+        let chat = app.chat.lock().await;
+        chat.set_virtual_ip("10.126.126.2".into());
+        let (id, _) = chat.signaling_identity().unwrap();
+        chat.set_session("c".repeat(64), 1, id.clone(), "Local".into(), Some(id.clone()), vec![]).unwrap();
+        id
+    };
+    let (began_tx,began_rx) = tokio::sync::oneshot::channel();
+    let (continue_tx,continue_rx) = tokio::sync::oneshot::channel();
+    let body = Body::from_stream(async_stream::stream! {
+        began_tx.send(()).unwrap();
+        continue_rx.await.unwrap();
+        yield Ok::<bytes::Bytes,Infallible>(bytes::Bytes::from_static(b"abc"));
+    });
+    let mut req = request(&app,"/api/chat/upload?name=late.txt&mime=text%2Fplain",Some(json!({})));
+    *req.body_mut() = body;
+    let route = router(app.clone());
+    let pending = tokio::spawn(async move { route.oneshot(req).await.unwrap() });
+    began_rx.await.unwrap();
+    app.leave().await;
+    {
+        let chat = app.chat.lock().await;
+        chat.set_virtual_ip("10.126.126.2".into());
+        chat.signaling_identity().unwrap();
+        chat.set_session("c".repeat(64), 1, id.clone(), "Local".into(), Some(id), vec![]).unwrap();
+    }
+    continue_tx.send(()).unwrap();
+    assert_eq!(pending.await.unwrap().status(),StatusCode::BAD_REQUEST);
+    assert_eq!(*app.upload_budget.lock().await,(0,0));
+}

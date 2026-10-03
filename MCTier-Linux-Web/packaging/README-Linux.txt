@@ -30,8 +30,11 @@ The service binds only to 127.0.0.1. Joining a room, connecting to the selected
 MCTier signaling server and EasyTier node, and granting microphone/screen
 permissions still require explicit actions in the browser.
 
-This build is experimental. File sending, shared folders and remote input are
-not included. Cross-device networking, voice, screen viewing and reconnection
+This build is experimental. File/image/emoji sending and voice messages are implemented but awaiting
+cross-device acceptance. Files are limited to 64 MiB; session uploads to
+128 files / 256 MiB. Voice messages are limited to 0.5–60 seconds / 2 MiB.
+The official v3 animated emoji assets are bundled. Shared folders and remote
+input are not included. Cross-device networking, voice, screen viewing and reconnection
 have not completed release acceptance. Use the project README and issue
 tracker to report problems.
 

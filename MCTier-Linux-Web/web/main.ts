@@ -1,9 +1,13 @@
+import { builtinEmojiUrl } from './builtinEmoji';
 // Reuse upstream presentation without mounting its native-window lifecycle.
 import '../frontend-src/components/MainWindow/MainWindow.css';
 import '../frontend-src/components/LobbyForm/LobbyForm.css';
 import '../frontend-src/components/MiniWindow/MiniWindow.css';
 import '../frontend-src/components/ChatRoom/ChatRoom.css';
 import './styles.css';
+import { setupComposer } from './chatComposer';
+import { voiceDataUrl, voiceMetadata } from '../frontend-src/services/chat/voiceMessage';
+import { sniffImageMime } from '../frontend-src/services/chat/imageData';
 import { setupShell } from './shell';
 import { downloadAttachment } from './download';
 import { parseChatAttachment, formatFileSize } from '../frontend-src/services/chat/fileAttachment';
@@ -34,6 +38,7 @@ function controlState(online: boolean) {
   el<HTMLButtonElement>('signal-probe').disabled = busy || online || !serviceReady;
   for (const id of ['player-name', 'lobby-name', 'lobby-password', 'server-node', 'signaling-server']) el<HTMLInputElement>(id).readOnly = busy || online;
   shell.setSessionState(online ? 'online' : busy ? 'connecting' : 'idle');
+  composer.update();
 }
 let busy = false, online = false, leaving = false, serviceReady = false, localId = '', localName = '', hostId = '';
 let ticket: LobbySessionTicket | null = null;
@@ -42,11 +47,38 @@ let localShare: string | null = null, viewedShare: string | null = null;
 let viewGeneration = 0;
 const downloads = new Set<AbortController>();
 const downloadUrls = new Set<string>();
+const previewUrls = new Set<string>();
 const players = new Map<string, Player>();
 const messages = new Map<string, ChatMessage>();
 const receipts = new Map<string, string>();
 let statsRunning = false;
 const shell = setupShell();
+
+async function sendOutgoing(message: Omit<ChatMessage, 'id' | 'playerId' | 'playerName' | 'timestamp'>, send: (id: string) => Promise<{delivered:number;total:number} | void>) {
+  if (!online) throw new Error('请先加入大厅');
+  const current = ticket, id = `msg-${localId}-${crypto.randomUUID()}`;
+  const own: ChatMessage = {...message, id, playerId:localId, playerName:localName, timestamp:Date.now()};
+  messages.set(id, own); receipts.set(id, '发送中'); renderMessages();
+  try {
+    const receipt = await send(id);
+    if (ticket !== current || !online) return;
+    receipts.set(id, receipt ? (receipt.total ? `送达 ${receipt.delivered}/${receipt.total}` : '本地消息 · 无对端') : '发送完成');
+    notice(receipt && receipt.delivered < receipt.total ? '未送达全部目标，请检查对端链路。' : '发送完成', !!receipt && receipt.delivered < receipt.total);
+  } catch (error) { if (ticket === current && online) { receipts.set(id, '发送失败'); notice(label(error), true); } }
+  if (ticket === current && online) renderMessages();
+}
+const composer = setupComposer({
+  online: () => online, recipient: () => input('recipient') || undefined, status: notice,
+  text: (content, recipientId) => sendOutgoing({content, recipientId, type:'text'}, id => p2pChatService.sendTextMessage(content, id, recipientId)),
+  file: (attachment, recipientId) => sendOutgoing({content:JSON.stringify(attachment), attachment, recipientId, type:'file'}, id => p2pChatService.sendFileMessage(attachment, id, recipientId)),
+  image: (data, content, recipientId) => sendOutgoing({content, imageData:data, recipientId, type:'image'}, id => p2pChatService.sendImageMessage(data, content, id, recipientId)),
+  voice: async (blob, duration, recipientId) => {
+    const current = ticket;
+    const data = voiceDataUrl(Array.from(new Uint8Array(await blob.arrayBuffer())), blob.type);
+    if (!online || ticket !== current) return;
+    await sendOutgoing({content:JSON.stringify({mime:blob.type, duration}), imageData:data, recipientId, type:'voice'}, id => p2pChatService.sendVoiceMessage(blob, duration, id, recipientId));
+  },
+});
 
 el('copy-ip').onclick = async () => {
   if (!online) return;
@@ -58,6 +90,7 @@ function installMessageListener() { p2pChatService.onMessage(message => { messag
 function renderMessages() {
   if (!messages.size) return;
   const container = el('messages');
+  for (const url of previewUrls) URL.revokeObjectURL(url); previewUrls.clear();
   container.replaceChildren();
   const ordered = [...messages.values()].sort((a, b) => a.timestamp - b.timestamp).slice(-300);
   for (const message of ordered) {
@@ -66,8 +99,11 @@ function renderMessages() {
     meta.textContent = `${message.playerName} · ${new Date(message.timestamp).toLocaleTimeString()}${message.recipientId ? ' · 私聊' : ''}${receipts.has(message.id) ? ' · ' + receipts.get(message.id) : ''}`;
     const content = document.createElement('div'); content.className = 'text message-content'; content.textContent = message.recalled ? '消息已撤回' : message.content;
     row.append(meta, content);
-    if (message.imageData && message.type === 'image') { const image = document.createElement('img'); image.src = message.imageData; image.alt = '聊天图片'; row.append(image); }
-    if (message.imageData && message.type === 'voice') { const audio = document.createElement('audio'); audio.src = message.imageData; audio.controls = true; row.append(audio); }
+    const builtin = !message.recalled && message.type !== 'file' ? builtinEmojiUrl(message.content) : null;
+    if (builtin) { content.textContent = '[内置表情]'; const image = document.createElement('img'); image.src = builtin; image.alt = '内置动画表情'; image.loading = 'lazy'; row.append(image); }
+
+    if (message.imageData && message.type === 'image' && !message.recalled) { const image = document.createElement('img'); image.src = message.imageData; image.alt = '聊天图片'; row.append(image); }
+    if (message.imageData && message.type === 'voice' && !message.recalled) { content.textContent = `语音 · ${voiceMetadata(message.content)?.duration.toFixed(1) || '?'} 秒`; const audio = document.createElement('audio'); audio.src = message.imageData; audio.controls = true; row.append(audio); }
     if (message.type === 'file' && !message.recalled) {
       const attachment = parseChatAttachment(message.content);
       content.textContent = attachment ? `${attachment.name} · ${formatFileSize(attachment.size)}` : '文件附件元数据无效';
@@ -86,6 +122,22 @@ function renderMessages() {
           finally { downloads.delete(controller); button.disabled = !online; button.textContent = '下载附件'; }
         };
         row.append(button);
+        if (['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(attachment.mime)) {
+          const preview = document.createElement('button'); preview.textContent = '查看图片'; preview.disabled = !online;
+          preview.onclick = async () => {
+            const controller = new AbortController(); downloads.add(controller); preview.disabled = true;
+            try {
+              const blob = await downloadAttachment(message.playerId, attachment, controller.signal);
+              const mime = sniffImageMime(new Uint8Array(await blob.slice(0, 12).arrayBuffer()));
+              if (!mime) throw new Error('图片格式无效');
+              if (controller.signal.aborted || !online || !row.isConnected) return;
+              const url = URL.createObjectURL(new Blob([blob], {type:mime})); previewUrls.add(url);
+              const image = document.createElement('img'); image.src = url; image.alt = attachment.name; row.append(image); preview.hidden = true;
+            } catch (error) { if (!controller.signal.aborted) notice(`预览失败：${label(error)}`, true); }
+            finally { downloads.delete(controller); preview.disabled = !online; }
+          };
+          row.append(preview);
+        }
       }
     }
     container.append(row);
@@ -201,9 +253,10 @@ async function join() {
 }
 async function leave() {
   if (leaving) return;
-  leaving = true; online = false; stopViewing();
+  leaving = true; online = false; composer.cancel(); stopViewing();
   for (const controller of downloads) controller.abort(); downloads.clear();
   for (const url of downloadUrls) URL.revokeObjectURL(url); downloadUrls.clear();
+  for (const url of previewUrls) URL.revokeObjectURL(url); previewUrls.clear();
   if (ticket) lobbySessionCoordinator.cancel(ticket);
   ticket = null;
   if (leaseTimer) clearInterval(leaseTimer); leaseTimer = null;
@@ -393,6 +446,7 @@ window.addEventListener('mctier-microphone-permission-required', () => { useAppS
 window.addEventListener('pagehide', () => {
   stopViewing(); for (const controller of downloads) controller.abort();
   for (const url of downloadUrls) URL.revokeObjectURL(url);
+  for (const url of previewUrls) URL.revokeObjectURL(url);
   // Synchronously release capture even when the browser cannot finish requests.
   void webrtcClient.setMicEnabled(false); screenShareService.cleanup(); lobbySessionCoordinator.cancel();
   void localInvoke('leave_lobby', {}, true).catch(() => {});

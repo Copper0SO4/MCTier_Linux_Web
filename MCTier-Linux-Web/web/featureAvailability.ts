@@ -45,18 +45,18 @@ export const FEATURES = [
     state: 'blocked',
     reason: '远程输入授权与 Linux 输入注入尚未实现；仅开放屏幕观看。',
   },
-  { id: 'send-file', name: '发送文件', state: 'blocked', reason: '附件选择、上传与发送尚未接入。' },
+  { id: 'send-file', name: '发送文件', state: 'experimental', reason: '已接入 64 MiB 附件上传及原版加密取件协议；跨端送达待验收。' },
   {
     id: 'send-image',
     name: '发送图片 / 表情',
-    state: 'blocked',
-    reason: '图片选择与表情面板尚未接入；已收到的图片仍可查看。',
+    state: 'experimental',
+    reason: '支持 PNG/JPEG/GIF/WebP、文字表情、原版内置动画和图片表情；跨端待验收。',
   },
   {
     id: 'record-voice',
     name: '语音消息',
-    state: 'blocked',
-    reason: '聊天录音和语音附件发送尚未接入；麦克风通话独立开放。',
+    state: 'experimental',
+    reason: '支持 0.5–60 秒录音、取消和播放；跨端编码兼容待验收。',
   },
   {
     id: 'system-audio',
