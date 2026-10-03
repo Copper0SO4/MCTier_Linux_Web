@@ -19,7 +19,6 @@ pub mod lobby_address;
 pub mod lobby_manager;
 
 // Hosts文件管理模块（Magic DNS）
-pub mod firewall_policy;
 pub mod helper_handshake;
 pub mod hosts_manager;
 pub mod hosts_security;

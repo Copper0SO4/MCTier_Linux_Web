@@ -8,7 +8,6 @@
 //! | 创建网卡的权限 | 整个进程以管理员运行 | 只给 EasyTier 二进制文件能力（setcap） |
 //! | 提权交互 | UAC | polkit（`pkexec`），桌面会话内弹图形授权框 |
 //! | 网卡检测 | 解析 `ipconfig` 输出 | 扫描 `/sys/class/net` |
-//! | 防火墙 | Windows 防火墙按程序放行 | ufw / firewalld，按接口放行 |
 //! | 开机自启 | 注册表 Run 项 | XDG autostart `.desktop` |
 //!
 //! 关键差异：**应用本体全程以普通用户运行**。Windows 版需要管理员是因为
@@ -168,115 +167,6 @@ pub fn has_virtual_adapter() -> bool {
         .unwrap_or(false)
 }
 
-/// 当前生效的防火墙。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FirewallStatus {
-    /// 未安装或未启用（Debian/Ubuntu 桌面默认状态）。
-    Inactive,
-    /// ufw 处于 active。
-    Ufw,
-    /// firewalld 处于 running。
-    Firewalld,
-}
-
-/// 从 `ufw status` 输出判断是否 active（抽出以便单测）。
-pub fn ufw_output_is_active(stdout: &str) -> bool {
-    stdout
-        .lines()
-        .any(|line| line.trim().eq_ignore_ascii_case("Status: active"))
-}
-
-async fn detect_firewall() -> FirewallStatus {
-    if let Ok(output) = tokio::process::Command::new(resolve_sbin_tool("ufw"))
-        .arg("status")
-        .output()
-        .await
-    {
-        if output.status.success() && ufw_output_is_active(&String::from_utf8_lossy(&output.stdout))
-        {
-            return FirewallStatus::Ufw;
-        }
-    }
-
-    if let Ok(output) = tokio::process::Command::new("firewall-cmd")
-        .arg("--state")
-        .output()
-        .await
-    {
-        if output.status.success() && String::from_utf8_lossy(&output.stdout).trim() == "running" {
-            return FirewallStatus::Firewalld;
-        }
-    }
-
-    FirewallStatus::Inactive
-}
-
-fn firewall_marker_path() -> Option<PathBuf> {
-    dirs::data_dir().map(|dir| dir.join("com.mctier.app").join("firewall-configured"))
-}
-
-/// 检查防火墙是否已不阻挡组网流量。返回值语义与 Windows 端一致：`true` = 无需处理。
-pub async fn check_firewall_rules() -> bool {
-    match detect_firewall().await {
-        // 没开防火墙，本来就不拦。
-        FirewallStatus::Inactive => true,
-        // firewalld 默认 zone 允许出站与已建立连接的回程，且无"按程序放行"概念，
-        // 组网流量不会被默认策略挡住，视为无需配置。
-        FirewallStatus::Firewalld => true,
-        // ufw active 时默认拒绝入站，需要我们放行过虚拟网卡接口。
-        FirewallStatus::Ufw => firewall_marker_path()
-            .map(|marker| marker.exists())
-            .unwrap_or(false),
-    }
-}
-
-/// 一键放行防火墙。
-///
-/// Linux 没有"按程序放行"的语义，只能按接口放行；这里放行 EasyTier 的 TUN 接口，
-/// 而不是开放端口，作用范围比 Windows 端按程序放行更窄。
-pub async fn add_firewall_rules() -> Result<String, String> {
-    match detect_firewall().await {
-        FirewallStatus::Inactive => {
-            Ok("系统未启用防火墙（ufw / firewalld），无需配置放行规则".to_string())
-        }
-        FirewallStatus::Firewalld => {
-            Ok("系统使用 firewalld，默认策略不拦截组网流量，无需额外配置".to_string())
-        }
-        FirewallStatus::Ufw => {
-            let ufw = resolve_sbin_tool("ufw");
-            let mut granted = Vec::new();
-            // tun0 是常见命名，MCTier_Net 是我们显式指定的名字，两者都放行；
-            // 任一成功即认为达成目的（不同发行版/内核给出的接口名不完全一致）。
-            for interface in ["tun0", TUN_DEVICE_NAME] {
-                let output = tokio::process::Command::new("pkexec")
-                    .args([ufw.as_str(), "allow", "in", "on", interface])
-                    .output()
-                    .await
-                    .map_err(|error| format!("无法启动 pkexec: {}", error))?;
-                if output.status.success() {
-                    granted.push(interface.to_string());
-                }
-            }
-
-            if granted.is_empty() {
-                return Err(format!(
-                    "添加防火墙规则失败。可在终端手动执行：sudo {} allow in on {}",
-                    ufw, TUN_DEVICE_NAME
-                ));
-            }
-
-            if let Some(marker) = firewall_marker_path() {
-                if let Some(parent) = marker.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&marker, granted.join("\n"));
-            }
-
-            Ok(format!("已放行虚拟网卡接口: {}", granted.join(", ")))
-        }
-    }
-}
-
 /// 设置开机自启动（XDG autostart）。
 pub fn set_auto_start(enable: bool) -> Result<(), String> {
     let Some(path) = autostart_file_path() else {
@@ -413,20 +303,6 @@ mod tests {
         // 前缀相近但不是 TUN 设备
         assert!(!is_virtual_adapter_name("tunnel0"));
         assert!(!is_virtual_adapter_name("tun"));
-    }
-
-    #[test]
-    fn ufw_active_state_is_parsed_from_real_output() {
-        assert!(ufw_output_is_active("Status: active"));
-        assert!(ufw_output_is_active("Status: active\nTo   Action  From"));
-        assert!(ufw_output_is_active("  Status: active  "));
-
-        assert!(!ufw_output_is_active("Status: inactive"));
-        assert!(!ufw_output_is_active(""));
-        // 不能被规则表里出现的 active 字样带偏
-        assert!(!ufw_output_is_active(
-            "Status: inactive\n80/tcp ALLOW active"
-        ));
     }
 
     #[test]

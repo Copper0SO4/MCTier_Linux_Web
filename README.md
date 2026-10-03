@@ -6,7 +6,7 @@
   **虚拟局域网通用组网工具**
 
   <p>
-    <img src="https://img.shields.io/badge/version-3.9.0-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-3.9.5-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-2ea44f?style=flat-square" alt="Windows 10/11">
     <img src="https://img.shields.io/badge/Android-supported-3ddc84?style=flat-square" alt="Android">
     <img src="https://img.shields.io/badge/license-Custom-orange?style=flat-square" alt="License">
@@ -320,6 +320,7 @@ MCTier 会持续维护桌面端和手机端体验。如果它帮你完成了组�
 | 16 | 血影 | 2026-09-29 22:16:37 | 50.00 |
 | 17 | 血影 | 2026-09-29 22:50:54 | 50.00 |
 | 18 | 萌萌哒miku | 2026-10-03 01:03:59 | 2.33 |
+| 19 | 呼呼呼 | 2026-10-03 15:51:15 | 7.99 |
 
 ## 许可协议
 

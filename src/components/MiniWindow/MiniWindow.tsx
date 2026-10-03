@@ -51,6 +51,7 @@ import {
   type LobbyInvite,
 } from '../../services/lobby/lobbyInvite';
 import './MiniWindow.css';
+import { AnnouncementBar } from './AnnouncementBar';
 
 /**
  * 迷你窗口组件
@@ -2093,22 +2094,7 @@ export const MiniWindow: React.FC = () => {
                       {signalingError && <span>{signalingError}</span>}
                     </div>
                   )}
-                  {announcement && (
-                    <div className="mini-announcement">
-                      <span
-                        className="mini-announce-icon"
-                        title={tl('大厅公告', 'Lobby announcement')}
-                      >
-                        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor">
-                          <path d="M20 5.5v13a1 1 0 0 1-1.55.83L12 14.9V9.1l6.45-4.43A1 1 0 0 1 20 5.5z"></path>
-                          <path d="M10 9H6.5A2.5 2.5 0 0 0 4 11.5v1A2.5 2.5 0 0 0 6.5 15H7v3.2a.8.8 0 0 0 .8.8h1.4a.8.8 0 0 0 .8-.8V15h0V9z"></path>
-                        </svg>
-                      </span>
-                      <div className="mini-announce-viewport">
-                        <span className="mini-announce-marquee">{announcement}</span>
-                      </div>
-                    </div>
-                  )}
+                  {announcement && <AnnouncementBar text={announcement} />}
 
                   {/* 玩家列表 */}
                   <motion.div

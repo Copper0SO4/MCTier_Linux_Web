@@ -58,6 +58,9 @@ pub fn devices() -> Result<Vec<InputDevice>, String> {
 }
 const CHUNK: usize = 960 * 4;
 const CAPACITY: usize = CHUNK * 5;
+fn read_size(queued: usize, recording: bool) -> usize {
+    (queued / CHUNK).min(if recording { 10 } else { 5 }) * CHUNK
+}
 fn push_packet(queue: &mut VecDeque<u8>, bytes: &[u8]) {
     // Drop old samples on a stalled consumer rather than accumulating seconds of speech.
     queue.extend(bytes);
@@ -255,7 +258,7 @@ fn run_source(
                     // A renderer IPC round trip can exceed 20 ms during screen capture.
                     // Batch all completed packets so transport throughput still keeps up
                     // with the device clock instead of losing half of every second.
-                    let count = if recording { (queue.len() / CHUNK).min(10) * CHUNK } else { CHUNK };
+                    let count = read_size(queue.len(), recording);
                     let bytes = queue.drain(..count).collect();
                     let _ = pending.take().unwrap().send(Ok(bytes));
                     last_packet = Instant::now();
@@ -285,6 +288,23 @@ fn run_source(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn voice_reads_catch_up_after_screen_ipc_delay_without_unbounded_latency() {
+        let mut queue = VecDeque::new();
+        // A 40 ms IPC round trip must drain 40 ms, not only 20 ms on each read.
+        let samples: Vec<u8> = (0..CHUNK * 2).map(|i| (i % 251) as u8).collect();
+        for _ in 0..100 {
+            push_packet(&mut queue, &samples);
+            let count = read_size(queue.len(), false);
+            assert_eq!(queue.drain(..count).collect::<Vec<_>>(), samples);
+            assert!(queue.is_empty());
+        }
+        push_packet(&mut queue, &vec![0; CHUNK * 20]);
+        assert_eq!(queue.len(), CAPACITY);
+        assert_eq!(read_size(queue.len(), false), CHUNK * 5);
+        assert_eq!(read_size(CHUNK - 4, false), 0);
+        assert_eq!(read_size(CHUNK * 12, true), CHUNK * 10);
+    }
     #[test]
     fn loopback_resampling_is_continuous_and_bounded() {
         for rate in [44100, 48000, 96000] {
@@ -340,7 +360,7 @@ mod tests {
                 let (reply, response) = tokio::sync::oneshot::channel();
                 tx.send(reply).unwrap();
                 let packet = response.blocking_recv().unwrap().unwrap();
-                assert_eq!(packet.len(), CHUNK);
+                assert!(packet.len() >= CHUNK && packet.len() <= CAPACITY && packet.len() % CHUNK == 0);
                 assert!(packet
                     .chunks_exact(4)
                     .all(|b| f32::from_le_bytes(b.try_into().unwrap()).is_finite()));

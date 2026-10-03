@@ -169,6 +169,14 @@ class ChatHttpServer(
         } == true
     }
 
+    internal fun isValidHostAnnouncement(message: ChatWireMessage, expectedHostId: String?): Boolean = synchronized(sessionLock) {
+        val session = authSession ?: return false
+        expectedHostId != null && session.hostId == expectedHostId &&
+            message.playerId == expectedHostId && message.messageType == "announce" &&
+            message.recipientId == null && isKnownPeer(message) &&
+            isValidMessage(message, session.hostId, checkHost = true)
+    }
+
     /** 把本机发送的消息加入存储（供他人拉取）。 */
     fun addLocal(message: ChatWireMessage): Boolean {
         val session = synchronized(sessionLock) { authSession } ?: return false

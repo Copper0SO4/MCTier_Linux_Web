@@ -1,6 +1,4 @@
 // Run from src-tauri: cargo test --test native_security
-#[path = "../src/modules/firewall_policy.rs"]
-mod firewall_policy;
 #[path = "../src/modules/helper_handshake.rs"]
 mod helper_handshake;
 #[path = "../src/modules/hosts_security.rs"]

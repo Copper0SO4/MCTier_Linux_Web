@@ -5,8 +5,106 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import top.pmh13.mctier.data.ChatPeerIdentity
+import kotlinx.coroutines.cancel
+import okhttp3.ResponseBody.Companion.toResponseBody
+import okhttp3.MediaType.Companion.toMediaType
+import top.pmh13.mctier.data.ChatWireMessage
 
 class SecurityHardeningTest {
+    private class AnnouncementFixture : java.io.Closeable {
+        val hostKey = ChatAuth.ChatSigner.generate()!!
+        val memberKey = ChatAuth.ChatSigner.generate()!!
+        val host = ChatPeerIdentity(hostKey.identityId(), "host", "10.126.126.1", hostKey.publicKeyBase64())
+        val token = "a".repeat(64)
+        val received = java.util.concurrent.LinkedBlockingQueue<ChatWireMessage>()
+        val scope = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.IO + kotlinx.coroutines.SupervisorJob())
+        val client = ChatP2PClient(memberKey.identityId(), scope, "10.126.126.2", { received.add(it) }, java.io.File("unused"), memberKey)
+        var respond: (okhttp3.Request) -> List<ChatWireMessage> = { emptyList() }
+        fun message(content: String, suffix: String = "1") = ChatWireMessage(
+            "msg-${host.playerId}-$suffix", host.playerId, host.playerName, content, "announce", 100L,
+        )
+        fun start() {
+            val transport = okhttp3.OkHttpClient.Builder().addInterceptor { chain ->
+                val request = chain.request()
+                assertEquals("/api/chat/messages", request.url.encodedPath)
+                assertEquals(token, request.header("x-mctier-chat-token"))
+                assertTrue(!request.header(ChatAuth.SignatureHeader).isNullOrBlank())
+                val history = respond(request)
+                val plain = top.pmh13.mctier.data.MctierJson.encodeToString(kotlinx.serialization.builtins.ListSerializer(ChatWireMessage.serializer()), history)
+                val encrypted = hostKey.encrypt(memberKey.publicKeyBase64(), token, "/api/chat/messages", plain.toByteArray())
+                okhttp3.Response.Builder().request(request).protocol(okhttp3.Protocol.HTTP_1_1).code(200).message("OK")
+                    .body(encrypted.toResponseBody("application/json".toMediaType())).build()
+            }.build()
+            ChatP2PClient::class.java.getDeclaredField("client").apply { isAccessible = true }.set(client, transport)
+            assertTrue(client.setPeers(listOf(host)))
+            // No VPN interface is needed for this deterministic encrypted transport fixture.
+            ChatP2PClient::class.java.getDeclaredField("started").apply { isAccessible = true }.set(client, true)
+            assertTrue(client.configureSession(token, 1L, "member", host.playerId))
+        }
+        fun live(message: ChatWireMessage) {
+            ChatP2PClient::class.java.getDeclaredMethod("accept", ChatWireMessage::class.java).apply { isAccessible = true }.invoke(client, message)
+        }
+        override fun close() { client.stop(); scope.cancel() }
+    }
+
+    @Test fun joiningRecoversLatestHostAnnouncementAfterTransientFailure() {
+        AnnouncementFixture().use { f ->
+            val attempts = java.util.concurrent.atomic.AtomicInteger()
+            f.respond = {
+                if (attempts.incrementAndGet() == 1) throw java.io.IOException("host not ready")
+                listOf(f.message("old"), f.message("入厅前发布的公告", "2"), f.message("forged", "3").copy(playerId = f.memberKey.identityId()))
+            }
+            f.start()
+            assertEquals("入厅前发布的公告", f.received.poll(5, java.util.concurrent.TimeUnit.SECONDS)?.content)
+            assertEquals(2, attempts.get())
+        }
+    }
+
+    @Test fun recoveredEmptyAnnouncementClearsPreviousContent() {
+        AnnouncementFixture().use { f ->
+            f.respond = { listOf(f.message("old"), f.message("", "2")) }
+            f.start()
+            assertEquals("", f.received.poll(3, java.util.concurrent.TimeUnit.SECONDS)?.content)
+        }
+    }
+
+    @Test fun historyCannotOverwriteLiveAnnouncementOrSurviveSessionExitOrHostChange() {
+        for (action in listOf("live", "stop", "host")) AnnouncementFixture().use { f ->
+            val requested = java.util.concurrent.CountDownLatch(1)
+            val release = java.util.concurrent.CountDownLatch(1)
+            f.respond = {
+                requested.countDown()
+                check(release.await(3, java.util.concurrent.TimeUnit.SECONDS))
+                listOf(f.message("stale"))
+            }
+            f.start()
+            try {
+                assertTrue(requested.await(3, java.util.concurrent.TimeUnit.SECONDS))
+                if (action == "stop") f.client.stop()
+                else if (action == "host") assertTrue(f.client.updateHostId(f.memberKey.identityId()))
+                else {
+                    f.live(f.message("fresh", "2"))
+                    assertEquals("fresh", f.received.poll(1, java.util.concurrent.TimeUnit.SECONDS)?.content)
+                }
+            } finally { release.countDown() }
+            assertEquals(null, f.received.poll(500, java.util.concurrent.TimeUnit.MILLISECONDS))
+        }
+    }
+
+    @Test fun recoveredAnnouncementRequiresCurrentHostAndPublicValidPayload() {
+        AnnouncementFixture().use { f ->
+            val server = ChatHttpServer(f.memberKey.identityId(), "10.126.126.2")
+            val member = ChatPeerIdentity(f.memberKey.identityId(), "member", "10.126.126.2", f.memberKey.publicKeyBase64())
+            assertTrue(server.configureSession(f.token, 1L, member, listOf(f.host), f.host.playerId))
+            assertTrue(server.isValidHostAnnouncement(f.message("notice"), f.host.playerId))
+            assertFalse(server.isValidHostAnnouncement(f.message("notice").copy(recipientId = member.playerId), f.host.playerId))
+            assertFalse(server.isValidHostAnnouncement(f.message("notice").copy(playerName = "impostor"), f.host.playerId))
+            assertFalse(server.isValidHostAnnouncement(f.message("x".repeat(16385)), f.host.playerId))
+            assertTrue(server.updateHostId(member.playerId))
+            assertFalse(server.isValidHostAnnouncement(f.message("notice"), f.host.playerId))
+        }
+    }
+
     @Test
     fun signalingBusinessMessagesRequireAcceptedRegistration() {
         val signaling = SignalingClient()

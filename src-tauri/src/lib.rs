@@ -84,9 +84,9 @@ fn reset_microphone_permission_cache_on_startup() {
 
 use modules::builtin_emoji::sync_builtin_emoji;
 use modules::tauri_commands::{
-    add_firewall_rules, add_player_domain, add_shared_folder, broadcast_status_update,
+    add_player_domain, add_shared_folder, broadcast_status_update,
     cancel_lobby_connecting, cancel_remote_download, check_auto_start, check_file_server_status,
-    check_firewall_rules, check_udp_port, check_virtual_adapter, cleanup_expired_shares,
+    check_udp_port, check_virtual_adapter, cleanup_expired_shares,
     clear_avatar_cache, clear_p2p_chat_messages, close_danmaku_window, close_game_hud_window,
     configure_p2p_chat, create_lobby, danmaku_cursor_pos, delete_file, detect_security_software,
     diagnose_file_share_connection, download_remote_batch, download_remote_file, exit_app,
@@ -1191,11 +1191,9 @@ pub fn run() {
             force_stop_easytier,
             cancel_lobby_connecting,
             check_virtual_adapter,
-            check_firewall_rules,
             ping_virtual_ip,
             check_udp_port,
             is_admin,
-            add_firewall_rules,
             restart_as_admin,
             save_window_position,
             exit_app,

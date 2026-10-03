@@ -1170,8 +1170,8 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
             <div>
               <p style={{ marginBottom: '12px' }}>
                 {tl(
-                  'MCTier 需要管理员权限来创建虚拟网卡。',
-                  'MCTier needs administrator rights to create the virtual adapter.'
+                  '请在系统授权提示中允许 EasyTier 创建虚拟网卡。MCTier 主程序无需以管理员身份重启；若仍失败，请检查安全软件的拦截记录。',
+                  'Allow EasyTier to create the virtual adapter when the system requests permission. MCTier itself does not need to restart as administrator. If it still fails, check your security software blocking history.'
                 )}
               </p>
             </div>
@@ -1228,11 +1228,11 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
                 'This node failed to connect. Click a button below to try another node, or:'
               )}
               <br />
-              {tl('1. 以管理员身份运行 MCTier', '1. Run MCTier as administrator')}
+              {tl('1. 检查 EasyTier 内核是否被安全软件隔离或删除', '1. Check whether security software quarantined or deleted the EasyTier core')}
               <br />
               {tl(
-                '2. 将 MCTier 加入杀毒软件 / 防火墙白名单',
-                '2. Add MCTier to your antivirus / firewall whitelist'
+                '2. 恢复官方安装包中的内核，并将 MCTier 加入安全软件信任列表',
+                '2. Restore the core from the official package and trust MCTier in your security software'
               )}
               <br />
               {tl(
@@ -1308,13 +1308,13 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
                   {tl('可尝试：', 'You can try:')}
                   <br />
                   {tl(
-                    '1. 以管理员身份运行 MCTier（创建虚拟网卡需要管理员权限）',
-                    '1. Run MCTier as administrator (creating the virtual adapter needs admin rights)'
+                    '1. 检查 EasyTier 内核是否被安全软件隔离或删除',
+                    '1. Check whether security software quarantined or deleted the EasyTier core'
                   )}
                   <br />
                   {tl(
-                    '2. 将 MCTier 加入杀毒软件 / 防火墙白名单后重试',
-                    '2. Add MCTier to your antivirus / firewall whitelist and retry'
+                    '2. 恢复官方安装包中的内核，并将 MCTier 加入安全软件信任列表后重试',
+                    '2. Restore the core from the official package and trust MCTier in your security software before retrying'
                   )}
                   <br />
                   {tl(

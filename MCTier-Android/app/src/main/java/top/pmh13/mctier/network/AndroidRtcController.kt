@@ -105,17 +105,7 @@ class AndroidRtcController(private val context: Context) {
     private val _speakingPlayers = MutableStateFlow<Set<String>>(emptySet())
     val speakingPlayers: StateFlow<Set<String>> = _speakingPlayers
     private var statsJob: Job? = null
-    private var audioRouteJob: Job? = null
     private val lastAudioStatsLogAt = ConcurrentHashMap<String, Long>()
-
-    private fun scheduleAudioRouting() {
-        audioRouteJob?.cancel()
-        audioRouteJob = rtcScope.launch {
-            // WebRTC 会异步创建 AudioTrack，创建完成后再确认一次媒体模式。
-            delay(600)
-            routeAudio()
-        }
-    }
 
     private fun startStatsLoop() {
         if (statsJob != null) return
@@ -201,57 +191,13 @@ class AndroidRtcController(private val context: Context) {
         }
     }
 
-    private var speakerphoneOn = true
-
-    /**
-     * 大厅语音按媒体音频播放，保持蓝牙 A2DP，不主动切换到 SCO 通话链路。
-     * 经典蓝牙无法同时稳定承载 A2DP 媒体和 SCO 麦克风，因此开麦时使用手机麦克风。
-     */
-    private fun routeAudio() {
-        runCatching {
-            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            restoreMediaAudio(am)
-            Log.i(TAG, "保持媒体音频路由: mode=${am.mode}, mic=${_micEnabled.value}")
-        }.onFailure { Log.w(TAG, "更新通信音频路由失败", it) }
-    }
-
+    // Media playback is configured on our own AudioTrack below. Never reset the
+    // system mode, communication device or SCO: an active QQ/phone call owns them.
     private fun preferBuiltInMicrophone() {
         val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
         val microphone = am.getDevices(AudioManager.GET_DEVICES_INPUTS)
             .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_MIC }
         audioDeviceModule?.setPreferredInputDevice(microphone)
-    }
-
-    @Suppress("DEPRECATION")
-    private fun restoreMediaAudio(am: AudioManager) {
-        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
-            runCatching { am.clearCommunicationDevice() }
-        } else {
-            runCatching { am.stopBluetoothSco() }
-            if (am.isBluetoothScoOn) am.isBluetoothScoOn = false
-            if (am.isSpeakerphoneOn) am.isSpeakerphoneOn = false
-        }
-        if (am.mode != AudioManager.MODE_NORMAL) am.mode = AudioManager.MODE_NORMAL
-    }
-
-    /** 切换扬声器外放 / 听筒 */
-    fun setSpeakerphone(on: Boolean) {
-        speakerphoneOn = on
-        resetAudioRouting()
-    }
-
-    private fun resetAudioRouting() {
-        routeAudio()
-        // WebRTC 音轨启动会异步初始化 AudioTrack；只在状态变化后补一次校正，不能周期轮询。
-        scheduleAudioRouting()
-    }
-
-    /** 离开大厅/结束通话时恢复普通音频模式，避免长期占用通话模式影响系统其它音频 */
-    fun restoreNormalAudio() {
-        runCatching {
-            val am = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-            restoreMediaAudio(am)
-        }
     }
 
     fun initialize(playerId: String, signalSender: (SignalingEnvelope) -> Unit) {
@@ -322,7 +268,6 @@ class AndroidRtcController(private val context: Context) {
                 it?.setEnabled(false)
             }
         }
-        resetAudioRouting()
     }
 
     @Synchronized
@@ -333,7 +278,6 @@ class AndroidRtcController(private val context: Context) {
         audioDeviceModule?.setMicrophoneMute(!enabled || voiceRecordingSuppressed)
         if (!enabled) RecordingMicrophone.setCallActive(this, false)
         if (enabled) preferBuiltInMicrophone()
-        resetAudioRouting()
         sendSignal?.invoke(SignalingEnvelope(type = "status-update", clientId = localPlayerId, micEnabled = enabled))
     }
 
@@ -509,7 +453,6 @@ class AndroidRtcController(private val context: Context) {
                     if (track is AudioTrack && track.kind() == MediaStreamTrack.AUDIO_TRACK_KIND) {
                         remoteAudioTracks[remotePlayerId] = track
                         applyRemoteVolume(remotePlayerId, track)
-                        resetAudioRouting()
                         Log.i(TAG, "收到远端音频轨: $remotePlayerId")
                     }
                   }
@@ -600,8 +543,6 @@ class AndroidRtcController(private val context: Context) {
         resetPeers()
         statsJob?.cancel()
         statsJob = null
-        audioRouteJob?.cancel()
-        audioRouteJob = null
         playerVolumes.clear()
         localAudioTrack?.dispose()
         audioSource?.dispose()
@@ -612,7 +553,6 @@ class AndroidRtcController(private val context: Context) {
         audioDeviceModule?.setMicrophoneMute(true)
         RecordingMicrophone.setCallActive(this, false)
         globalMuted = false
-        restoreNormalAudio()
     }
 
     private fun handleOffer(message: SignalingEnvelope) {
