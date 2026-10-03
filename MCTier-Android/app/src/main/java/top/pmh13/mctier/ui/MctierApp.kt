@@ -1,4 +1,5 @@
 package top.pmh13.mctier.ui
+import androidx.compose.material.icons.rounded.Videocam
 
 import top.pmh13.mctier.network.ScreenShareQuality
 import top.pmh13.mctier.data.BuiltinEmojiMessage
@@ -88,7 +89,7 @@ import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.BarChart
-import androidx.compose.material.icons.rounded.Build
+import androidx.compose.material.icons.rounded.HomeRepairService
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Casino
 import androidx.compose.material.icons.rounded.Chat
@@ -358,11 +359,13 @@ fun MctierApp(repository: MctierRepository, onConsentGranted: () -> Unit = {}) {
     val state by repository.state.collectAsState()
     val consentCtx = androidx.compose.ui.platform.LocalContext.current
     var agreed by remember { mutableStateOf(ConsentStore.isAgreed(consentCtx)) }
+    val versionStage = startupVersionStage(state.versionError != null, state.startupUpdateChecked, state.updateAvailable != null)
+    var quarkBlocking by remember { mutableStateOf(true) }
     var showQuarkSupport by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     // An external invite launches the activity and leaves a pending join form. Do not
     // connect to the separately saved auto-join lobby in the same startup pass.
-    LaunchedEffect(Unit) {
-        if (state.pendingJoin == null) repository.maybeAutoJoin()
+    LaunchedEffect(agreed) {
+        if (agreed && state.pendingJoin == null) repository.maybeAutoJoin()
     }
     // 主题：根据设置实时应用（深/浅色 + 自定义主色），切换即重组整个界面
     LaunchedEffect(state.settings.themeMode, state.settings.themePrimary) {
@@ -434,30 +437,48 @@ fun MctierApp(repository: MctierRepository, onConsentGranted: () -> Unit = {}) {
             ) { inLobby ->
                 if (inLobby) LobbyScreen(state, repository) else HomeScreen(state, repository, onQuarkSupport = { showQuarkSupport = true })
             }
-            if (state.showOnboarding) OnboardingDialog { repository.dismissOnboarding() }
+            if (state.showOnboarding && !booting && !quarkBlocking && !showQuarkSupport && versionStage == StartupVersionStage.Ready) OnboardingDialog { repository.dismissOnboarding() }
             // 启动加载动画（淡出）
             androidx.compose.animation.AnimatedVisibility(
                 visible = booting,
                 enter = fadeIn(),
                 exit = fadeOut(),
             ) { SplashScreen() }
-            val quarkBlocked = state.versionError != null || state.updateAvailable != null || state.showOnboarding
-            QuarkStartupPrompt(
-                blocked = quarkBlocked || showQuarkSupport,
-                onSupport = { showQuarkSupport = true },
+            StartupPrompts(
+                state, repository, booting, showQuarkSupport,
+                onSupportChange = { showQuarkSupport = it },
+                onBlockingChange = { quarkBlocking = it },
             )
-            if (showQuarkSupport && !quarkBlocked) QuarkSupportDialog { showQuarkSupport = false }
-            // 版本过低（信令服务器要求）：强制更新，阻断使用
-            state.versionError?.let { VersionErrorDialog(it, repository) }
-            // Gitee 检测到新版本：可选更新提示（无强制更新弹窗时才显示）
-            if (state.versionError == null) {
-                state.updateAvailable?.let { UpdateAvailableDialog(it, repository) }
-            }
             // 远程控制（电脑控制本机手机）：请求弹窗 + 被控横幅
             RemoteControlGate(state, repository)
             // 高风险功能一次性同意门控宿主
             FeatureGateHost()
         }
+    }
+}
+
+/** One host for startup prompts, also preempting an already-open sponsor panel on server rejection. */
+@Composable
+internal fun StartupPrompts(
+    state: MctierUiState,
+    repository: MctierRepository,
+    booting: Boolean,
+    showQuarkSupport: Boolean,
+    onSupportChange: (Boolean) -> Unit,
+    onBlockingChange: (Boolean) -> Unit,
+) {
+    val versionStage = startupVersionStage(state.versionError != null, state.startupUpdateChecked, state.updateAvailable != null)
+    QuarkStartupPrompt(
+        blocked = showQuarkSupport || booting || versionStage != StartupVersionStage.Ready,
+        onBlockingChange = onBlockingChange,
+        onSupport = { onSupportChange(true) },
+    )
+    if (showQuarkSupport && versionStage == StartupVersionStage.Ready) QuarkSupportDialog { onSupportChange(false) }
+    // 版本过低（信令服务器要求）：强制更新，阻断使用
+    state.versionError?.let { VersionErrorDialog(it, repository) }
+    // Gitee 检测到新版本：可选更新提示（无强制更新弹窗时才显示）
+    if (versionStage == StartupVersionStage.Optional) {
+        state.updateAvailable?.let { UpdateAvailableDialog(it, repository) }
     }
 }
 
@@ -483,6 +504,10 @@ private fun RemoteControlGate(state: MctierUiState, repository: MctierRepository
             onDismissRequest = { repository.rejectRemoteControl() },
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = {
+                    if (top.pmh13.mctier.service.ScreenRecordingService.state.value.phase != "idle") {
+                        android.widget.Toast.makeText(ctx, L("请先停止屏幕录制，再接受远程控制", "Stop recording before accepting remote control"), android.widget.Toast.LENGTH_LONG).show()
+                        return@TextButton
+                    }
                     // 需先开启无障碍服务才能注入触摸
                     if (!top.pmh13.mctier.service.MctierAccessibilityService.isEnabledInSettings(ctx)) {
                         android.widget.Toast.makeText(ctx, L("请先开启 MCTier 无障碍服务以允许远程操作", "Please enable MCTier accessibility service first"), android.widget.Toast.LENGTH_LONG).show()
@@ -1545,7 +1570,7 @@ private fun LobbyMainView(
             Image(painterResource(R.drawable.mctier_logo), "MCTier", modifier = Modifier.size(32.dp))
             Spacer(Modifier.width(10.dp))
             Text("MCTier", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = TextPrimary, modifier = Modifier.weight(1f))
-            CircleIconButton(Icons.Rounded.Build, L("房间工具", "Room Tools")) { onTools() }
+            CircleIconButton(Icons.Rounded.HomeRepairService, L("房间工具", "Room Tools")) { onTools() }
             Spacer(Modifier.width(8.dp))
             CircleIconButton(Icons.Rounded.Settings, L("设置", "Settings")) { onSettings() }
             Spacer(Modifier.width(8.dp))
@@ -1896,7 +1921,7 @@ private fun LobbyHeader(state: MctierUiState, repository: MctierRepository, onTo
                     fontSize = 13.sp, color = GrassGreen,
                 )
             }
-            CircleIconButton(Icons.Rounded.Build, L("房间工具", "Room Tools")) { onTools() }
+            CircleIconButton(Icons.Rounded.HomeRepairService, L("房间工具", "Room Tools")) { onTools() }
             Spacer(Modifier.width(8.dp))
             CircleIconButton(Icons.Rounded.ContentCopy, L("复制大厅信息", "Copy Lobby Info")) {
                 val lobby = state.lobby ?: return@CircleIconButton
@@ -1942,7 +1967,7 @@ private fun RoomToolButton(icon: ImageVector, title: String, active: Boolean = f
 }
 
 @Composable
-private fun RoomToolsDialog(
+internal fun RoomToolsDialog(
     state: MctierUiState,
     repository: MctierRepository,
     onOpenWorlds: () -> Unit,
@@ -1955,7 +1980,7 @@ private fun RoomToolsDialog(
     var newTodo by remember { mutableStateOf("") }
     var minutes by remember { mutableStateOf("5") }
     var seconds by remember { mutableStateOf("0") }
-    var tab by remember { mutableIntStateOf(3) }
+    var tab by remember { mutableIntStateOf(4) }
     var dice by remember { mutableIntStateOf(1) }
     var diceSides by remember { mutableIntStateOf(6) }
     var rolling by remember { mutableStateOf(false) }
@@ -1971,6 +1996,7 @@ private fun RoomToolsDialog(
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    ToggleChip(L("屏幕录制", "Record"), tab == 4, Icons.Rounded.Videocam) { tab = 4 }
                     ToggleChip(L("联机", "Net"), tab == 3, Icons.Rounded.SportsEsports) { tab = 3 }
                     ToggleChip(L("骰子", "Dice"), tab == 0, Icons.Rounded.Casino) { tab = 0 }
                     ToggleChip(L("倒计时", "Timer"), tab == 1, Icons.Rounded.History) { tab = 1 }
@@ -1978,6 +2004,7 @@ private fun RoomToolsDialog(
                 }
                 Spacer(Modifier.height(16.dp))
                 when (tab) {
+                    4 -> ScreenRecordingPanel(captureBusy = state.screenShares.any { it.playerId == state.playerId } || state.remoteControlActiveBy != null)
                     0 -> {
                         // 骰子：支持面数选择 + 本地掷骰 / 掷骰并广播（广播到聊天室，与桌面端一致）
                         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -4532,9 +4559,12 @@ private fun ScreenTab(state: MctierUiState, repository: MctierRepository) {
                     }
                     Spacer(Modifier.height(14.dp))
                     PrimaryButton(L("共享我的屏幕", "Share my screen")) {
+                        if (top.pmh13.mctier.service.ScreenRecordingService.state.value.phase != "idle") {
+                            android.widget.Toast.makeText(context, L("请先停止屏幕录制，再共享屏幕", "Stop recording before sharing your screen"), android.widget.Toast.LENGTH_LONG).show()
+                            return@PrimaryButton
+                        }
                         FeatureGate.run(context, "screen", L("屏幕共享须知", "Screen Sharing Notice")) {
-                            val mpm = context.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-                            mpLauncher.launch(mpm.createScreenCaptureIntent())
+                            mpLauncher.launch(top.pmh13.mctier.network.screenCaptureIntent(context))
                         }
                     }
                     Spacer(Modifier.height(6.dp))
@@ -4966,7 +4996,7 @@ private fun SettingsPanel(state: MctierUiState, repository: MctierRepository) {
                 onClick = { downloadFolderLauncher.launch(null) },
                 modifier = Modifier.weight(1f).height(44.dp),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = GrassGreen, contentColor = OnAccent),
+                colors = ButtonDefaults.buttonColors(containerColor = GrassGreen, contentColor = Color.White),
             ) {
                 Icon(Icons.Rounded.Folder, null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
@@ -5442,8 +5472,7 @@ private fun DanmakuSettingsSection(settings: UserSettings, onChange: (UserSettin
                     )
                     .clickable { onChange(settings.copy(danmakuColor = hex)) },
                 contentAlignment = Alignment.Center,
-            ) { if (selected) Text("✓", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
-                modifier = Modifier.clip(RoundedCornerShape(50)).background(Color(0xFF16311F)).padding(horizontal = 3.dp)) }
+            ) { if (selected) ColorSelectionMark() }
         }
         // 彩色（每条随机）
         val rainbowSelected = settings.danmakuColor.equals("rainbow", ignoreCase = true)
@@ -5464,8 +5493,7 @@ private fun DanmakuSettingsSection(settings: UserSettings, onChange: (UserSettin
                 )
                 .clickable { onChange(settings.copy(danmakuColor = "rainbow")) },
             contentAlignment = Alignment.Center,
-        ) { if (rainbowSelected) Text("✓", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold,
-            modifier = Modifier.clip(RoundedCornerShape(50)).background(Color(0xFF16311F)).padding(horizontal = 3.dp)) }
+        ) { if (rainbowSelected) ColorSelectionMark() }
         // 自定义颜色（打开取色器）
         val presetColors = listOf("#FFFFFF", "#52C41A", "#1890FF", "#FAAD14", "#FF4D4F", "#EB2F96", "rainbow")
         val isCustom = presetColors.none { it.equals(settings.danmakuColor, ignoreCase = true) }
@@ -5481,7 +5509,7 @@ private fun DanmakuSettingsSection(settings: UserSettings, onChange: (UserSettin
                 .clickable { showColorDialog = true },
             contentAlignment = Alignment.Center,
         ) {
-            if (!isCustom) Text("+", color = TextPrimary.copy(alpha = 0.7f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            if (isCustom) ColorSelectionMark() else Text("+", color = TextPrimary.copy(alpha = 0.7f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
         }
     }
     Spacer(Modifier.height(8.dp))
@@ -5501,6 +5529,13 @@ private fun DanmakuSettingsSection(settings: UserSettings, onChange: (UserSettin
             .padding(vertical = 11.dp),
         contentAlignment = Alignment.Center,
     ) { Text(L("预览弹幕", "Preview danmaku"), color = TextPrimary, fontWeight = FontWeight.SemiBold) }
+}
+
+@Composable
+internal fun ColorSelectionMark() {
+    Box(Modifier.size(18.dp).clip(CircleShape).background(Color(0xFF16311F)), contentAlignment = Alignment.Center) {
+        Text("✓", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, lineHeight = 14.sp)
+    }
 }
 
 @Composable
@@ -5578,7 +5613,7 @@ private fun SoundPickerRow(label: String, current: String, muted: Boolean, onMut
         Switch(
             checked = !muted,
             onCheckedChange = { onMuteChange(!it) },
-            colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = GrassGreen),
+            colors = switchColors(),
         )
     }
 }
@@ -5600,13 +5635,13 @@ private fun TimeChip(minutes: Int, onPicked: (Int) -> Unit) {
 }
 
 @Composable
-private fun ThemeSettingsSection(settings: UserSettings, onChange: (UserSettings) -> Unit) {
+internal fun ThemeSettingsSection(settings: UserSettings, onChange: (UserSettings) -> Unit) {
     Text(L("主题与配色", "Theme & Colors"), fontSize = 13.sp, color = TextPrimary.copy(alpha = 0.7f))
     Spacer(Modifier.height(8.dp))
     // 语言切换
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(L("语言", "Language"), color = TextPrimary.copy(alpha = 0.85f), modifier = Modifier.weight(1f))
-        listOf("zh" to L("简体中文", "Simplified Chinese"), "en" to "English").forEach { (code, label) ->
+        listOf("zh" to "简体中文", "en" to "English").forEach { (code, label) ->
             val sel = (settings.language.ifBlank { appLang }) == code
             Box(
                 Modifier.padding(start = 8.dp).clip(RoundedCornerShape(8.dp))
@@ -5852,7 +5887,7 @@ private fun PrimaryButton(text: String, enabled: Boolean = true, icon: ImageVect
         onClick = onClick, enabled = enabled,
         modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = GrassGreen, contentColor = OnAccent,
+            containerColor = GrassGreen, contentColor = Color.White,
             disabledContainerColor = PanelHigh, disabledContentColor = TextPrimary.copy(alpha = 0.4f),
         ),
     ) {
@@ -6190,7 +6225,7 @@ private fun AboutScreen(onBack: () -> Unit) {
                 SectionCard {
                     Text(L("软件简介", "About"), fontWeight = FontWeight.Bold, color = TextPrimary)
                     Spacer(Modifier.height(8.dp))
-                    Text(L("MCTier 基于 EasyTier 虚拟组网，让你和好友像在同一局域网内一样联机 Minecraft，支持语音、聊天、文件共享与屏幕共享，并与电脑端完全互通。", "MCTier uses EasyTier virtual networking so you and your friends can play Minecraft as if on the same LAN, with voice, chat, file and screen sharing, fully interoperable with the desktop client."), fontSize = 13.sp, color = TextPrimary.copy(alpha = 0.8f), lineHeight = 20.sp)
+                    Text(L("MCTier 基于 EasyTier 虚拟组网，支持局域网游戏联机、语音通话、文字与语音消息、本地语音转文字、文件和屏幕共享、授权远程控制与本地录屏，可与电脑端连接使用。", "MCTier uses EasyTier for virtual LAN gaming, voice calls, text and voice messages, local transcription, file and screen sharing, authorized remote control and local recording, with connections to desktop clients."), fontSize = 13.sp, color = TextPrimary.copy(alpha = 0.8f), lineHeight = 20.sp)
                 }
             }
             item {
@@ -6222,12 +6257,12 @@ private fun AboutScreen(onBack: () -> Unit) {
                                 "· WebRTC —— BSD-3-Clause\n" +
                                 "· LocalVQE —— Apache-2.0；内嵌 GGML —— MIT\n" +
                                 "· GTCRN 模型权重 —— 训练数据含 CC BY 4.0 素材\n" +
-                                "· OkHttp、NanoHTTPD、AndroidX、Kotlin 等依赖见完整声明",
+                                "· sherpa-onnx / Zipformer —— 本地语音识别，模型许可见完整声明\n· ZXing —— 二维码；AndroidX WorkManager —— 后台任务\n· OkHttp、NanoHTTPD、AndroidX、Kotlin 等依赖见完整声明",
                             "· EasyTier — LGPL-3.0 (Android uses a modified build; the patch ships with the repository)\n" +
                                 "· WebRTC — BSD-3-Clause\n" +
                                 "· LocalVQE — Apache-2.0; bundled GGML — MIT\n" +
                                 "· GTCRN model weights — training data includes CC BY 4.0 material\n" +
-                                "· OkHttp, NanoHTTPD, AndroidX, Kotlin and others: see the full notice"
+                                "· sherpa-onnx / Zipformer — local transcription; model licenses in full notice\n· ZXing — QR codes; AndroidX WorkManager — background tasks\n· OkHttp, NanoHTTPD, AndroidX, Kotlin and others: see the full notice"
                         ),
                         fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.7f), lineHeight = 19.sp
                     )
@@ -6575,7 +6610,7 @@ private fun FlowRowChips(items: List<String>, big: Boolean = false, selectedLabe
                 Text(
                     item,
                     fontSize = if (big) 20.sp else 13.sp,
-                    color = TextPrimary,
+                    color = if (selected) Color.White else TextPrimary,
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                 )
             }
@@ -6639,10 +6674,12 @@ private fun fieldColors() = OutlinedTextFieldDefaults.colors(
 )
 
 @Composable
-private fun switchColors() = SwitchDefaults.colors(
-    checkedThumbColor = TextPrimary,
+internal fun switchColors() = SwitchDefaults.colors(
+    checkedThumbColor = Color.White,
     checkedTrackColor = GrassGreen,
-    uncheckedThumbColor = TextPrimary.copy(alpha = 0.85f),
+    uncheckedThumbColor = Color.White,
+    disabledCheckedThumbColor = Color.White,
+    disabledUncheckedThumbColor = Color.White,
     uncheckedTrackColor = PanelHigh,
     uncheckedBorderColor = Color.Transparent,
 )

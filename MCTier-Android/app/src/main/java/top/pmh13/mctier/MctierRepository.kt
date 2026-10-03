@@ -161,6 +161,7 @@ data class MctierUiState(
     val playerLossRates: Map<String, Int> = emptyMap(), // playerId -> 丢包率(%)
     val playerConnTypes: Map<String, String> = emptyMap(), // playerId -> "p2p"|"relay"
     val versionError: top.pmh13.mctier.data.VersionAlert? = null, // 服务器要求最低版本不满足，强制更新并禁止建/进大厅
+    val startupUpdateChecked: Boolean = false, // 完成、失败或超时后才放行启动赞助提示
     val updateAvailable: AvailableUpdate? = null, // Gitee 检测到的新版本号和更新日志（可选更新）
     val reconnecting: Boolean = false, // 信令断线重连中（顶部显示"重连中…"）
     val announcement: String = "", // 大厅公告（房主设置，新人进入即见）
@@ -230,6 +231,7 @@ class MctierRepository(private val context: Context) {
     private val publicLobbyClient = PublicLobbyClient()
     private val communityNodeClient = top.pmh13.mctier.network.CommunityNodeClient()
     private val updateChecker = UpdateChecker(context)
+    private val startupUpdateStarted = java.util.concurrent.atomic.AtomicBoolean(false)
     private val soundManager = top.pmh13.mctier.network.SoundManager(context)
     private val builtinEmojiCache = BuiltinEmojiCache(context)
     private val cachedBuiltinEmojiItems = builtinEmojiCache.cachedItems()
@@ -390,7 +392,7 @@ class MctierRepository(private val context: Context) {
         // 应用变声器音色
         top.pmh13.mctier.network.VoiceProcessor.preset = _state.value.settings.voicePreset
         // 启动时检测 Gitee 上是否有新版本（可选更新提示）
-        checkUpdateOnStart()
+        if (top.pmh13.mctier.ui.ConsentStore.isAgreed(context)) checkUpdateOnStart()
         // 周期性测量与各玩家的延迟（在大厅内时）
         ioScope.launch {
             while (true) {
@@ -1566,9 +1568,11 @@ class MctierRepository(private val context: Context) {
     }
 
     // ==================== 版本检测与客户端内更新 ====================
-    private fun checkUpdateOnStart() {
+    fun checkUpdateOnStart() {
+        // Activity recreation and first-consent callbacks share one check per process.
+        if (!top.pmh13.mctier.ui.ConsentStore.isAgreed(context) || !startupUpdateStarted.compareAndSet(false, true)) return
         updateChecker.check { update ->
-            if (update != null) scope.launch { _state.update { it.copy(updateAvailable = update) } }
+            scope.launch { _state.update { it.copy(updateAvailable = update, startupUpdateChecked = true) } }
         }
     }
 

@@ -21,8 +21,8 @@ android {
         testInstrumentationRunner = "top.pmh13.mctier.PeerUiInstrumentation"
         minSdk = 26
         targetSdk = 36
-        versionCode = 109
-        versionName = "3.8.0-android"
+        versionCode = 114
+        versionName = "3.9.0-android"
         ndk {
             // The bundled LocalVQE engine is currently built for the primary
             // Android ABI; unsupported ABIs retain the WebRTC hardware AEC/NS path.
@@ -71,6 +71,7 @@ val syncLicenseAssets by tasks.registering(Sync::class) {
     from(repoRoot.file("THIRD_PARTY_NOTICES.md"))
     from(repoRoot.file("licenses/image-optimizer.txt"))
     from(repoRoot.file("shared/speech-model.json"))
+    from(repoRoot.file("shared/compliance.json"))
     from(repoRoot.file("patches/easytier-2.6.0-mctier-android.patch"))
     into(licenseAssetDir)
 }
@@ -169,12 +170,15 @@ val jvmSecurityHardeningTest by tasks.registering(JavaExec::class) {
     args("top.pmh13.mctier.network.SignalingRegistrationTest")
     args("top.pmh13.mctier.ui.ChatMediaLayoutTest")
     args("top.pmh13.mctier.ui.ThemeContrastTest")
+    args("top.pmh13.mctier.ui.StartupVersionStageTest")
     args("top.pmh13.mctier.network.PeerPreferencesTest")
     args("top.pmh13.mctier.network.VoiceHealthTest")
     args("top.pmh13.mctier.data.LobbyModerationTest")
     args("top.pmh13.mctier.network.MessagePreviewTest")
     args("top.pmh13.mctier.network.BuiltinEmojiMessageTest")
     args("top.pmh13.mctier.audio.VoiceRecordingPcmTest")
+    args("top.pmh13.mctier.recording.RecordingOptionsTest")
+    args("top.pmh13.mctier.recording.RecordingMicrophoneTest")
     args("top.pmh13.mctier.ui.SpeechModelTest")
     args("top.pmh13.mctier.network.SecurityHardeningTest", "top.pmh13.mctier.network.ChatOrderTest", "top.pmh13.mctier.network.ChatUnreadTest", "top.pmh13.mctier.network.EncryptedChatTest", "top.pmh13.mctier.network.ImageFormatTest", "top.pmh13.mctier.network.BuiltinEmojiCacheTest", "top.pmh13.mctier.network.EmojiManagementTest", "top.pmh13.mctier.network.ChatAttachmentTest", "top.pmh13.mctier.ui.ChatLinkTest")
 }
@@ -221,6 +225,8 @@ val prepareSherpa by tasks.registering {
 }
 
 dependencies {
+    implementation("androidx.work:work-runtime-ktx:2.10.1")
+    androidTestImplementation("androidx.work:work-testing:2.10.1")
     implementation(files(sherpaAar).builtBy(prepareSherpa))
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")

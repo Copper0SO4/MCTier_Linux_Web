@@ -177,12 +177,17 @@ class PeerUiInstrumentation : Instrumentation() {
         }
     }
     override fun onStart() {
+        if (checkMode == "quark-work") { QuarkWorkChecks(this).run(); return }
+        if (checkMode?.startsWith("quark-upgrade-") == true) { QuarkUpgradeChecks(this).run(checkMode!!.removePrefix("quark-upgrade-")); return }
+        if (checkMode == "ux") { QuarkMediaChecks(this).run(ux = true); return }
+        if (checkMode == "startup-prompts") { StartupPromptChecks(this).run(); return }
+        if (checkMode == "recording") { RecordingChecks(this).run(); return }
         if (checkMode == "remote-live") {
             RemoteDesktopCheck(this).run()
             return
         }
-        if (checkMode == "quark-media" || checkMode == "remote-frame") {
-            QuarkMediaChecks(this).run(checkMode == "remote-frame")
+        if (checkMode == "quark-media" || checkMode == "remote-frame" || checkMode == "quark-buttons") {
+            QuarkMediaChecks(this).run(checkMode == "remote-frame", checkMode == "quark-buttons")
             return
         }
         uiAutomation.serviceInfo = uiAutomation.serviceInfo.apply { flags = flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS }

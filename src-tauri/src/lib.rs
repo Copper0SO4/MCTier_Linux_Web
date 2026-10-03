@@ -95,7 +95,7 @@ use modules::tauri_commands::{
     get_download_url, get_exit_node_advanced_config, get_file_share_download_dir,
     get_file_share_download_path, get_folder_info, get_folder_name, get_global_mute_status,
     get_local_shares, get_log_file_path, get_mic_status, get_network_status, get_p2p_chat_messages,
-    get_peer_connection_types, get_players, get_remote_files, get_remote_shares, get_settings,
+    get_peer_connection_types, get_players, get_remote_files, get_remote_shares, get_settings, get_compliance_consent, accept_compliance,
     get_virtual_ip, import_config, is_admin, is_player_muted, join_lobby, leave_lobby,
     list_directory_files, mute_all, mute_player, open_danmaku_window, open_external_url,
     open_file_location, open_folder, open_game_hud_window, open_log_file, open_log_folder,
@@ -1274,6 +1274,8 @@ pub fn run() {
             clear_avatar_cache,
             save_settings,
             get_settings,
+            get_compliance_consent,
+            accept_compliance,
             set_auto_start,
             check_auto_start,
             reset_config_to_default,
@@ -1299,6 +1301,13 @@ pub fn run() {
             remote_inject_input,
             revoke_remote_input,
             apply_hotkeys,
+            crate::modules::screen_recording::recording_create,
+            crate::modules::screen_recording::recording_get_directory,
+            crate::modules::screen_recording::recording_choose_directory,
+            crate::modules::screen_recording::recording_reset_directory,
+            crate::modules::screen_recording::recording_write,
+            crate::modules::screen_recording::recording_finish,
+            crate::modules::native_microphone::recording_system_audio_start,
             crate::modules::native_microphone::native_microphone_supported,
             crate::modules::voice_ice::voice_ice_server,
             crate::modules::quark_support::quark_support,
@@ -1314,7 +1323,7 @@ pub fn run() {
         ])
         .on_page_load(|webview, payload| {
             if webview.label() == "main" && matches!(payload.event(), tauri::webview::PageLoadEvent::Started) {
-                crate::modules::native_capture::stop_all();
+                crate::modules::screen_recording::close_output(); crate::modules::native_capture::stop_all();
                 crate::modules::native_microphone::stop_all();
                 crate::modules::voice_ice::stop();
             }
@@ -1361,7 +1370,7 @@ pub fn run() {
                     .show_menu_on_left_click(false)
                     .on_menu_event(|app, event| match event.id().as_ref() {
                         "show_main" => restore_main_window(app),
-                        "exit_app" => { crate::modules::native_capture::stop_all(); crate::modules::native_microphone::stop_all(); app.exit(0); },
+                        "exit_app" => { if !crate::modules::screen_recording::finish_before_exit(app) { crate::modules::native_capture::stop_all(); crate::modules::native_microphone::stop_all(); app.exit(0); } },
                         _ => {}
                     })
                     .on_tray_icon_event(|tray, event| {
@@ -1533,6 +1542,7 @@ pub fn run() {
                         }
 
                         // 正常退出流程
+                        if crate::modules::screen_recording::finish_before_exit(&ah) { return; }
                         if let Err(e) = core.lock().await.shutdown().await {
                             error!("关闭错误: {}", e);
                         }

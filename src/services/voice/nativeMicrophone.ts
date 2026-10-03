@@ -34,15 +34,16 @@ export async function microphoneDevices(): Promise<MicrophoneDevice[]> {
   return (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'audioinput');
 }
 
-export async function openMicrophone(deviceId = '', systemProcessing = true): Promise<MediaStream> {
+export async function openMicrophone(deviceId = '', systemProcessing = true, loopback = false, recording = false): Promise<MediaStream> {
   if (!(await nativeMicrophoneSupported())) {
+    if (loopback) throw new Error('System audio recording requires Windows');
     return navigator.mediaDevices.getUserMedia({ audio: {
       ...(deviceId ? { deviceId: { ideal: deviceId } } : {}),
       echoCancellation: true, noiseSuppression: systemProcessing, autoGainControl: true,
     }, video: false });
   }
   // Windows never falls back to browser capture, including on native errors.
-  const info = await invoke<{ id: string; deviceId: string; sampleRate: number }>('native_microphone_start', { deviceId, systemProcessing }).catch(error => {
+  const info = await invoke<{ id: string; deviceId: string; sampleRate: number }>(loopback ? 'recording_system_audio_start' : 'native_microphone_start', { deviceId, systemProcessing, recording }).catch(error => {
     diagnostic('capture-error', String(error));
     if (String(error).startsWith('MIC_NOT_FOUND:')) throw new DOMException(String(error).slice(14), 'NotFoundError');
     throw new Error(String(error));
@@ -72,12 +73,18 @@ export async function openMicrophone(deviceId = '', systemProcessing = true): Pr
   try {
     window.addEventListener('beforeunload', unload, { once: true });
     if (info.sampleRate !== 48000) throw new Error('Unsupported microphone sample rate');
-    context = new AudioContext({ sampleRate: info.sampleRate, latencyHint: 'interactive' });
+    context = new AudioContext({ sampleRate: info.sampleRate, latencyHint: recording ? 'playback' : 'interactive' });
     if (context.sampleRate !== info.sampleRate) throw new Error('Audio output sample rate mismatch');
     await context.audioWorklet.addModule(workletUrl);
     if (stopped) throw new Error('Microphone initialization cancelled');
-    node = new AudioWorkletNode(context, 'mctier-native-microphone', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1] });
-    node.port.onmessage = () => { inFlight = Math.max(0, inFlight - 1); wake?.(); wake = undefined; };
+    node = new AudioWorkletNode(context, 'mctier-native-microphone', { numberOfInputs: 0, numberOfOutputs: 1, outputChannelCount: [1], processorOptions: { recording } });
+    node.port.onmessage = event => {
+      if (event?.data && typeof event.data === 'object') {
+        diagnostic('realtime', `source=${loopback ? 'system' : 'microphone'}, recording=${recording}, underrun=${event.data.underrun}, buffered=${event.data.buffered}`);
+        return;
+      }
+      inFlight = Math.max(0, inFlight - 1); wake?.(); wake = undefined;
+    };
     const destination = context.createMediaStreamDestination();
     nativeStream = destination.stream;
     nativeLevels.set(nativeStream, 0);
@@ -95,14 +102,14 @@ export async function openMicrophone(deviceId = '', systemProcessing = true): Pr
       while (!stopped) {
         try {
           // Bound the MessagePort queue as well as the native and worklet ring buffers.
-          if (inFlight >= 3) await new Promise<void>(resolve => { wake = resolve; });
+          if (inFlight >= (recording ? 20 : 3)) await new Promise<void>(resolve => { wake = resolve; });
           if (stopped) return;
           const bytes = await invoke<ArrayBuffer>('native_microphone_read', { id: info.id });
           if (stopped) return;
-          if (!(bytes instanceof ArrayBuffer) || bytes.byteLength !== 960 * 4) throw new Error('Invalid microphone packet');
+          if (!(bytes instanceof ArrayBuffer) || bytes.byteLength < 3840 || bytes.byteLength % 3840 !== 0 || bytes.byteLength > (recording ? 38400 : 3840)) throw new Error('Invalid microphone packet');
           nativeLevels.set(destination.stream, pcmRms(new Float32Array(bytes)));
           if (!acknowledged) { diagnostic('capture-ready', `input=${info.deviceId}, context=${context!.state}, sampleRate=${info.sampleRate}`); acknowledged = true; }
-          inFlight++;
+          inFlight += bytes.byteLength / 3840;
           node!.port.postMessage(bytes, [bytes]);
         } catch (error) {
           if (!stopped) { diagnostic('capture-error', String(error)); console.warn('Native microphone stopped', error); stop(true); }

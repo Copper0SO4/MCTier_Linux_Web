@@ -1,4 +1,4 @@
-//! User-initiated WASAPI input, delivered as bounded 20 ms mono float32 packets.
+//! User-initiated WASAPI input, with bounded 20 ms voice packets and batched recording PCM.
 use serde::Serialize;
 use std::{
     collections::HashMap,
@@ -71,8 +71,17 @@ pub async fn native_microphone_start(
     window: WebviewWindow,
     device_id: String,
     system_processing: bool,
+    recording: Option<bool>,
 ) -> Result<Capture, String> {
     authorize(&window)?;
+    start_source(device_id, system_processing, false, recording.unwrap_or(false)).await
+}
+#[tauri::command]
+pub async fn recording_system_audio_start(window: WebviewWindow) -> Result<Capture, String> {
+    authorize(&window)?;
+    start_source(String::new(), false, true, true).await
+}
+async fn start_source(device_id: String, system_processing: bool, loopback: bool, recording: bool) -> Result<Capture, String> {
     #[cfg(windows)]
     {
         let id = uuid::Uuid::new_v4().to_string();
@@ -96,7 +105,7 @@ pub async fn native_microphone_start(
         let spawn = std::thread::Builder::new()
             .name("native-microphone".into())
             .spawn(move || {
-                let result = platform::run(device_id, system_processing, stop, receive, ready);
+                let result = if recording { platform::run_recording(device_id, system_processing, loopback, stop, receive, ready) } else { platform::run(device_id, system_processing, stop, receive, ready) };
                 if let Err(e) = result {
                     log::warn!("原生麦克风采集结束: {e}");
                 }
@@ -126,7 +135,7 @@ pub async fn native_microphone_start(
     }
     #[cfg(not(windows))]
     {
-        let _ = (device_id, system_processing);
+        let _ = (device_id, system_processing, loopback, recording);
         Err("Native microphone requires Windows".into())
     }
 }

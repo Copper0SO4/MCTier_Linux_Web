@@ -620,17 +620,8 @@ impl Service {
         if uid.as_deref() == Some(self.saved.account.as_str()) {
             return Ok(true);
         }
-        self.saved = self.saved.logged_out();
-        self.saved.cookies.clear();
-        *self.jar.0.write().map_err(|_| "无法清除失效登录凭据")? =
-            cookie_store::CookieStore::default();
-        self.login = None;
-        self.saved.result = "登录已失效或账号发生变化，请重新登录".into();
-        if self.persist().is_err() {
-            self.saved
-                .result
-                .push_str("；本机状态保存失败，下次启动将重新检查");
-        }
+        // Verification gates transfers; only explicit logout removes saved credentials.
+        self.saved.result = "登录已失效或账号发生变化，请退出后重新登录".into();
         Ok(false)
     }
     async fn daily(&mut self, day: &str) -> Result<(), String> {
@@ -1028,7 +1019,17 @@ mod tests {
                 .iter(),
                 &Url::parse(ORIGINS[0]).unwrap(),
             );
-            s.persist().unwrap();
+            // Simulate a pre-background-service release writing its original envelope.
+            // New scheduling fields are absent, but the same vault key must still decrypt it.
+            let legacy = json!({
+                "account":"alice", "name":"Legacy account", "enabled":false,
+                "cookies":s.jar.snapshot().unwrap(), "attempts":{}, "contributions":{},
+                "dismissed":true, "result":"legacy session"
+            });
+            let mut nonce = [0u8; 12];
+            rand::rngs::OsRng.fill_bytes(&mut nonce);
+            let encrypted = cipher().unwrap().encrypt(Nonce::from_slice(&nonce), serde_json::to_vec(&legacy).unwrap().as_slice()).unwrap();
+            std::fs::write(&state_path, [nonce.to_vec(), encrypted].concat()).unwrap();
             assert!(
                 !String::from_utf8_lossy(&std::fs::read(&state_path).unwrap()).contains("alice")
             );
@@ -1305,15 +1306,16 @@ mod tests {
         assert_eq!(s.saved.stats("2026-10-01").success_days, 1);
     }
     #[tokio::test]
-    async fn changed_or_expired_account_requires_new_consent() {
+    async fn changed_or_expired_account_blocks_transfer_without_erasing_credentials() {
         for profile in [
             json!({"success":false}),
             json!({"success":true,"data":{"uid":"bob"}}),
         ] {
             let mut s = service(vec![profile]);
             assert!(s.daily(&beijing_day()).await.is_err());
-            assert!(!s.saved.enabled);
-            assert!(s.saved.account.is_empty());
+            assert!(s.saved.enabled);
+            assert_eq!(s.saved.account, "alice");
+            assert!(s.io.as_ref().unwrap().lock().unwrap().persisted.is_empty());
             assert_eq!(s.io.as_ref().unwrap().lock().unwrap().requests.len(), 1);
         }
     }
@@ -1342,16 +1344,16 @@ mod tests {
         assert_eq!(s.io.as_ref().unwrap().lock().unwrap().requests.len(), 1);
     }
     #[tokio::test]
-    async fn revoked_session_logs_out_even_after_today_attempt_and_preserves_history() {
+    async fn revoked_session_preserves_credentials_and_history_until_explicit_logout() {
         let mut s = service(vec![json!({"success":false})]);
         s.saved.record_success("2026-10-01");
         s.saved.attempts.insert("alice".into(), beijing_day());
         assert!(!s.verify_session().await.unwrap());
-        assert!(!s.view().logged_in);
-        assert!(s.saved.cookies.is_empty());
+        assert!(s.view().logged_in);
+        assert_eq!(s.saved.account, "alice");
         assert!(s.saved.contributions.contains_key("alice"));
         assert!(s.saved.attempts.contains_key("alice"));
-        assert!(!s.verify_session().await.unwrap()); // Already logged out: no network call.
+        assert!(s.io.as_ref().unwrap().lock().unwrap().persisted.is_empty());
         assert_eq!(s.io.as_ref().unwrap().lock().unwrap().requests.len(), 1);
     }
     #[tokio::test]

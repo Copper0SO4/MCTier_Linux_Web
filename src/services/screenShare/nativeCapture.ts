@@ -16,6 +16,7 @@ export interface CaptureInfo {
 }
 export interface CaptureChoice {
   remote: boolean;
+  recording?: boolean;
   signal?: AbortSignal;
   resolve(source: CaptureSource): void;
   reject(error: Error): void;
@@ -30,7 +31,7 @@ export function registerCapturePicker(handler: (request: CaptureChoice | null) =
     picker = undefined;
   };
 }
-function selectSource(remote: boolean, signal?: AbortSignal): Promise<CaptureSource> {
+function selectSource(remote: boolean, signal?: AbortSignal, recording = false): Promise<CaptureSource> {
   return new Promise((resolve, reject) => {
     if (!picker) {
       reject(new Error('Screen picker is not ready'));
@@ -58,6 +59,7 @@ function selectSource(remote: boolean, signal?: AbortSignal): Promise<CaptureSou
     };
     pending = {
       remote,
+      recording,
       signal,
       resolve(source) {
         if (finish()) resolve(source);
@@ -99,9 +101,10 @@ type GeneratorConstructor = new (options: { kind: 'video' }) => GeneratedTrack;
 export async function requestNativeScreen(
   quality: ScreenShareQuality,
   remote = false,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  recording = false
 ): Promise<MediaStream> {
-  const source = await selectSource(remote, signal);
+  const source = await selectSource(remote, signal, recording);
   if (signal?.aborted) throw new DOMException('Cancelled', 'AbortError');
   const q = normalizeScreenQuality(quality);
   const info = await invoke<CaptureInfo>('native_capture_start', {
@@ -109,6 +112,7 @@ export async function requestNativeScreen(
     resolution: q.resolution,
     frameRate: q.frameRate,
     remote,
+    recording,
   });
   let stopped = false;
   let stream: MediaStream | undefined;

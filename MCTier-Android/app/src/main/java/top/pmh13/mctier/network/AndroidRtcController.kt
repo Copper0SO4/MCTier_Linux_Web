@@ -1,5 +1,6 @@
 package top.pmh13.mctier.network
 
+import top.pmh13.mctier.recording.RecordingMicrophone
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.AudioDeviceInfo
@@ -291,6 +292,7 @@ class AndroidRtcController(private val context: Context) {
                 }
                 // 变声器：在录音 PCM 进入 WebRTC 前原地处理
                 .setAudioBufferCallback { buffer, audioFormat, channelCount, sampleRate, bytesRead, captureTimestampNs ->
+                    if (!voiceRecordingSuppressed) RecordingMicrophone.offerCall(this, buffer, audioFormat, channelCount, sampleRate, bytesRead)
                     runCatching { VoiceProcessor.process(audioFormat, channelCount, sampleRate, buffer, bytesRead) }
                     runCatching { LocalVqePcmProcessor.processCapture(buffer, audioFormat, channelCount, sampleRate, bytesRead) }
                     // Defense in depth: no captured PCM can leave through WebRTC
@@ -325,9 +327,11 @@ class AndroidRtcController(private val context: Context) {
 
     @Synchronized
     fun setMicEnabled(enabled: Boolean) {
+        if (enabled && peerConnections.isNotEmpty()) RecordingMicrophone.setCallActive(this, true)
         _micEnabled.value = enabled
         localAudioTrack?.setEnabled(enabled && !voiceRecordingSuppressed)
         audioDeviceModule?.setMicrophoneMute(!enabled || voiceRecordingSuppressed)
+        if (!enabled) RecordingMicrophone.setCallActive(this, false)
         if (enabled) preferBuiltInMicrophone()
         resetAudioRouting()
         sendSignal?.invoke(SignalingEnvelope(type = "status-update", clientId = localPlayerId, micEnabled = enabled))
@@ -433,6 +437,7 @@ class AndroidRtcController(private val context: Context) {
             PeerConnection.IceServer.builder("stun:stun.qq.com:3478").createIceServer(),
             PeerConnection.IceServer.builder("stun:stun.miwifi.com:3478").createIceServer(),
         )
+        if (_micEnabled.value) RecordingMicrophone.setCallActive(this, true)
         val connection = factory?.createPeerConnection(
             PeerConnection.RTCConfiguration(iceServers).apply {
                 bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
@@ -520,6 +525,7 @@ class AndroidRtcController(private val context: Context) {
                 bindHealthChannel(remotePlayerId, token, connection.createDataChannel(VOICE_HEALTH_CHANNEL, init))
             }
         }
+        if (connection == null && peerConnections.isEmpty()) RecordingMicrophone.setCallActive(this, false)
         return connection
     }
 
@@ -562,6 +568,7 @@ class AndroidRtcController(private val context: Context) {
         lastHealthAt.remove(playerId)
         health[playerId]?.resetSample()
         peerConnections.remove(playerId)?.let { it.close(); it.dispose() }
+        if (peerConnections.isEmpty()) RecordingMicrophone.setCallActive(this, false)
         remoteAudioTracks.remove(playerId)
         pendingIceCandidates.remove(playerId)
     }
@@ -603,6 +610,7 @@ class AndroidRtcController(private val context: Context) {
         LocalVqePcmProcessor.dispose()
         _micEnabled.value = false
         audioDeviceModule?.setMicrophoneMute(true)
+        RecordingMicrophone.setCallActive(this, false)
         globalMuted = false
         restoreNormalAudio()
     }

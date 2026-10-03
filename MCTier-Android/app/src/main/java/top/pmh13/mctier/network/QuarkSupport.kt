@@ -17,6 +17,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
+import java.io.FileNotFoundException
 import java.security.KeyStore
 import java.time.LocalDate
 import java.time.ZoneId
@@ -37,6 +38,8 @@ data class QuarkSupportView(
 
 /** Signing in enables daily automatic saves. Credentials are used only for direct Quark requests. */
 class QuarkSupport private constructor(context: Context) {
+    private val appContext = context.applicationContext
+    private val logoutMarker = File(context.noBackupFilesDir, "quark-logout.requested")
     private val file = AtomicFile(File(context.noBackupFilesDir, "quark-support.bin"))
     private val mutex = Mutex()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -75,8 +78,13 @@ class QuarkSupport private constructor(context: Context) {
     }
     private fun load() {
         if (loaded) return
-        if (file.baseFile.exists()) {
-            val bytes = file.openRead().use { it.readBytes() }
+        // openRead also recovers the legacy AtomicFile .bak after an interrupted write.
+        // A missing base file alone must not turn a recoverable old login into a new account.
+        val bytes = try { file.openRead().use { it.readBytes() } } catch (e: FileNotFoundException) {
+            if (file.baseFile.exists() || File(file.baseFile.path + ".bak").exists()) throw e
+            null
+        }
+        if (bytes != null) {
             check(bytes.size in 28..MAX_STATE_BYTES) { "夸克登录数据损坏" }
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
@@ -87,6 +95,12 @@ class QuarkSupport private constructor(context: Context) {
                 val url = row.optString("url")
                 if (url in ORIGINS) Cookie.parse(url.toHttpUrl(), row.getString("cookie"))?.let { cookies.add(it) }
             }
+        }
+        if (logoutMarker.exists()) {
+            saved.remove("account"); saved.remove("name"); saved.remove("cookies")
+            cookies.clear()
+            stopRequested = true
+            persist()
         }
         loaded = true
     }
@@ -186,7 +200,9 @@ class QuarkSupport private constructor(context: Context) {
             saved.put("account", "").put("name", "").put("cookies", JSONArray()).put("result", "登录凭据保存失败，请重新登录")
             throw e
         }
+        check(!logoutMarker.exists() || logoutMarker.delete()) { "无法恢复自动支持，请重试登录" }
         stopRequested = false
+        QuarkDailyWork.reconcile(appContext, true)
         scope.launch { action("daily") }
     }
     private fun accountId(account: JSONObject): String = listOf(account.opt("qid"), account.opt("uid"))
@@ -201,13 +217,8 @@ class QuarkSupport private constructor(context: Context) {
             check(it.isNotBlank()) { "无法确认登录状态，请稍后重试" }
         } else null
         if (uid == account) return true
-        saved.put("enabled", false).put("account", "").put("name", "").put("cookies", JSONArray())
-            .put("result", "登录已失效或账号发生变化，请重新登录")
-        login = null
-        cookies.clear()
-        try { persist() } catch (_: Exception) {
-            saved.put("result", "登录已失效，请重新登录；本机状态保存失败，下次启动将重新检查")
-        }
+        // Verification gates transfers; only explicit logout removes saved credentials.
+        saved.put("result", "登录已失效或账号发生变化，请退出后重新登录")
         return false
     }
     private suspend fun daily() {
@@ -260,6 +271,8 @@ class QuarkSupport private constructor(context: Context) {
             }
             publish()
         }, transfer = {
+            currentCoroutineContext().ensureActive()
+            check(!stopRequested && !logoutMarker.exists()) { "已取消转存" }
             result = drive("share/sharepage/save", body = JSONObject().put("pwd_id", SHARE).put("stoken", token)
                 .put("fid_list", fids).put("fid_token_list", tokens).put("pdir_fid", "0").put("to_pdir_fid", "0").put("scene", "link"))
         })
@@ -275,7 +288,13 @@ class QuarkSupport private constructor(context: Context) {
         error("转存已提交但完成状态未确认，请在夸克中查看")
     }
     suspend fun action(action: String, loginId: String? = null, serviceTicket: String? = null) = withContext(Dispatchers.IO) {
-        if (action == "logout") stopRequested = true
+        if (action == "logout") {
+            stopRequested = true
+            // Durable cancellation precedes waiting for the in-flight operation's mutex.
+            java.io.FileOutputStream(logoutMarker).use { it.write(1); it.fd.sync() }
+            QuarkDailyWork.reconcile(appContext, false)
+            client.dispatcher.cancelAll()
+        }
         mutex.withLock {
             try { load() } catch (e: Exception) {
                 if (action != "logout") throw e
@@ -284,7 +303,7 @@ class QuarkSupport private constructor(context: Context) {
             }
             try {
                 when (action) {
-                    "status" -> Unit
+                    "status" -> QuarkDailyWork.reconcile(appContext, saved.optString("account").isNotEmpty() && !stopRequested)
                     "daily" -> daily()
                     "verify" -> { verifySession(); Unit }
                     "login" -> begin()
@@ -294,6 +313,11 @@ class QuarkSupport private constructor(context: Context) {
                     "cancel" -> if (login?.id == loginId) login = null
                     "dismiss" -> { saved.put("dismissed", true); persist() }
                     "logout" -> {
+                        // A login finishing while logout waited for the mutex may have
+                        // registered work again. Make logout the final state transition.
+                        stopRequested = true
+                        java.io.FileOutputStream(logoutMarker).use { it.write(1); it.fd.sync() }
+                        QuarkDailyWork.reconcile(appContext, false)
                         saved = JSONObject().put("attempts", saved.optJSONObject("attempts") ?: JSONObject()).put("dismissed", saved.optBoolean("dismissed"))
                             .put("contributions", saved.optJSONObject("contributions") ?: JSONObject())
                             .put("result", "已退出本设备登录；转存文件和本机统计保留，重登原账号可查看")
@@ -313,6 +337,27 @@ class QuarkSupport private constructor(context: Context) {
             } finally { publish() }
         }
     }
+    /** true means failure before submission: WorkManager may safely back off and retry. */
+    suspend fun backgroundDaily(): Boolean {
+        action("daily")
+        return mutex.withLock {
+            val account = saved.optString("account")
+            val day = LocalDate.now(ZoneId.of("Asia/Shanghai")).toString()
+            !stopRequested && !logoutMarker.exists() && account.isNotEmpty() &&
+                saved.optJSONObject("attempts")?.optString(account) != day &&
+                saved.optJSONObject("contributions")?.optJSONObject(account)?.has(day) != true
+        }
+    }
+    /** Upgrade restores scheduling from the existing encrypted state, without cloud verification. */
+    suspend fun restoreAfterUpdate() = withContext(Dispatchers.IO) {
+        mutex.withLock {
+            load()
+            publish()
+            // Wait for the WorkManager transaction before the broadcast receiver finishes.
+            QuarkDailyWork.reconcile(appContext, saved.optString("account").isNotEmpty() && !stopRequested)
+                .result.get(5, TimeUnit.SECONDS)
+        }
+    }
     @Synchronized
     fun onLaunch() {
         // One process-wide loop survives closing the support dialog and activity recreation.
@@ -327,7 +372,7 @@ class QuarkSupport private constructor(context: Context) {
             runCatching { action("status") }
             while (isActive) {
                 runCatching { action("daily") }
-                delay(30_000)
+                delay(15 * 60_000)
             }
         }
     }

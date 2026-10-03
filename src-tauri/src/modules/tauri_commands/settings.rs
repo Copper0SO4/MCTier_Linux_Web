@@ -414,6 +414,7 @@ pub async fn get_settings(state: State<'_, AppState>) -> Result<serde_json::Valu
         "exitNodes": exit_node_config.exit_nodes.join("\n"),
         "subnetProxyCidrs": exit_node_config.subnet_proxy_cidrs.join("\n"),
         "fileShareDownloadDir": config.file_share_download_dir.clone(),
+        "recordingDirectory": config.recording_directory.clone(),
     }))
 }
 
@@ -804,4 +805,22 @@ pub async fn get_exit_node_advanced_config(
         "enableQuicProxy": exit_config.enable_quic_proxy,
         "latencyFirst": exit_config.latency_first,
     }))
+}
+
+#[tauri::command]
+pub async fn get_compliance_consent(state: State<'_, AppState>) -> Result<bool, String> {
+    let core = state.core.lock().await;
+    let manager = core.get_config_manager();
+    let cfg = manager.lock().await;
+    Ok(cfg.get_config().compliance_accepted == Some(true))
+}
+#[tauri::command]
+pub async fn accept_compliance(window: tauri::WebviewWindow, state: State<'_, AppState>) -> Result<(), String> {
+    if window.label() != "main" || !crate::modules::media_permission::trusted(window.url().map_err(|e| e.to_string())?.as_str()) {
+        return Err("Only the main window can accept the agreement".into());
+    }
+    let core = state.core.lock().await;
+    let manager = core.get_config_manager();
+    let mut cfg = manager.lock().await;
+    cfg.update_config(|config| config.compliance_accepted = Some(true)).await.map_err(|e| e.to_string())
 }

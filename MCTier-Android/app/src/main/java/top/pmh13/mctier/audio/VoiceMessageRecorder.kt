@@ -1,5 +1,6 @@
 package top.pmh13.mctier.audio
 
+import top.pmh13.mctier.recording.RecordingMicrophone
 import android.content.Context
 import android.media.MediaRecorder
 import android.os.Build
@@ -19,8 +20,11 @@ class VoiceMessageRecorder(private val context: Context) {
     @Synchronized
     fun start() {
         check(recorder == null)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && runCatching { startCodec(true) }.isSuccess) return
-        startCodec(false)
+        RecordingMicrophone.acquirePriority(this)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && runCatching { startCodec(true) }.isSuccess) return
+            startCodec(false)
+        } catch (e: Exception) { RecordingMicrophone.releasePriority(this); throw e }
     }
 
     @Suppress("DEPRECATION")
@@ -64,6 +68,7 @@ class VoiceMessageRecorder(private val context: Context) {
             return null
         } finally {
             runCatching { native.release() }; file?.delete()
+            RecordingMicrophone.releasePriority(this)
         }
     }
 }

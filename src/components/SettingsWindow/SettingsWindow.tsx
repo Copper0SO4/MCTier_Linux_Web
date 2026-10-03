@@ -28,6 +28,7 @@ import {
   type CommunityNode,
 } from '../../services/lobby/communityNodes';
 import './SettingsWindow.css';
+import { ComplianceDocuments } from '../ComplianceGate/ComplianceGate';
 
 /** 可自定义的全局快捷键项 */
 type HotkeyKey = 'micHotkey' | 'globalMuteHotkey' | 'pushToTalkHotkey' | 'summonHotkey';
@@ -1001,6 +1002,15 @@ export const SettingsWindow: React.FC<{ onClose: () => void }> = ({ onClose }) =
                   <Button className="mct-choice-button" type={lang === 'en' ? 'primary' : 'default'} onClick={() => { setLanguagePreference('en'); setLang('en'); void saveAll({ language: 'en' }); }}>English</Button>
                 </Button.Group>
               </div>
+            </motion.div>
+
+            <motion.div className="settings-card" variants={itemVariants}>
+              <div className="settings-card-header">
+                <div className="settings-card-icon settings-card-icon-cyan"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><path d="M12 3 4 6v6c0 5 8 9 8 9s8-4 8-9V6z"/><path d="m8 12 3 3 5-6"/></svg></div>
+                <span className="settings-card-title">{tl('隐私与协议', 'Privacy & Terms')}</span>
+              </div>
+              <div className="settings-card-desc">{tl('查看隐私政策、用户协议、权限用途说明和免责声明。', 'Review the Privacy Policy, User Agreement, Permission Usage and Disclaimer.')}</div>
+              <ComplianceDocuments />
             </motion.div>
 
             <motion.div className="settings-card" variants={itemVariants}>
@@ -2045,7 +2055,6 @@ const ConfigManager: React.FC = () => {
           <Button key="refresh" onClick={() => void loadLogs()} loading={loadingLogs}>{tl('刷新', 'Refresh')}</Button>,
           <Button key="copy" onClick={() => void handleCopyLogs()} disabled={!logs}>{tl('复制日志', 'Copy Logs')}</Button>,
           <Button key="export" type="primary" onClick={() => void handleExportLogs()} loading={exportingLogs}>{tl('导出日志', 'Export Logs')}</Button>,
-          <Button key="close" onClick={() => setShowLogs(false)}>{tl('关闭', 'Close')}</Button>,
         ]}
       >
         <Input.TextArea

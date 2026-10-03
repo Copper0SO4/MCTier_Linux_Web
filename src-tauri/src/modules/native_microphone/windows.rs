@@ -65,6 +65,24 @@ fn push_packet(queue: &mut VecDeque<u8>, bytes: &[u8]) {
         queue.drain(..queue.len() - CAPACITY);
     }
 }
+struct MonoResampler { samples: Vec<f32>, position: f64, step: f64 }
+impl MonoResampler {
+    fn new(rate: u32) -> Self { Self { samples: Vec::new(), position: 0.0, step: rate as f64 / 48000.0 } }
+    fn convert(&mut self, samples: impl Iterator<Item = f32>) -> Vec<u8> {
+        self.samples.extend(samples);
+        let mut out = Vec::new();
+        while self.position + 1.0 < self.samples.len() as f64 {
+            let i = self.position as usize;
+            let fraction = (self.position - i as f64) as f32;
+            let value = self.samples[i] * (1.0 - fraction) + self.samples[i + 1] * fraction;
+            out.extend_from_slice(&value.clamp(-1.0, 1.0).to_le_bytes());
+            self.position += self.step;
+        }
+        let consumed = (self.position as usize).min(self.samples.len());
+        self.samples.drain(..consumed); self.position -= consumed as f64;
+        out
+    }
+}
 struct Running(IAudioClient);
 impl Drop for Running {
     fn drop(&mut self) {
@@ -81,6 +99,20 @@ pub fn run(
     requests: Receiver<Reply>,
     ready: tokio::sync::oneshot::Sender<Result<String, String>>,
 ) -> Result<(), String> {
+    run_source(device_id, system_processing, false, false, stop, requests, ready)
+}
+pub fn run_recording(
+    device_id: String, system_processing: bool, loopback: bool,
+    stop: Arc<AtomicBool>, requests: Receiver<Reply>,
+    ready: tokio::sync::oneshot::Sender<Result<String, String>>,
+) -> Result<(), String> {
+    run_source(device_id, system_processing, loopback, true, stop, requests, ready)
+}
+fn run_source(
+    device_id: String, system_processing: bool, loopback: bool, recording: bool,
+    stop: Arc<AtomicBool>, requests: Receiver<Reply>,
+    ready: tokio::sync::oneshot::Sender<Result<String, String>>,
+) -> Result<(), String> {
     let mut ready = Some(ready);
     let result = (|| -> Result<(), String> {
         let _apartment = Apartment::new()?;
@@ -89,7 +121,9 @@ pub fn run(
                 CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
                     .map_err(|e| e.to_string())?;
             // Legacy browser IDs are not WASAPI endpoint IDs: migrate them to system default.
-            let device = if let Some(id) = device_id.strip_prefix("wasapi:") {
+            let device = if loopback {
+                enumerator.GetDefaultAudioEndpoint(eRender, eConsole)
+            } else if let Some(id) = device_id.strip_prefix("wasapi:") {
                 let wide: Vec<u16> = id.encode_utf16().chain(Some(0)).collect();
                 enumerator.GetDevice(PCWSTR(wide.as_ptr()))
             } else {
@@ -100,7 +134,7 @@ pub fn run(
             .map_err(|e| format!("MIC_NOT_FOUND:无法打开麦克风，请检查设备是否已连接: {e}"))?;
             // Prevent an untrusted endpoint ID from selecting loopback/output audio.
             let endpoint: IMMEndpoint = device.cast().map_err(|e| e.to_string())?;
-            if endpoint.GetDataFlow().map_err(|e| e.to_string())? != eCapture {
+            if endpoint.GetDataFlow().map_err(|e| e.to_string())? != if loopback { eRender } else { eCapture } {
                 return Err("所选设备不是麦克风".into());
             }
             let native_id = device.GetId().map_err(|e| e.to_string())?;
@@ -110,7 +144,9 @@ pub fn run(
             let client: IAudioClient = device
                 .Activate(CLSCTX_ALL, None)
                 .map_err(|e| e.to_string())?;
-            if let Ok(client2) = client.cast::<IAudioClient2>() {
+            // Audio categories are for capture/render streams, not loopback. Some drivers
+            // accept SetClientProperties then fail Initialize(E_INVALIDARG) for loopback.
+            if !loopback { if let Ok(client2) = client.cast::<IAudioClient2>() {
                 let properties = AudioClientProperties {
                     cbSize: std::mem::size_of::<AudioClientProperties>() as u32,
                     eCategory: if system_processing {
@@ -123,7 +159,7 @@ pub fn run(
                 if let Err(e) = client2.SetClientProperties(&properties) {
                     log::warn!("设备不支持通信音效: {e}");
                 }
-            }
+            } }
             let format = WAVEFORMATEX {
                 wFormatTag: 3,
                 nChannels: 1,
@@ -133,18 +169,32 @@ pub fn run(
                 wBitsPerSample: 32,
                 cbSize: 0,
             };
-            client
+            // Render loopback must use the device mix format. Some drivers reject
+            // AUTOCONVERTPCM or a mono format for loopback with E_INVALIDARG.
+            let mix = if loopback { Some(client.GetMixFormat().map_err(|e| e.to_string())?) } else { None };
+            let chosen = mix.unwrap_or(&format as *const WAVEFORMATEX as *mut WAVEFORMATEX);
+            let channels = (*chosen).nChannels as usize;
+            let block = (*chosen).nBlockAlign as usize;
+            let bits = (*chosen).wBitsPerSample as usize;
+            let sample_rate = (*chosen).nSamplesPerSec;
+            let tag = if (*chosen).wFormatTag == 0xfffe && (*chosen).cbSize >= 22 {
+                std::ptr::read_unaligned((chosen as *const u8).add(24).cast::<u32>()) as u16
+            } else { (*chosen).wFormatTag };
+            let supported = (8000..=192000).contains(&sample_rate) && channels > 0 && channels <= 16 && block == channels * (bits / 8)
+                && (tag == 3 && bits == 32 || tag == 1 && [16, 24, 32].contains(&bits));
+            if !supported { if let Some(ptr) = mix { CoTaskMemFree(Some(ptr.cast())); } return Err("系统声音格式不受支持".into()); }
+            let initialized = client
                 .Initialize(
                     AUDCLNT_SHAREMODE_SHARED,
-                    AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                    if loopback { AUDCLNT_STREAMFLAGS_LOOPBACK } else { AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY },
                     200_000,
                     0,
-                    &format,
+                    chosen,
                     None,
-                )
-                .map_err(|e| {
-                    format!("麦克风启动失败，请检查 Windows 麦克风隐私设置及设备占用: {e}")
-                })?;
+                );
+            if let Some(ptr) = mix { CoTaskMemFree(Some(ptr.cast())); }
+            initialized.map_err(|e| if loopback { format!("系统声音录制启动失败，请检查默认播放设备: {e}") } else { format!("麦克风启动失败，请检查 Windows 麦克风隐私设置及设备占用: {e}") })?;
+            let mut resampler = MonoResampler::new(sample_rate);
             let capture: IAudioCaptureClient = client.GetService().map_err(|e| e.to_string())?;
             client.Start().map_err(|e| e.to_string())?;
             let _running = Running(client);
@@ -154,6 +204,8 @@ pub fn run(
             let mut queue = VecDeque::with_capacity(CAPACITY);
             let mut pending: Option<Reply> = None;
             let mut last_request = Instant::now();
+            let mut last_packet = Instant::now();
+            let mut last_capture = Instant::now();
             while !stop.load(Ordering::Acquire) && last_request.elapsed() < Duration::from_secs(5) {
                 if pending.is_none() {
                     match requests.try_recv() {
@@ -174,21 +226,46 @@ pub fn run(
                     capture
                         .GetBuffer(&mut ptr, &mut frames, &mut flags, None, None)
                         .map_err(|e| e.to_string())?;
-                    let size = frames as usize * 4;
+                    let size = frames as usize * block;
                     // WASAPI may return a null pointer for silent packets. Never dereference it.
                     if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 {
-                        push_packet(&mut queue, &vec![0; size.min(CAPACITY)]);
-                    } else if !ptr.is_null() && size <= 192000 {
-                        push_packet(&mut queue, std::slice::from_raw_parts(ptr, size));
+                        let converted = resampler.convert(std::iter::repeat_n(0.0, (frames as usize).min(192000)));
+                        if recording { queue.extend(converted); } else { push_packet(&mut queue, &converted); }
+                    } else if !ptr.is_null() && size <= 4 * 1024 * 1024 {
+                        let bytes = std::slice::from_raw_parts(ptr, size);
+                        let converted = resampler.convert(bytes.chunks_exact(block).map(|frame| {
+                            frame.chunks_exact(bits / 8).map(|s| match (tag, bits) {
+                                (3, 32) => f32::from_le_bytes(s.try_into().unwrap()),
+                                (1, 16) => i16::from_le_bytes(s.try_into().unwrap()) as f32 / 32768.0,
+                                (1, 24) => (i32::from_le_bytes([0, s[0], s[1], s[2]]) >> 8) as f32 / 8388608.0,
+                                (1, 32) => i32::from_le_bytes(s.try_into().unwrap()) as f32 / 2147483648.0,
+                                _ => 0.0,
+                            }).sum::<f32>() / channels as f32
+                        }));
+                        if recording { queue.extend(converted); } else { push_packet(&mut queue, &converted); }
                     } else {
                         let _ = capture.ReleaseBuffer(frames);
                         return Err("麦克风返回了无效音频数据".into());
                     }
                     capture.ReleaseBuffer(frames).map_err(|e| e.to_string())?;
+                    last_capture = Instant::now();
+                    if queue.len() > CHUNK * 100 { return Err("录屏音频处理积压超过两秒，请降低录屏画质".into()); }
                 }
                 if pending.is_some() && queue.len() >= CHUNK {
-                    let bytes = queue.drain(..CHUNK).collect();
+                    // A renderer IPC round trip can exceed 20 ms during screen capture.
+                    // Batch all completed packets so transport throughput still keeps up
+                    // with the device clock instead of losing half of every second.
+                    let count = if recording { (queue.len() / CHUNK).min(10) * CHUNK } else { CHUNK };
+                    let bytes = queue.drain(..count).collect();
                     let _ = pending.take().unwrap().send(Ok(bytes));
+                    last_packet = Instant::now();
+                }
+                // A silent output endpoint may emit no WASAPI packets at all.
+                if loopback && pending.is_some() && last_capture.elapsed() >= Duration::from_millis(60) && last_packet.elapsed() >= Duration::from_millis(20) {
+                    let mut bytes: Vec<u8> = queue.drain(..).collect();
+                    bytes.resize(CHUNK, 0);
+                    let _ = pending.take().unwrap().send(Ok(bytes));
+                    last_packet = Instant::now();
                 }
                 std::thread::sleep(Duration::from_millis(3));
             }
@@ -208,6 +285,17 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn loopback_resampling_is_continuous_and_bounded() {
+        for rate in [44100, 48000, 96000] {
+            let mut resampler = MonoResampler::new(rate);
+            let mut result = Vec::new();
+            for _ in 0..100 { result.extend(resampler.convert(std::iter::repeat_n(0.5, rate as usize / 100))); }
+            assert!((result.len() as i64 / 4 - 48000).abs() <= 2);
+            assert!(result.chunks_exact(4).all(|b| (f32::from_le_bytes(b.try_into().unwrap()) - 0.5).abs() < 0.0001));
+            assert!(resampler.samples.len() <= 2);
+        }
+    }
     #[test]
     fn slow_consumer_keeps_only_latest_aligned_audio() {
         let mut queue = VecDeque::new();

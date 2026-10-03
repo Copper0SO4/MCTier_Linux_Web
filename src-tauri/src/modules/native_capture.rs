@@ -30,6 +30,7 @@ pub struct CaptureInfo {
 }
 type FrameReply = tokio::sync::oneshot::Sender<Result<Vec<u8>, String>>;
 struct Session {
+    recording: bool,
     info: CaptureInfo,
     stop: Arc<AtomicBool>,
     frames: std::sync::mpsc::SyncSender<FrameReply>,
@@ -101,6 +102,7 @@ pub async fn native_capture_start(
     resolution: u32,
     frame_rate: u32,
     remote: bool,
+    recording: Option<bool>,
 ) -> Result<CaptureInfo, String> {
     authorize(&window)?;
     validate_quality(resolution, frame_rate)?;
@@ -124,12 +126,13 @@ pub async fn native_capture_start(
         let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
         {
             let mut all = sessions().lock().unwrap_or_else(|e| e.into_inner());
-            if all.values().any(|s| s.info.remote == remote) {
+            if all.values().any(|s| s.info.remote == remote && s.recording == recording.unwrap_or(false)) {
                 return Err("已有进行中的屏幕采集，请先停止".into());
             }
             all.insert(
                 info.id.clone(),
                 Session {
+                    recording: recording.unwrap_or(false),
                     info: info.clone(),
                     stop: stop.clone(),
                     frames: send,

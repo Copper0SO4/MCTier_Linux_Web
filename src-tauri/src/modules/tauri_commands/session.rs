@@ -959,6 +959,7 @@ pub async fn save_window_position(
 /// * `Err(String)` - 错误信息
 #[tauri::command]
 pub async fn exit_app(state: State<'_, AppState>, app: tauri::AppHandle) -> Result<(), String> {
+    if crate::modules::screen_recording::finish_before_exit(&app) { return Ok(()); }
     log::info!("收到退出应用命令");
 
     // 先清理资源

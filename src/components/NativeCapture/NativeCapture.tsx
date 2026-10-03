@@ -57,7 +57,7 @@ export function NativeCapturePicker() {
   return (
     <Modal
       open={!!request}
-      title={tl('选择要共享的内容', 'Choose what to share')}
+      title={request?.recording ? tl('选择要录制的内容', 'Choose what to record') : tl('选择要共享的内容', 'Choose what to share')}
       centered
       width={680}
       className="native-capture-picker"
@@ -65,7 +65,7 @@ export function NativeCapturePicker() {
       zIndex={100010}
       maskClosable={false}
       onCancel={() => request?.reject(new DOMException('Cancelled', 'AbortError'))}
-      okText={tl('共享所选内容', 'Share selected source')}
+      okText={request?.recording ? tl('录制所选内容', 'Record selected source') : tl('共享所选内容', 'Share selected source')}
       cancelText={tl('取消', 'Cancel')}
       okButtonProps={{ disabled: !selected || loading }}
       onOk={() => {
@@ -73,7 +73,7 @@ export function NativeCapturePicker() {
       }}
     >
       <p className="capture-description">
-        {request?.remote
+        {request?.recording ? tl('选择要录制的显示器或窗口。', 'Choose a display or window to record.') : request?.remote
           ? tl(
               '选择主显示器后，对方才能看到并控制你的屏幕。你随时可以停止。',
               'Choose the primary display to let the peer see and control it. You can stop at any time.'

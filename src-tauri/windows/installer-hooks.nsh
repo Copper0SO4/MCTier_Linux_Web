@@ -1,6 +1,8 @@
-; Stop/remove only Quark tasks pointing at this installation before uninstalling
-; its executable. Other installed copies and GUI startup are untouched.
+; An update keeps the same encrypted state and scheduled executable path.
+; Only an actual uninstall removes this installation's Quark tasks.
 !macro NSIS_HOOK_PREUNINSTALL
-  IfFileExists "$INSTDIR\mctier.exe" 0 +2
-    ExecWait '"$INSTDIR\mctier.exe" --quark-background-uninstall'
+  ${If} $UpdateMode <> 1
+    IfFileExists "$INSTDIR\mctier.exe" 0 +2
+      ExecWait '"$INSTDIR\mctier.exe" --quark-background-uninstall'
+  ${EndIf}
 !macroend

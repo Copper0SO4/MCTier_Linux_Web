@@ -19,7 +19,7 @@ class MainActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         // Check daily automatic support at startup/resume; the service also watches for midnight.
-        top.pmh13.mctier.network.QuarkSupport.get(applicationContext).onLaunch()
+        if (top.pmh13.mctier.ui.ConsentStore.isAgreed(applicationContext)) top.pmh13.mctier.network.QuarkSupport.get(applicationContext).onLaunch()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -52,7 +52,7 @@ class MainActivity : ComponentActivity() {
         handleDeepLink(intent)
         setContent {
             val repository = remember { MctierRepository.get(applicationContext) }
-            MctierApp(repository = repository, onConsentGranted = { requestStartupPermissions() })
+            MctierApp(repository = repository, onConsentGranted = { repository.checkUpdateOnStart(); requestStartupPermissions(); top.pmh13.mctier.network.QuarkSupport.get(applicationContext).onLaunch() })
         }
     }
 

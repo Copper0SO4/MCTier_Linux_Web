@@ -101,8 +101,8 @@ export const AboutWindow: React.FC<AboutWindowProps> = ({ onClose }) => {
             </Title>
             <Paragraph className="section-text">
               {tl(
-                'MCTier 是一款通用的虚拟局域网联机工具，支持所有局域网联机游戏。基于 EasyTier 和 WebRTC 技术，让您可以轻松与好友跨越网络限制，享受联机游戏的乐趣。支持实时语音通话、P2P聊天、文件共享和屏幕共享等功能。',
-                'MCTier is a universal virtual LAN gaming tool that supports all LAN multiplayer games. Built on EasyTier and WebRTC, it lets you easily play with friends across network barriers and enjoy multiplayer gaming. It supports real-time voice calls, P2P chat, file sharing, screen sharing and more.'
+                'MCTier 是一款通用的虚拟局域网联机工具，适用于支持局域网联机的游戏。基于 EasyTier 和 WebRTC 技术，让您可以轻松与好友跨越网络限制，享受联机游戏的乐趣。支持语音通话、文字与语音消息、本地语音转文字、文件共享、屏幕共享、授权远程控制与本地录屏。',
+                'MCTier is a universal virtual LAN gaming tool for games that support LAN multiplayer. Built on EasyTier and WebRTC, it lets you easily play with friends across network barriers and enjoy multiplayer gaming. It supports voice calls, text and voice messages, local transcription, file and screen sharing, authorized remote control and local screen recording.'
               )}
             </Paragraph>
             <div className="game-scope-tip">
@@ -229,8 +229,8 @@ export const AboutWindow: React.FC<AboutWindowProps> = ({ onClose }) => {
               <li>
                 <ChatIcon size={16} className="feature-icon" />
                 {tl(
-                  'P2P 聊天室 - 支持文本和图片消息，基于虚拟网络传输',
-                  'P2P chat - text and image messages over the virtual network'
+                  'P2P 聊天室 - 支持文字、图片、语音和附件，本地语音转文字',
+                  'P2P chat - text, images, voice and attachments, with local transcription'
                 )}
               </li>
               <li>
@@ -250,8 +250,8 @@ export const AboutWindow: React.FC<AboutWindowProps> = ({ onClose }) => {
               <li>
                 <SettingsIcon size={16} className="feature-icon" />
                 {tl(
-                  '多节点高可用 - 支持配置多个 EasyTier 节点，自动故障转移',
-                  'Multi-node HA - configure multiple EasyTier nodes with auto failover'
+                  '节点配置 - 支持选择公共节点或配置自己的 EasyTier 节点',
+                  'Node configuration - choose public nodes or configure your own EasyTier nodes'
                 )}
               </li>
               <li>
@@ -264,8 +264,8 @@ export const AboutWindow: React.FC<AboutWindowProps> = ({ onClose }) => {
               <li>
                 <LockIcon size={16} className="feature-icon" />
                 {tl(
-                  '大厅隔离机制 - 不同大厅之间完全隔离，保护隐私安全',
-                  'Lobby isolation - full isolation between lobbies for privacy'
+                  '大厅访问控制 - 使用大厅身份和凭据校验成员连接',
+                  'Lobby access control - member connections verified using lobby identity and credentials'
                 )}
               </li>
               <li>
@@ -278,8 +278,8 @@ export const AboutWindow: React.FC<AboutWindowProps> = ({ onClose }) => {
               <li>
                 <GlobeIcon size={16} className="feature-icon" />
                 {tl(
-                  '虚拟域名 - 支持 Magic DNS，使用域名代替 IP 地址',
-                  'Virtual domains - Magic DNS to use names instead of IPs'
+                  '虚拟域名 - 通过本机 hosts 映射使用域名代替虚拟 IP',
+                  'Virtual domains - local hosts mappings for virtual IP addresses'
                 )}
               </li>
               <li>
@@ -544,33 +544,12 @@ export const AboutWindow: React.FC<AboutWindowProps> = ({ onClose }) => {
               </div>
 
               <div className="third-party-item">
-                <Text strong className="third-party-name">
-                  LocalVQE / GGML
-                </Text>
-                <Paragraph className="third-party-line">
-                  {tl(
-                    'LocalVQE 依据 Apache-2.0 授权；其内嵌的 GGML 依据 MIT 授权（Copyright (c) 2023 Georgi Gerganov）。仅 Android 端使用；桌面端已改为不加处理的原声通话，不再包含该组件。',
-                    'LocalVQE is licensed under Apache-2.0; the bundled GGML is licensed under MIT (Copyright (c) 2023 Georgi Gerganov). Used by the Android client only; the desktop client now sends unprocessed microphone audio and no longer bundles this component.'
-                  )}
-                </Paragraph>
-                <Paragraph className="third-party-line">
-                  {tl(
-                    'Android 端语音降噪模型的训练数据包含 Microsoft DNS Challenge / AEC Challenge 素材，依 CC BY 4.0 授权。',
-                    'The Android noise-suppression model\u2019s training data includes material from the Microsoft DNS Challenge / AEC Challenge, licensed under CC BY 4.0.'
-                  )}
-                </Paragraph>
-                <Paragraph className="third-party-line">
-                  {tl('源码地址：', 'Source: ')}
-                  <a
-                    href="https://github.com/localai-org/LocalVQE"
-                    target="_blank"
-                    onClick={openTrustedExternal}
-                    rel="noopener noreferrer"
-                    className="third-party-link"
-                  >
-                    https://github.com/localai-org/LocalVQE
-                  </a>
-                </Paragraph>
+                <Text strong className="third-party-name">sherpa-onnx / Zipformer</Text>
+                <Paragraph className="third-party-line">{tl('本地语音转文字使用 sherpa-onnx 和随软件提供的 Zipformer 中文模型；具体模型来源与许可见第三方声明。', 'Local transcription uses sherpa-onnx and the bundled Chinese Zipformer model. Model sources and licenses are listed in the third-party notices.')}</Paragraph>
+              </div>
+              <div className="third-party-item">
+                <Text strong className="third-party-name">PDF.js / JSZip / libarchive.js / pptx-renderer / QRCode</Text>
+                <Paragraph className="third-party-line">{tl('用于本地文件预览、压缩包读取与二维码生成。各组件按自身许可证授权，完整清单见第三方声明。', 'Used for local file previews, archive reading and QR code generation. Each component retains its own license; see the full third-party notices.')}</Paragraph>
               </div>
 
               <Paragraph className="third-party-footnote">

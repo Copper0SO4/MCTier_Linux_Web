@@ -196,6 +196,7 @@ mod tests {
         fs::write(source.join("mctier_config.json"), "old config").unwrap();
         fs::write(root.join("mctier_config.json"), "current config").unwrap();
         fs::write(source.join("mctier.log"), "previous log").unwrap();
+        fs::write(source.join("quark-support.bin"), b"encrypted legacy session").unwrap();
         fs::write(source.join("avatar-cache/avatar.png"), b"avatar").unwrap();
         let backup = root.join("legacy-migration/old");
         merge_directory(&source, &root, &backup).unwrap();
@@ -216,6 +217,7 @@ mod tests {
             fs::read(root.join("avatar-cache/avatar.png")).unwrap(),
             b"avatar"
         );
+        assert_eq!(fs::read(root.join("quark-support.bin")).unwrap(), b"encrypted legacy session");
     }
 
     #[test]

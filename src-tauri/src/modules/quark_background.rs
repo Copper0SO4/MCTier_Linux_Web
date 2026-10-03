@@ -88,6 +88,7 @@ pub fn run_if_requested() -> bool {
             if uninstall {
                 schedule(false, true).await
             } else {
+                super::app_paths::migrate_legacy_data().map_err(|_| "无法迁移旧版应用数据")?;
                 // Bound a broken network run; reservations survive even forced termination.
                 tokio::time::timeout(
                     Duration::from_secs(150),

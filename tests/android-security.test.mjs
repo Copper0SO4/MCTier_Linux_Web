@@ -31,7 +31,13 @@ test('Android manifest keeps non-entry components private and disables global cl
   assert.match(manifest, /android:name="\.service\.VoiceForegroundService"[\s\S]*?android:exported="false"/);
   assert.match(manifest, /android:name="com\.easytier\.jni\.EasyTierVpnService"[\s\S]*?android:exported="false"/);
   assert.match(manifest, /android:name="\.service\.MctierAccessibilityService"[\s\S]*?android:exported="true"[\s\S]*?android:permission="android\.permission\.BIND_ACCESSIBILITY_SERVICE"/);
-  assert.doesNotMatch(manifest, /androidx\.core\.content\.FileProvider/);
+  const providers = [...manifest.matchAll(/<provider\b[\s\S]*?<\/provider>/g)].map(match => match[0]);
+  assert.equal(providers.length, 1);
+  assert.match(providers[0], /android:authorities="\$\{applicationId\}\.recordings"/);
+  assert.match(providers[0], /android:exported="false"/);
+  const recordingPaths = read('MCTier-Android/app/src/main/res/xml/recording_paths.xml');
+  assert.match(recordingPaths, /<external-files-path name="recordings" path="Movies\/"\s*\/>/);
+  assert.doesNotMatch(recordingPaths, /<(?:root-path|external-path|files-path|cache-path)\b|path="(?:\.|\/|\.\.)"/);
 });
 
 test('network security allows cleartext only through explicit scoped exceptions', () => {
@@ -49,7 +55,7 @@ test('deep links require the registered VIEW route and clear URI credentials aft
   assert.match(inviteCodec, /isUnsafeControl/);
   assert.match(inviteCodec, /fun isValidEasyTierNode/);
   assert.match(inviteCodec, /fun isValidSignalingServer/);
-  assert.match(mctierApp, /if \(state\.pendingJoin == null\) repository\.maybeAutoJoin\(\)/);
+  assert.match(mctierApp, /if \(agreed && state\.pendingJoin == null\) repository\.maybeAutoJoin\(\)/);
 });
 
 test('foreground services fail closed on invalid input or missing permission', () => {

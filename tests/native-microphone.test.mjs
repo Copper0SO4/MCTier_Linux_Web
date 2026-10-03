@@ -152,6 +152,44 @@ test('other desktop backends retain their browser media path', async () => {
   assert.ok(!f.calls.some(([name]) => name === 'native_microphone_start'));
 });
 
+test('recording accepts batched PCM and backpressures by audio duration, not IPC count', async () => {
+  const f = setup();
+  const stream = await f.api.openMicrophone('', true, false, true);
+  assert.equal(f.calls.find(([name]) => name === 'native_microphone_start')[1].recording, true);
+  for (let i = 0; i < 2; i++) { f.reads[i].resolve(new ArrayBuffer(38400)); await flush(); }
+  assert.equal(f.reads.length, 2);
+  assert.equal(f.nodes[0].port.messages.length, 2);
+  f.nodes[0].port.onmessage({ data: { underrun: 0, buffered: 9600 } }); await flush();
+  assert.equal(f.reads.length, 2, 'diagnostic messages must not acknowledge PCM');
+  f.nodes[0].port.onmessage({ data: 'consumed' }); await flush();
+  assert.equal(f.reads.length, 3);
+  stream.getTracks()[0].stop(); await flush();
+});
+
+test('recording worklet absorbs batched delivery jitter without dropping samples', () => {
+  let Processor;
+  const messages = [];
+  class Base { port = { postMessage: message => messages.push(message) }; }
+  const context = vm.createContext({ AudioWorkletProcessor: Base, Float32Array, ArrayBuffer,
+    registerProcessor: (_, type) => { Processor = type; } });
+  vm.runInContext(fs.readFileSync('src/services/voice/nativeMicrophoneWorklet.js', 'utf8'), context);
+  const p = new Processor({ processorOptions: { recording: true } });
+  const output = new Float32Array(128);
+  p.port.onmessage({ data: new Float32Array(9600).fill(0.25).buffer });
+  p.process([], [[output]]);
+  assert.ok(output.every(value => value === 0), 'wait for the initial jitter buffer');
+  p.port.onmessage({ data: new Float32Array(4800).fill(0.25).buffer });
+  for (let i = 0; i < 1500; i++) {
+    // 200 ms arrives in one IPC response, despite the audio renderer's 128-sample blocks.
+    if (i > 0 && i % 75 === 0) p.port.onmessage({ data: new Float32Array(9600).fill(0.25).buffer });
+    p.process([], [[output]]);
+    assert.ok(output.every(value => value === 0.25), `PCM gap at render quantum ${i}`);
+  }
+  assert.ok(messages.filter(m => typeof m === 'object').every(m => m.underrun === 0));
+  assert.equal(messages.filter(m => m === 'consumed').length, 200);
+  assert.equal(p.buffer.length, 28800);
+});
+
 test('audio worklet renders PCM, sanitizes invalid samples, bounds latency and emits silence on underrun', () => {
   let Processor;
   class Base { port = { postMessage() {} }; }

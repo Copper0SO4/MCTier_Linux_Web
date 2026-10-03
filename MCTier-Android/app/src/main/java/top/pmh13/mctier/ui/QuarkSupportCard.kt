@@ -176,7 +176,7 @@ internal fun QuarkSupportCard() {
                                     finally { busy = false }
                                 }
                             },
-                            label = { Text(label) },
+                            label = { Text(label, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.Center) },
                             modifier = Modifier.weight(1f),
                         )
                     }

@@ -10,15 +10,15 @@ import { QuarkSupportWindow } from './QuarkSupport';
 
 export const OPEN_QUARK_SUPPORT = 'mctier-open-quark-support';
 
-/** Show after local account load; an active update prompt takes precedence. */
-export function QuarkStartupPrompt({ versionVisible }: { versionVisible: boolean }) {
+/** Keep the invitation pending while a higher-priority version prompt is active. */
+export function QuarkStartupPrompt({ blocked, onBlockingChange }: { blocked: boolean; onBlockingChange: (blocking: boolean) => void }) {
   const state = useQuarkSupport();
   const [resolved, setResolved] = useState(false);
   const [handled, setHandled] = useState(false);
   const [supportOpen, setSupportOpen] = useState(false);
   useEffect(() => {
     let active = true;
-    void loadQuarkSupport().finally(() => {
+    void loadQuarkSupport().catch(() => {}).finally(() => {
       if (active) {
         setResolved(true);
         if (getQuarkSupportSnapshot().loggedIn) setHandled(true);
@@ -34,11 +34,12 @@ export function QuarkStartupPrompt({ versionVisible }: { versionVisible: boolean
       window.removeEventListener(OPEN_QUARK_SUPPORT, open);
     };
   }, []);
-  const open = resolved && state.ready && !state.loggedIn && !handled && !versionVisible;
+  const open = resolved && state.ready && !state.loggedIn && !handled;
+  useEffect(() => { onBlockingChange(!resolved || open || supportOpen); }, [resolved, open, supportOpen, onBlockingChange]);
   return (
     <>
       <Modal
-        open={open}
+        open={open && !blocked}
         title={tl('免费持续支持 MCTier', 'Support MCTier for free')}
         centered
         width={420}
@@ -97,7 +98,7 @@ export function QuarkStartupPrompt({ versionVisible }: { versionVisible: boolean
         </p>
       </Modal>
       <QuarkSupportWindow
-        open={supportOpen && !versionVisible}
+        open={supportOpen && !blocked}
         onClose={() => setSupportOpen(false)}
       />
     </>

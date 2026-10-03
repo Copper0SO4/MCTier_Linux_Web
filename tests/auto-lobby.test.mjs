@@ -25,7 +25,7 @@ test('startup selects join and submits the saved encrypted password, including a
     const settings = { autoLobbyEnabled: true, lobbyName: 'room', playerName: 'Alice', lobbyPassword: password };
     let mode;
     let formShown = false;
-    const context = { window, async invoke() { return settings; }, setFormMode(value) { mode = value; },
+    const context = { window, startupReady: true, async invoke() { return settings; }, setFormMode(value) { mode = value; },
       setShowForm(value) { formShown = value; }, setEnableGpuRendering() {}, console: { log() {}, error() {} },
       setTimeout(fn) { timers.push(fn); return 1; }, clearTimeout() {} };
     vm.runInNewContext(startup, context);
@@ -50,11 +50,17 @@ test('a manual action taken while settings load cannot be replaced by auto join'
   const window = {};
   let resolve;
   let timer;
-  vm.runInNewContext(startup, { window, invoke: () => new Promise(r => { resolve = r; }),
+  vm.runInNewContext(startup, { window, startupReady: true, invoke: () => new Promise(r => { resolve = r; }),
     setFormMode() { assert.fail('manual mode must survive'); }, setShowForm() { assert.fail('manual view must survive'); },
     setEnableGpuRendering() {}, console: { log() {}, error() {} }, setTimeout(fn) { timer = fn; }, clearTimeout() {} });
   const pending = timer();
   window.__autoLobbyTriggered = true;
   resolve({ autoLobbyEnabled: true, lobbyName: 'room', playerName: 'Alice' });
   await pending;
+});
+
+test('startup prompts defer auto join without consuming its once-only flag', () => {
+  const window = {};
+  vm.runInNewContext(startup, {window, startupReady:false, invoke(){assert.fail('No settings request before startup prompts settle');}, setTimeout(){assert.fail('No auto join timer while blocked');}});
+  assert.equal(window.__autoLobbyTriggered, undefined);
 });

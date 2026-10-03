@@ -396,6 +396,9 @@ pub struct UserConfig {
     pub lobby_easytier_advanced_config: Option<EasyTierAdvancedConfig>,
     /// 文件夹共享下载目录；为空时使用系统下载目录下的 MCTier 文件夹
     pub file_share_download_dir: Option<String>,
+    /// 屏幕录制保存目录；为空时使用用户 Videos/MCTier
+    pub recording_directory: Option<String>,
+    pub compliance_accepted: Option<bool>,
 }
 
 impl Default for UserConfig {
@@ -428,6 +431,8 @@ impl Default for UserConfig {
             global_easytier_advanced_config: None,
             lobby_easytier_advanced_config: None,
             file_share_download_dir: None,
+            recording_directory: None,
+            compliance_accepted: None,
         }
     }
 }
@@ -643,12 +648,13 @@ impl ConfigManager {
     where
         F: FnOnce(&mut UserConfig),
     {
-        // 应用更新
+        // Roll back memory as well if persistence fails (including consent and recording paths).
+        let previous = self.config.clone();
         updater(&mut self.config);
         self.config.migrate_legacy_signaling_server();
 
         // 立即保存到文件
-        self.save().await?;
+        if let Err(error) = self.save().await { self.config = previous; return Err(error); }
 
         log::info!("配置已更新并保存");
 
@@ -1055,6 +1061,35 @@ mod tests {
             loaded_config.preferred_server,
             Some("tcp://test:11010".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn recording_directory_and_consent_survive_reload_and_settings_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = create_test_config_manager(&dir).await;
+        assert_ne!(manager.get_config().compliance_accepted, Some(true));
+        manager.update_config(|c| { c.recording_directory = Some("C:\\Users\\Player\\Videos\\Clips".into()); c.compliance_accepted = Some(true); }).await.unwrap();
+        manager.update_config(|c| c.player_name = Some("Renamed".into())).await.unwrap();
+        let loaded = ConfigManager::load_from_file(&manager.config_path).await.unwrap();
+        assert_eq!(loaded.recording_directory, manager.get_config().recording_directory);
+        assert_eq!(loaded.compliance_accepted, Some(true));
+    }
+
+    #[tokio::test]
+    async fn failed_consent_or_directory_save_keeps_previous_memory_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = create_test_config_manager(&dir).await;
+        let previous = manager.get_config().clone();
+        // A file where the parent directory should be makes persistence fail deterministically.
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, b"keep").unwrap();
+        manager.config_path = blocked.join("config.json");
+        assert!(manager.update_config(|c| {
+            c.compliance_accepted = Some(true);
+            c.recording_directory = Some("D:/Clips".into());
+        }).await.is_err());
+        assert_eq!(manager.get_config(), &previous);
+        assert_eq!(std::fs::read(blocked).unwrap(), b"keep");
     }
 
     #[tokio::test]

@@ -47,17 +47,22 @@ private fun startupParagraph(index: Int) = buildAnnotatedString {
 }
 
 @Composable
-internal fun QuarkStartupPrompt(blocked: Boolean, onSupport: () -> Unit) {
+internal fun QuarkStartupPrompt(blocked: Boolean, onSupport: () -> Unit, onBlockingChange: (Boolean) -> Unit) {
     val context = LocalContext.current
     val service = remember { QuarkSupport.get(context) }
     val state by service.view.collectAsStateWithLifecycle()
     // Activity recreation must not repeat an invitation already dismissed this launch.
     var handled by rememberSaveable { mutableStateOf(false) }
+    var resolved by remember { mutableStateOf(false) }
     LaunchedEffect(service) {
         if (!service.view.value.ready) runCatching { service.action("status") }
+        resolved = true
     }
     LaunchedEffect(state.ready, state.loggedIn) {
         if (state.ready && state.loggedIn) handled = true
+    }
+    LaunchedEffect(resolved, state.ready, state.loggedIn, handled) {
+        onBlockingChange(!resolved || (state.ready && !state.loggedIn && !handled))
     }
     if (blocked || !state.ready || state.loggedIn || handled) return
     AlertDialog(

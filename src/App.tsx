@@ -24,7 +24,7 @@ import { VersionUpdateModal } from './components/VersionUpdateModal';
 import { useAppStore, initializeStore } from './stores';
 import { hotkeyManager, webrtcClient, audioService, fileShareService } from './services';
 import { speakingDetector } from './services/voice/SpeakingDetector';
-import { versionCheckService } from './services/version/VersionCheckService';
+import { useStartupUpdates, startupVersionStage } from './services/version/startupUpdates';
 import { DOWNLOAD_WEBSITE } from './services/version/versionPolicy';
 import { parseLobbyInviteLink } from './services/lobby/lobbyInvite';
 import { lobbySessionCoordinator } from './services/lobby/LobbySessionCoordinator';
@@ -42,17 +42,18 @@ import { isSafeResourceId, sanitizeUntrustedText } from './security/trustBoundar
 import './App.css';
 import { syncBuiltinEmojiItems } from './services/emoji/emojiLibrary';
 import { NativeCapturePicker } from './components/NativeCapture/NativeCapture';
+import { ScreenRecordingStatus } from './components/RoomTools/ScreenRecording';
 import { startQuarkSupport } from './services/quarkSupport';
 import { QuarkStartupPrompt } from './components/QuarkSupport/QuarkStartupPrompt';
+import { DesktopComplianceGate } from './components/ComplianceGate/ComplianceGate';
+import './components/ComplianceGate/ComplianceGate.css';
 
 function App() {
-  useEffect(() => {
-    if (getCurrentWindow().label === 'main') void startQuarkSupport();
-  }, []);
   const search = window.location.search;
   if (search.includes('danmaku=true')) return <DanmakuOverlay />;
   if (search.includes('gamehud=true')) return <GameHudOverlay />;
   if (search.includes('screen-viewer=true')) return <ScreenViewerWindow />;
+  if (getCurrentWindow().label === 'main') return <DesktopComplianceGate><MainWindowApp /></DesktopComplianceGate>;
   return <MainWindowApp />;
 }
 
@@ -141,6 +142,8 @@ function ScreenViewerWindow() {
 }
 
 function MainWindowApp() {
+  const [quarkBlocking, setQuarkBlocking] = useState(true);
+  useEffect(() => { if (getCurrentWindow().label === 'main') void startQuarkSupport(); }, []);
   useEffect(() => {
     void syncBuiltinEmojiItems().catch(error => console.warn('启动时准备内置表情失败，可在表情面板重试:', error));
   }, []);
@@ -158,13 +161,9 @@ function MainWindowApp() {
   const setPlayerSpeaking = useAppStore((state) => state.setPlayerSpeaking);
   const [showMicrophonePermissionHelp, setShowMicrophonePermissionHelp] = useState(false);
 
-  // 版本更新状态
-  const [showVersionModal, setShowVersionModal] = useState(false);
-  const [versionInfo, setVersionInfo] = useState<{
-    latestVersion: string;
-    currentVersion: string;
-    updateMessage: string[];
-  } | null>(null);
+  const versionError = useAppStore((state) => state.versionError);
+  const { checked: updateChecked, update: versionInfo, dismiss: dismissUpdate } = useStartupUpdates();
+  const versionStage = startupVersionStage(!!versionError, updateChecked, !!versionInfo);
 
   useEffect(() => {
     const showHelp = () => setShowMicrophonePermissionHelp(true);
@@ -227,71 +226,6 @@ function MainWindowApp() {
     const timer = setTimeout(() => {
       showWindow();
     }, 100);
-
-    return () => clearTimeout(timer);
-  }, []);
-
-  // 检查版本更新（仅在首次打开时）
-  useEffect(() => {
-    const checkVersion = async () => {
-      try {
-        // 检查是否需要显示更新提示
-        if (!versionCheckService.shouldShowUpdatePrompt()) {
-          console.log('⏭️ [VersionCheck] 已显示过更新提示，跳过检查');
-          return;
-        }
-
-        console.log('🔍 [VersionCheck] 开始检查版本更新...');
-
-        // 获取最新版本信息
-        const info = await versionCheckService.fetchLatestVersion();
-
-        if (!info) {
-          console.warn('⚠️ [VersionCheck] 获取版本信息失败');
-          return;
-        }
-
-        if (info.hasUpdate) {
-          console.log('🎉 [VersionCheck] 发现新版本:', info.latestVersion);
-
-          // 格式化更新日志
-          const formattedMessage = info.updateMessage
-            ? versionCheckService.formatUpdateMessage(info.updateMessage)
-            : [];
-          const updateMessage =
-            formattedMessage.length > 0
-              ? formattedMessage
-              : [
-                  tl(
-                    '该版本未提供更新日志，请前往官网查看详情。',
-                    'No release notes were provided for this version. Visit the website for details.'
-                  ),
-                ];
-
-          // 设置版本信息并显示弹窗
-          setVersionInfo({
-            latestVersion: info.latestVersion,
-            currentVersion: info.currentVersion,
-            updateMessage,
-          });
-          setShowVersionModal(true);
-
-          // 标记已显示更新提示
-          versionCheckService.markUpdatePromptShown();
-        } else {
-          console.log('✅ [VersionCheck] 当前已是最新版本');
-          // 即使是最新版本，也标记已检查过，避免每次启动都检查
-          versionCheckService.markUpdatePromptShown();
-        }
-      } catch (error) {
-        console.error('❌ [VersionCheck] 版本检查失败:', error);
-      }
-    };
-
-    // 延迟3秒后检查版本，避免影响应用启动速度
-    const timer = setTimeout(() => {
-      checkVersion();
-    }, 3000);
 
     return () => clearTimeout(timer);
   }, []);
@@ -880,22 +814,23 @@ function MainWindowApp() {
         <AntdApp>
           <FeedbackHost />
           <NativeCapturePicker />
+          <ScreenRecordingStatus />
           <GlobalTooltip />
           <GlobalButtonTheme />
           <div className="app-container">
             {/* 根据应用状态显示不同的界面 */}
-            {appState === 'in-lobby' && lobby ? <MiniWindow /> : <MainWindow />}
+            {appState === 'in-lobby' && lobby ? <MiniWindow /> : <MainWindow startupReady={!quarkBlocking && versionStage === 'ready'} />}
           </div>
 
           {/* 版本更新提示弹窗 */}
-          <QuarkStartupPrompt versionVisible={showVersionModal} />
+          <QuarkStartupPrompt blocked={versionStage !== 'ready'} onBlockingChange={setQuarkBlocking} />
           {versionInfo && (
             <VersionUpdateModal
-              visible={showVersionModal}
+              visible={versionStage === 'optional'}
               latestVersion={versionInfo.latestVersion}
               currentVersion={versionInfo.currentVersion}
               updateMessage={versionInfo.updateMessage}
-              onClose={() => setShowVersionModal(false)}
+              onClose={dismissUpdate}
             />
           )}
 

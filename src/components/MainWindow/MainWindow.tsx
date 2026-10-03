@@ -25,7 +25,7 @@ const { Title, Paragraph } = Typography;
  * 主窗口组件
  * 显示创建/加入大厅的入口
  */
-export const MainWindow: React.FC = () => {
+export const MainWindow: React.FC<{ startupReady?: boolean }> = ({ startupReady = true }) => {
   const { t } = useTranslation();
   const [showForm, setShowForm] = useState(false);
   const [formMode, setFormMode] = useState<'create' | 'join'>('create');
@@ -73,11 +73,11 @@ export const MainWindow: React.FC = () => {
 
   // 首次启动弹出新手引导
   useEffect(() => {
-    if (!isOnboardingDone()) {
+    if (startupReady && !isOnboardingDone()) {
       const timer = setTimeout(() => setShowOnboarding(true), 800);
       return () => clearTimeout(timer);
     }
-  }, []);
+  }, [startupReady]);
 
   // 邀请 deep link：收到后切到加入模式并打开表单（LobbyForm 自行读取预填）
   useEffect(() => {
@@ -107,7 +107,7 @@ export const MainWindow: React.FC = () => {
   // 组件加载时主动拉取自动大厅配置，仅应用启动后首次触发一次
   useEffect(() => {
     // 用全局标志确保整个应用生命周期内只触发一次，避免从大厅返回主界面时重复触发
-    if ((window as any).__autoLobbyTriggered) return;
+    if (!startupReady || (window as any).__autoLobbyTriggered) return;
     let disposed = false;
     const checkAutoLobby = async () => {
       try {
@@ -141,14 +141,14 @@ export const MainWindow: React.FC = () => {
     // 延迟500ms等待窗口完全渲染
     const timer = setTimeout(checkAutoLobby, 500);
     return () => { disposed = true; clearTimeout(timer); };
-  }, []);
+  }, [startupReady]);
 
   // 监听版本错误并显示弹窗
   useEffect(() => {
     if (versionError) {
       console.log('MainWindow检测到版本错误，显示弹窗');
       
-      Modal.warning({
+      const dialog = Modal.warning({
         title: tl('版本过低', 'Version Too Low'),
         content: (
           <div style={{ lineHeight: '1.8' }}>
@@ -168,6 +168,9 @@ export const MainWindow: React.FC = () => {
         ),
         okText: tl('前往官网', 'Go to Website'),
         centered: true,
+        zIndex: 1200,
+        keyboard: false,
+        maskClosable: false,
         onOk: async () => {
           console.log('用户点击了"前往官网"按钮');
           try {
@@ -182,6 +185,7 @@ export const MainWindow: React.FC = () => {
           setVersionError(null);
         },
       });
+      return () => dialog.destroy();
     }
   }, [versionError, setVersionError]);
 
@@ -360,7 +364,7 @@ export const MainWindow: React.FC = () => {
 
 
       {/* 新手引导向导 */}
-      <OnboardingWizard visible={showOnboarding} onClose={() => setShowOnboarding(false)} />
+      <OnboardingWizard visible={showOnboarding && startupReady} onClose={() => setShowOnboarding(false)} />
 
       {/* 设置界面 - 作为overlay覆盖在主界面上，避免透明闪烁 */}
       <AnimatePresence>
