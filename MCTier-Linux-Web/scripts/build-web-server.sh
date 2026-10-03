@@ -12,7 +12,6 @@ node MCTier-Linux-Web/scripts/prepare-frontend.mjs
 node MCTier-Linux-Web/scripts/prepare-secrets.mjs
 npx tsc --project MCTier-Linux-Web/tsconfig.web.json
 npx vite build --config MCTier-Linux-Web/vite.config.ts
-node MCTier-Linux-Web/scripts/prepare-emoji.mjs
 if [[ "$PROFILE" == debug ]]; then
   cargo build --locked --manifest-path "$ROOT/MCTier-Linux-Web/server/Cargo.toml"
 else

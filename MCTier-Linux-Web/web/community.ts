@@ -702,14 +702,16 @@ export function setupCommunity(ctx: Context) {
     ['room-tools', '打开房间工具', tools],
     ['folder-share', '打开文件夹共享', folderPanel],
   ] as const) {
-    for (const card of document.querySelectorAll(`[data-feature="${id}"]`))
-      card.append(
-        button(name, () =>
-          run(async () => {
-            await action();
-          })
-        )
+    for (const placeholder of document.querySelectorAll(`[data-feature="${id}"]`)) {
+      const card = placeholder.querySelector('.feature-card') ?? placeholder;
+      const actionButton = button(name, () =>
+        run(async () => {
+          await action();
+        })
       );
+      actionButton.className = 'feature-action';
+      card.append(actionButton);
+    }
   }
   document.querySelector('.sidebar-locks')?.append(button('公开广场 / 发布管理', plaza));
   const connect = document.querySelector('.form-locks');

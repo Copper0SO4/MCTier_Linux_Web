@@ -240,14 +240,17 @@ details label {
 .lobby-layout {
   display: grid;
   grid-template-columns: 310px minmax(0, 1fr);
+  align-items: start;
   max-width: 1180px;
   margin: 24px auto;
   padding: 0 20px;
   gap: 16px;
-  min-height: 660px;
+  min-height: 0;
 }
 .web-lobby-sidebar {
   height: auto;
+  min-width: 0;
+  overflow: visible;
   background: rgba(20, 20, 30, 0.85);
   border: 1px solid var(--border);
   border-radius: 10px;
@@ -259,6 +262,11 @@ details label {
 .mini-window-content {
   padding: 12px;
   gap: 10px;
+  flex: none;
+  overflow: visible;
+}
+.mini-window-content > * {
+  flex-shrink: 0;
 }
 .lobby-card-header {
   gap: 8px;
@@ -418,6 +426,7 @@ details label {
 .chat-room-view {
   display: flex;
   flex-direction: column;
+  height: auto;
 }
 .chat-header,
 .panel-head {
@@ -444,8 +453,9 @@ details label {
   margin-top: 0;
 }
 .messages {
-  height: 390px;
-  flex: 1;
+  height: clamp(220px, 48vh, 520px);
+  flex: none;
+  overflow-y: auto;
   padding: 20px;
   min-height: 220px;
   max-height: 70vh;
@@ -524,13 +534,14 @@ details label {
   padding: 3px 8px;
 }
 #chat-form {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(100px, 140px) minmax(0, 1fr) auto;
   gap: 8px;
   padding: 12px 14px;
   border-top: 1px solid var(--border);
 }
 #recipient {
-  width: 115px;
+  width: 100%;
   flex: none;
 }
 #chat-text {
@@ -672,19 +683,33 @@ pre:empty {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+  align-items: start;
 }
 .feature-card {
   padding: 12px;
   background: rgba(255, 255, 255, 0.025);
   border: 1px solid var(--border);
   border-radius: 8px;
-  height: 100%;
+  height: auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 .feature-heading {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
+}
+.feature-card > .feature-action {
+  width: 100%;
+  min-height: 36px;
+  margin-top: 8px;
+  white-space: normal;
+}
+[data-feature] {
+  min-width: 0;
 }
 .feature-heading strong {
   font-size: 12px;
@@ -716,7 +741,7 @@ pre:empty {
 .form-locks .feature-card {
   padding: 9px;
 }
-.sidebar-locks .feature-card button {
+.sidebar-locks .feature-card.blocked button {
   display: none;
 }
 .app-footer {
@@ -729,9 +754,9 @@ pre:empty {
   color: var(--muted);
   font-size: 10px;
 }
-@media (max-width: 800px) {
+@media (max-width: 900px) {
   .lobby-layout {
-    grid-template-columns: 250px minmax(0, 1fr);
+    grid-template-columns: 1fr;
     padding: 0 12px;
     gap: 10px;
   }
@@ -788,9 +813,7 @@ pre:empty {
   .mini-window-content {
     gap: 8px;
   }
-  .sidebar-locks {
-    display: none;
-  }
+  .sidebar-locks { display: grid; }
   .members {
     min-height: 0;
   }
@@ -810,10 +833,11 @@ pre:empty {
     flex-wrap: wrap;
   }
   #chat-form {
-    flex-wrap: wrap;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
   #recipient {
     width: 100%;
+    grid-column: 1 / -1;
   }
 }
 /* Upstream hint is window-positioned; normal document flow suits a browser page. */
@@ -853,3 +877,7 @@ h2[tabindex='-1']:focus {
 .community-row { border:1px solid #35415b; padding:12px; border-radius:8px; margin:10px 0; overflow-wrap:anywhere; }
 .community-row input[type="checkbox"] { margin-right:10px; }
 .invite-qr { display:block; width:320px; max-width:100%; margin:auto; border-radius:6px; }
+.community-dialog label { flex-wrap: wrap; }
+.community-dialog input[type="checkbox"] { width: auto; flex: none; }
+.community-dialog button { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
+.header-actions { flex-wrap: wrap; }

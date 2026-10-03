@@ -186,6 +186,7 @@ export function setupComposer(hooks: Hooks) {
     image.src = emoji.url;
     image.alt = emoji.name;
     image.loading = 'lazy';
+    image.onerror = () => { image.remove(); button.textContent = emoji.name; button.title = '动画资源加载失败，显示文字表情'; };
     button.append(image);
     button.onclick = () => {
       if (hooks.online() && !uploading && !recording)

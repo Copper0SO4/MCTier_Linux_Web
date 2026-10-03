@@ -29,6 +29,13 @@ fn main() {
         root.join("index.html").is_file(),
         "Build the browser UI first using MCTier-Linux-Web/scripts/build-web-server.sh"
     );
+    assert!(
+        root.join("builtin-emoji").is_dir()
+            && fs::read_dir(root.join("builtin-emoji")).unwrap().any(|entry| {
+                entry.unwrap().path().extension().is_some_and(|ext| ext == "gif")
+            }),
+        "Missing builtin emoji assets: build the UI with the Linux Web Vite config before compiling"
+    );
     let mut assets = String::from("pub const ASSETS: &[(&str, &[u8])] = &[\n");
     collect(
         &root.canonicalize().unwrap(),

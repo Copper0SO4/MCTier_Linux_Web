@@ -121,7 +121,13 @@ function renderMessages() {
     const content = document.createElement('div'); content.className = 'text message-content'; content.textContent = message.recalled ? '消息已撤回' : message.content;
     row.append(meta, content);
     const builtin = !message.recalled && message.type !== 'file' ? builtinEmojiUrl(message.content) : null;
-    if (builtin) { content.textContent = '[内置表情]'; const image = document.createElement('img'); image.src = builtin; image.alt = '内置动画表情'; image.loading = 'lazy'; row.append(image); }
+    if (builtin) {
+      content.textContent = '[内置表情]';
+      const image = document.createElement('img');
+      image.src = builtin; image.alt = '内置动画表情'; image.loading = 'lazy';
+      image.onerror = () => { image.remove(); content.textContent = '[内置表情资源加载失败，请刷新页面或更新服务]'; };
+      row.append(image);
+    }
 
     if (message.imageData && message.type === 'image' && !message.recalled) { const image = document.createElement('img'); image.src = message.imageData; image.alt = '聊天图片'; row.append(image); }
     if (message.imageData && message.type === 'voice' && !message.recalled) { content.textContent = `语音 · ${voiceMetadata(message.content)?.duration.toFixed(1) || '?'} 秒`; const audio = document.createElement('audio'); audio.src = message.imageData; audio.controls = true; row.append(audio); }

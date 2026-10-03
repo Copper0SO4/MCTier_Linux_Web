@@ -49,6 +49,13 @@ class Element {
   replaceChildren(...children) {
     this.children = [...children];
   }
+  querySelector(selector) {
+    return (
+      this.children.find(
+        (child) => selector === '.feature-card' && child.className === 'feature-card'
+      ) ?? null
+    );
+  }
   setAttribute(key, value) {
     this[key] = value;
   }
@@ -72,10 +79,13 @@ class Element {
 function fixture() {
   const body = new Element('body'),
     cards = new Map(
-      ['lobby-history', 'invite', 'room-tools', 'folder-share'].map((id) => [
-        id,
-        new Element('card'),
-      ])
+      ['lobby-history', 'invite', 'room-tools', 'folder-share'].map((id) => {
+        const placeholder = new Element('placeholder'),
+          card = new Element('card');
+        card.className = 'feature-card';
+        placeholder.append(card);
+        return [id, placeholder];
+      })
     );
   const connect = new Element('connect'),
     sidebar = new Element('sidebar');
@@ -168,7 +178,15 @@ const tick = () => new Promise((resolve) => setImmediate(resolve));
 test('community controls render tools and folder actions without auto joining or reading native paths', async () => {
   const f = fixture();
   assert.equal(f.calls.length, 0);
-  f.cards.get('room-tools').children.at(-1).click();
+  for (const placeholder of f.cards.values()) {
+    assert.equal(
+      placeholder.children.length,
+      1,
+      'actions stay inside the card, not outside its layout'
+    );
+    assert.equal(placeholder.querySelector('.feature-card').children.at(-1).tag, 'button');
+  }
+  f.cards.get('room-tools').querySelector('.feature-card').children.at(-1).click();
   assert.equal(f.dialog.open, true);
   assert.ok(f.find('掷骰子'));
   assert.ok(f.find('开始'));
@@ -191,7 +209,7 @@ test('community controls render tools and folder actions without auto joining or
   assert.equal(globalThis.countdown, null);
   assert.equal(globalThis.storeFixture.todos.length, 0);
   assert.equal(globalThis.storeListener, null);
-  f.cards.get('folder-share').children.at(-1).click();
+  f.cards.get('folder-share').querySelector('.feature-card').children.at(-1).click();
   await tick();
   assert.ok(f.find('选择目录并上传'));
   assert.deepEqual(f.calls.at(-1), ['get_local_shares', undefined]);
@@ -234,7 +252,7 @@ test('host resends the existing todo payload and late replies cannot restore a p
   globalThis.storeFixture.setTodos([item]);
   await f.ui.syncCurrentTodos();
   assert.equal(JSON.parse(f.calls.at(-1)[1].content)[0].text, 'Current task');
-  f.cards.get('room-tools').children.at(-1).click();
+  f.cards.get('room-tools').querySelector('.feature-card').children.at(-1).click();
   let reply;
   globalThis.localFixture = async () =>
     new Promise((resolve) => {

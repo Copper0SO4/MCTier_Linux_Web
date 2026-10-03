@@ -6,6 +6,25 @@ use modules::chat_service::{ChatMessage, MessageType};
 use tower::ServiceExt;
 
 #[tokio::test]
+async fn builtin_emoji_pack_is_embedded_and_served_as_gif() {
+    let manifest: Value = serde_json::from_str(include_str!("../../../shared/builtin-emoji/manifest.json")).unwrap();
+    let ids = manifest["ids"].as_array().unwrap();
+    assert_eq!(ids.len(), manifest["count"].as_u64().unwrap() as usize);
+    let embedded: Vec<_> = ASSETS.iter().filter(|(path, _)| path.starts_with("/builtin-emoji/") && path.ends_with(".gif")).collect();
+    assert_eq!(embedded.len(), ids.len());
+    for id in ids {
+        let path = format!("/builtin-emoji/{}.gif", id.as_str().unwrap());
+        let (_, bytes) = ASSETS.iter().find(|(key, _)| *key == path).expect("all manifest GIFs must be embedded");
+        assert!(bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"));
+    }
+    let path = format!("/builtin-emoji/{}.gif", ids[0].as_str().unwrap());
+    let response = router(app()).oneshot(HttpRequest::builder().uri(path).header("host", "127.0.0.1:14700").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()[header::CONTENT_TYPE], "image/gif");
+    assert_eq!(response.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+}
+
+#[tokio::test]
 async fn browser_attachment_download_requires_origin_nonce_session_and_registered_metadata() {
     let app = app();
     let meta = json!({"id":"attachment-123456", "name":"example.txt", "mime":"text/plain", "size":3});
