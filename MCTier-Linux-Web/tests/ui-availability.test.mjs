@@ -33,10 +33,8 @@ test('unimplemented native and file operations cannot be advertised as available
   const indexed = new Map(FEATURES.map((feature) => [feature.id, feature]));
   assert.equal(indexed.size, FEATURES.length);
   for (const id of [
-    'folder-share',
     'remote-control',
     'system-audio',
-    'room-tools',
     'magic-dns',
     'desktop-integration',
     'auto-lobby',
@@ -45,6 +43,6 @@ test('unimplemented native and file operations cannot be advertised as available
     assert.ok(indexed.get(id)?.reason.length > 10);
   }
   // Receiving attachments and viewing screens remain independent of blocked sending/control.
-  for (const id of ['chat', 'screen', 'voice', 'network', 'send-file', 'send-image', 'record-voice'])
+  for (const id of ['chat', 'screen', 'voice', 'network', 'send-file', 'send-image', 'record-voice', 'folder-share', 'room-tools', 'invite', 'lobby-history'])
     assert.equal(indexed.get(id)?.state, 'experimental');
 });

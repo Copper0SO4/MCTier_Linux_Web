@@ -1,0 +1,5 @@
+--- a/services/webrtc/WebRTCClient.ts
++++ b/services/webrtc/WebRTCClient.ts
+@@ -2654,1 +2654,1 @@
+-                        hasPassword: !!share.password,
++                        hasPassword: share.has_password === true || !!share.password,

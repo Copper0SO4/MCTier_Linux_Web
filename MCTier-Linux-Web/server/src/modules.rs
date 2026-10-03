@@ -20,3 +20,8 @@ pub mod network_arguments;
 
 #[path = "../../../src-tauri/src/modules/virtual_network.rs"]
 pub mod virtual_network;
+
+#[path = "../../../src-tauri/src/modules/file_transfer.rs"]
+pub mod file_transfer;
+#[path = "../shared/secret_store.rs"]
+pub mod secret_store;

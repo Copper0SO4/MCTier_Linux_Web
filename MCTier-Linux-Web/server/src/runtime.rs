@@ -67,6 +67,8 @@ pub struct App {
     pub chat: Arc<Mutex<ChatService>>,
     pub chat_generation: watch::Sender<u64>,
     pub upload_budget: Mutex<(u64, u32)>,
+    pub folders: Mutex<crate::folders::Folders>,
+    pub folder_transfers: tokio::sync::Semaphore,
     pub core: PathBuf,
 }
 
@@ -93,6 +95,8 @@ impl App {
             chat: Arc::new(Mutex::new(ChatService::new())),
             chat_generation,
             upload_budget: Mutex::new((0, 0)),
+            folders: Mutex::new(crate::folders::Folders::new()),
+            folder_transfers: tokio::sync::Semaphore::new(2),
             core,
         })
     }
@@ -125,6 +129,7 @@ impl App {
         let chat = self.chat.lock().await;
         chat.stop_server().await;
         *self.upload_budget.lock().await = (0, 0);
+        self.folders.lock().await.clear().await;
         chat.clear_session();
         chat.clear_local_messages();
         drop(chat);
@@ -147,6 +152,7 @@ impl App {
     }
 
     pub async fn maintenance(&self) {
+        self.folders.lock().await.collect();
         let mut runtime = self.runtime.lock().await;
         let stale = runtime.owner.is_some() && runtime.last_lease.elapsed() > LEASE_TTL;
         let dead = runtime
@@ -373,8 +379,7 @@ pub fn core_path() -> PathBuf {
     if packaged.is_file() {
         packaged
     } else {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../resources/binaries/easytier-core")
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../resources/binaries/easytier-core")
     }
 }
 
@@ -440,17 +445,7 @@ pub fn validate_input(input: &LobbyInput) -> Result<(), String> {
     {
         return Err("大厅名称须为 4–32 个中文、字母、数字、空格、下划线或连字符".into());
     }
-    let password = input.password.trim();
-    if input.password.chars().any(char::is_control) {
-        return Err("密码包含控制字符".into());
-    }
-    if !password.is_empty()
-        && (!(8..=32).contains(&password.len())
-            || !password.chars().any(char::is_alphabetic)
-            || !password.chars().any(char::is_numeric))
-    {
-        return Err("非空密码须为 8–32 字节，并含字母和数字".into());
-    }
+    validate_password(&input.password)?;
     if input.player_name.trim().is_empty()
         || input.player_name.chars().count() > 32
         || input.player_name.chars().any(char::is_control)
@@ -648,4 +643,19 @@ mod tests {
         unrelated.kill().await.unwrap();
         unrelated.wait().await.unwrap();
     }
+}
+
+pub fn validate_password(value: &str) -> Result<(), String> {
+    let password = value.trim();
+    if value.chars().any(char::is_control) {
+        return Err("密码包含控制字符".into());
+    }
+    if !password.is_empty()
+        && (!(8..=32).contains(&password.len())
+            || !password.chars().any(char::is_alphabetic)
+            || !password.chars().any(char::is_numeric))
+    {
+        return Err("非空密码须为 8–32 字节，并含字母和数字".into());
+    }
+    Ok(())
 }

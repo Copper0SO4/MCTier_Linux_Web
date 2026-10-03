@@ -1,3 +1,4 @@
+import { setupCommunity } from './community';
 import { builtinEmojiUrl } from './builtinEmoji';
 // Reuse upstream presentation without mounting its native-window lifecycle.
 import '../frontend-src/components/MainWindow/MainWindow.css';
@@ -40,9 +41,10 @@ function controlState(online: boolean) {
   shell.setSessionState(online ? 'online' : busy ? 'connecting' : 'idle');
   composer.update();
 }
-let busy = false, online = false, leaving = false, serviceReady = false, localId = '', localName = '', hostId = '';
+let busy = false, online = false, leaving = false, serviceReady = false, localId = '', localName = '', hostId = '', lobbyPublic = false;
 let ticket: LobbySessionTicket | null = null;
 let leaseTimer: number | null = null;
+let rosterSyncTimer: number | null = null;
 let localShare: string | null = null, viewedShare: string | null = null;
 let viewGeneration = 0;
 const downloads = new Set<AbortController>();
@@ -78,6 +80,22 @@ const composer = setupComposer({
     if (!online || ticket !== current) return;
     await sendOutgoing({content:JSON.stringify({mime:blob.type, duration}), imageData:data, recipientId, type:'voice'}, id => p2pChatService.sendVoiceMessage(blob, duration, id, recipientId));
   },
+});
+
+const community = setupCommunity({
+  online:()=>online, session:()=>ticket, busy:()=>busy, canJoin:()=>shell.canJoin,
+  invite:()=>({name:input('lobby-name').trim(),password:input('lobby-password'),serverNode:input('server-node').trim(),signalingServer:input('signaling-server').trim()}),
+  playerId:()=>localId,playerName:()=>input('player-name').trim(),players:()=>[...players.values()],status:notice,
+  fill:(invite,playerName)=>{
+    el<HTMLInputElement>('lobby-name').value=invite.name;el<HTMLInputElement>('lobby-password').value=invite.password;
+    if(invite.serverNode)el<HTMLInputElement>('server-node').value=invite.serverNode;
+    if(invite.signalingServer)el<HTMLInputElement>('signaling-server').value=invite.signalingServer;
+    if(playerName)el<HTMLInputElement>('player-name').value=playerName;
+    shell.showConnect();
+  },
+  isHost:()=>online && hostId===localId, publicState:()=>lobbyPublic,
+  publish:(enabled,description)=>webrtcClient.setLobbyOptions({isPublic:enabled,description,serverNode:input('server-node').trim()}),
+  text:(content)=>sendOutgoing({content,type:'text'},id=>p2pChatService.sendTextMessage(content,id)),
 });
 
 el('copy-ip').onclick = async () => {
@@ -174,8 +192,16 @@ function renderMembers() {
 }
 
 webrtcClient.onPlayerJoined((id, name, virtualIp) => {
+  const newcomer = online && !players.has(id), current = ticket;
   const player = { id, name, virtualIp, micEnabled: false, isMuted: false, joinedAt: new Date().toISOString() };
   players.set(id, player); useAppStore.getState().addPlayer(player); renderMembers();
+  if (newcomer) {
+    if (rosterSyncTimer) clearTimeout(rosterSyncTimer);
+    rosterSyncTimer = window.setTimeout(()=>{
+      rosterSyncTimer=null;
+      if (online && ticket===current && players.has(id)) void community.syncCurrentTodos().catch(error=>{if(ticket===current && online)notice(`新成员待办同步失败：${label(error)}`,true);});
+    },1600);
+  }
 });
 webrtcClient.onPlayerLeft(id => { players.delete(id); useAppStore.getState().removePlayer(id); renderMembers(); });
 webrtcClient.onStatusUpdate((id, micEnabled) => { const player = players.get(id); if (player) player.micEnabled = micEnabled; renderMembers(); });
@@ -186,7 +212,8 @@ webrtcClient.onSignalingStatus((status, error) => {
   if (busy && status === 'connecting') notice('正在建立浏览器 WebSocket 信令连接；失败时会按原版策略有限重试，可点击取消。');
   if (error) notice(`信令：${error}`, true);
 });
-webrtcClient.onLobbyMeta(meta => { hostId = meta.hostId || ''; renderMembers(); });
+webrtcClient.onLobbyMeta(meta => { hostId = meta.hostId || ''; lobbyPublic = meta.isPublic === true; renderMembers(); });
+webrtcClient.onLobbyOptionsChanged((_max,isPublic)=>{lobbyPublic=isPublic;notice(isPublic?'信令服务已确认公开大厅。':'信令服务已确认撤销公开大厅。');});
 webrtcClient.onHostChanged(id => { hostId = id; renderMembers(); });
 webrtcClient.onKicked(reason => { void leave().then(() => notice(`已离开大厅：${reason}`, true)); });
 webrtcClient.onVersionError((current, minimum) => notice(`版本不符合信令要求：当前 ${current}，至少需要 ${minimum}`, true));
@@ -224,7 +251,7 @@ async function join() {
     for (;;) {
       lobbySessionCoordinator.assertCurrent(current);
       notice('虚拟接口已就绪，正在注册原版协议 v3 信令…');
-      try { await webrtcClient.initialize(localId, localName, lobby.name, input('lobby-password'), undefined, false, lobby.signalingServer, current); break; }
+      try { const password=await localInvoke<string>('resolve_lobby_password',{password:input('lobby-password')}); lobbySessionCoordinator.assertCurrent(current); await webrtcClient.initialize(localId, localName, lobby.name, password, undefined, false, lobby.signalingServer, current); break; }
       catch (error) {
         const replacement = await recoverVirtualAddress(lobby, label(error), async attempt => {
           await localInvoke('leave_lobby');
@@ -244,6 +271,7 @@ async function join() {
     text('chat-state', '本机聊天服务已配置 · 送达待对端验证');
     localStorage.setItem('mctier_linux_player_name', localName);
     controlState(true); renderMembers();
+    void community.record().catch(error=>notice(`大厅已加入，但最近记录保存失败：${label(error)}`,true));
     notice('信令已注册，EasyTier 虚拟接口已就绪。请分别验证数据收发与双向语音。');
   } catch (error) {
     const cancelled = !lobbySessionCoordinator.isCurrent(current);
@@ -253,20 +281,21 @@ async function join() {
 }
 async function leave() {
   if (leaving) return;
-  leaving = true; online = false; composer.cancel(); stopViewing();
+  leaving = true; online = false; community.reset(); composer.cancel(); stopViewing();
   for (const controller of downloads) controller.abort(); downloads.clear();
   for (const url of downloadUrls) URL.revokeObjectURL(url); downloadUrls.clear();
   for (const url of previewUrls) URL.revokeObjectURL(url); previewUrls.clear();
   if (ticket) lobbySessionCoordinator.cancel(ticket);
   ticket = null;
   if (leaseTimer) clearInterval(leaseTimer); leaseTimer = null;
+  if (rosterSyncTimer) clearTimeout(rosterSyncTimer); rosterSyncTimer=null;
   try {
     await webrtcClient.cleanup();
     await localInvoke('leave_lobby');
   } catch (error) { notice(`清理请求失败：${label(error)}。服务将在浏览器租约过期后停止自有进程。`, true); }
   finally {
     busy = false; leaving = false; controlState(false); useAppStore.getState().clearLobby();
-    players.clear(); messages.clear(); receipts.clear(); hostId = ''; renderMembers();
+    players.clear(); messages.clear(); receipts.clear(); hostId = ''; lobbyPublic=false; renderMembers();
     localShare = null; viewedShare = null;
     const video = el<HTMLVideoElement>('screen-video'); video.pause(); video.srcObject = null; video.hidden = true;
     text('room-name', '等待连接'); text('virtual-ip', '—'); text('signal-state', '未连接'); text('media-state', '未建立');

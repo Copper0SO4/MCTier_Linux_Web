@@ -36,8 +36,8 @@ export const FEATURES = [
   {
     id: 'folder-share',
     name: '文件夹共享',
-    state: 'blocked',
-    reason: '浏览器授权目录、共享管理与传输列表尚未接入。聊天附件下载不受此项影响。',
+    state: 'experimental',
+    reason: '目录快照已接入原版 HTTP 共享；单文件 64 MiB，总量 256 MiB。跨端访问和凭据轮换待验收。',
   },
   {
     id: 'remote-control',
@@ -67,26 +67,26 @@ export const FEATURES = [
   {
     id: 'room-tools',
     name: '房间工具',
-    state: 'blocked',
-    reason: '掷骰子、倒计时、协同待办的界面尚未迁移。',
+    state: 'experimental',
+    reason: '已接入掷骰子、本地倒计时和原版协同待办；跨端同步待验收。',
   },
   {
     id: 'lobby-management',
     name: '房主管理',
     state: 'blocked',
-    reason: '公告、人数限制、公开大厅管理尚未迁移；现有移出成员操作仍保留。',
+    reason: '公告、人数限制及完整房主管理尚未迁移；公开发布/撤销和移出成员操作已接入。',
   },
   {
     id: 'invite',
     name: '大厅二维码 / 邀请',
-    state: 'blocked',
-    reason: '二维码、邀请链接的导入和生成尚未接入。',
+    state: 'experimental',
+    reason: '原版 v3 邀请生成、复制、二维码保存和文字导入已接入；二维码图片识别取决于浏览器。',
   },
   {
     id: 'lobby-history',
     name: '常用大厅 / 公开广场',
-    state: 'blocked',
-    reason: '收藏、历史、公开大厅列表和加入入口尚未接入。',
+    state: 'experimental',
+    reason: '常用大厅、最近记录和原版公开广场查询已接入；广场缺少节点时明确禁止加入。',
   },
   {
     id: 'magic-dns',

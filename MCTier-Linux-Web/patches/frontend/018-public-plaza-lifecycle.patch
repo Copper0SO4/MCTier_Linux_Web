@@ -1,0 +1,55 @@
+--- a/services/lobby/publicLobbies.ts
++++ b/services/lobby/publicLobbies.ts
+@@ -28,7 +28,8 @@
+  * @param signalingServer 可选，自定义信令服务器地址
+  * @param timeoutMs 超时时间（毫秒）
+  */
+-export function fetchPublicLobbies(signalingServer?: string, timeoutMs = 8000): Promise<PublicLobby[]> {
++export function fetchPublicLobbies(signalingServer?: string, timeoutMs = 8000, signal?: AbortSignal): Promise<PublicLobby[]> {
++  if (signal?.aborted) return Promise.reject(new DOMException('查询已取消', 'AbortError'));
+   const url = signalingServer?.trim() || DEFAULT_SIGNALING;
+   if (!isSafeSignalingServer(url)) {
+     return Promise.reject(new Error('信令服务器地址无效'));
+@@ -44,6 +45,7 @@
+     }
+ 
+     const cleanup = () => {
++      signal?.removeEventListener('abort', onAbort);
+       try { ws.close(); } catch { /* ignore */ }
+     };
+ 
+@@ -55,6 +57,14 @@
+       }
+     }, timeoutMs);
+ 
++    function onAbort() {
++      if (!settled) { settled = true; window.clearTimeout(timer); cleanup(); reject(new DOMException('查询已取消', 'AbortError')); }
++    }
++    signal?.addEventListener('abort', onAbort, { once: true });
++    if (signal?.aborted) { onAbort(); return; }
++    ws.onclose = () => {
++      if (!settled) { settled = true; window.clearTimeout(timer); cleanup(); reject(new Error('信令连接已关闭，未收到公开大厅列表')); }
++    };
+     ws.onopen = () => {
+       try {
+         ws.send(JSON.stringify({ type: 'public-lobby-list-request' }));
+@@ -69,6 +79,10 @@
+     };
+ 
+     ws.onmessage = (event) => {
++      if (settled) return;
++      if (typeof event.data !== 'string' || event.data.length > 512 * 1024) {
++        settled = true; window.clearTimeout(timer); cleanup(); reject(new Error('公开大厅响应超过限制')); return;
++      }
+       try {
+         const msg = JSON.parse(event.data);
+         if (msg && msg.type === 'public-lobby-list-response') {
+@@ -76,7 +90,7 @@
+             settled = true;
+             window.clearTimeout(timer);
+             cleanup();
+-            const lobbies = Array.isArray(msg.lobbies) ? msg.lobbies : [];
++            const lobbies = Array.isArray(msg.lobbies) ? msg.lobbies.slice(0, 2048) : [];
+             resolve(lobbies.flatMap((lobby: unknown) => {
+               if (!lobby || typeof lobby !== 'object') return [];
+               const item = lobby as Record<string, unknown>;

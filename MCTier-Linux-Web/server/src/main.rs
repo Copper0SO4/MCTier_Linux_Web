@@ -1,4 +1,5 @@
 mod attachments;
+mod folders;
 #[allow(dead_code)]
 mod modules;
 mod runtime;
@@ -185,7 +186,53 @@ async fn invoke(
 ) -> Result<Json<Value>, ApiError> {
     owner(&app, &headers).await?;
     let result = match input.command.as_str() {
-        "connect_lobby" => app.start(value::<LobbyInput>(input.args)?).await?,
+        "connect_lobby" => {
+            let mut args = value::<LobbyInput>(input.args)?;
+            args.password = modules::secret_store::resolve(&args.password)?;
+            app.start(args).await?
+        }
+        "protect_lobby_password" | "export_lobby_password" | "resolve_lobby_password" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Password {
+                password: String,
+            }
+            let args: Password = value(input.args)?;
+            json!(match input.command.as_str() {
+                "protect_lobby_password" =>
+                    modules::secret_store::protect_lobby_password(args.password)?,
+                "export_lobby_password" =>
+                    modules::secret_store::export_lobby_password(args.password)?,
+                _ => modules::secret_store::resolve(&args.password)?,
+            })
+        }
+        "create_folder_snapshot" => folders::create(&app, value(input.args)?).await?,
+        "publish_folder_snapshot" | "remove_shared_folder" => {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct Id {
+                id: String,
+            }
+            let args: Id = value(input.args)?;
+            if input.command == "publish_folder_snapshot" {
+                folders::publish(&app, args.id).await?
+            } else {
+                folders::remove(&app, args.id).await?;
+                Value::Null
+            }
+        }
+        "remote_folder_shares" | "remote_folder_files" => {
+            folders::list(
+                &app,
+                value(input.args)?,
+                if input.command == "remote_folder_shares" {
+                    "shares"
+                } else {
+                    "files"
+                },
+            )
+            .await?
+        }
         "leave_lobby" | "force_stop_easytier" => {
             app.leave().await;
             Value::Null
@@ -238,16 +285,22 @@ async fn invoke(
                 chat.get_chat_token().as_deref() != Some(args.chat_token.as_str());
             if args.reset_auth_baseline == Some(true) {
                 chat.reset_auth_baseline().await;
+                app.folders.lock().await.server.clear_lobby_token();
                 app.chat_generation.send_modify(|v| *v = v.wrapping_add(1));
             }
             chat.set_session(
-                args.chat_token,
+                args.chat_token.clone(),
                 args.chat_token_epoch,
                 args.player_id,
                 args.player_name,
                 args.host_id,
                 args.peers,
             )?;
+            app.folders
+                .lock()
+                .await
+                .server
+                .set_lobby_token(args.chat_token)?;
             chat.start_server()
                 .await
                 .map_err(|_| "不能绑定 EasyTier 虚拟 IP 上的认证聊天服务".to_string())?;
@@ -273,8 +326,10 @@ async fn invoke(
             app.chat_generation.send_modify(|v| *v = v.wrapping_add(1));
             if args.preserve_signing_identity == Some(true) {
                 chat.reset_auth_baseline().await;
+                app.folders.lock().await.server.clear_lobby_token();
             } else {
                 chat.stop_server().await;
+                app.folders.lock().await.clear().await;
                 *app.upload_budget.lock().await = (0, 0);
                 chat.clear_session();
             }
@@ -283,11 +338,22 @@ async fn invoke(
         "prepare_chat_image" => {
             #[derive(Deserialize)]
             #[serde(rename_all = "camelCase", deny_unknown_fields)]
-            struct ImageInput { image_data: String, recipient_id: Option<String> }
+            struct ImageInput {
+                image_data: String,
+                recipient_id: Option<String>,
+            }
             let args: ImageInput = value(input.args)?;
             let chat = app.chat.lock().await;
-            if chat.get_chat_token().is_none() { return Err("聊天会话未就绪".to_string().into()); }
-            if args.recipient_id.as_deref().is_some_and(|id| chat.peer_by_player_id(id).is_none()) { return Err("收件人已离线".to_string().into()); }
+            if chat.get_chat_token().is_none() {
+                return Err("聊天会话未就绪".to_string().into());
+            }
+            if args
+                .recipient_id
+                .as_deref()
+                .is_some_and(|id| chat.peer_by_player_id(id).is_none())
+            {
+                return Err("收件人已离线".to_string().into());
+            }
             attachments::prepare_image(&args.image_data)?
         }
         "send_p2p_chat_message" => {
@@ -340,10 +406,11 @@ async fn invoke(
             // which could otherwise contain SDP/credentials or arbitrary paths.
             Value::Null
         }
-        "stop_file_server" => Value::Null,
-        // This browser entry exposes no shared folders. Returning the actual
-        // empty inventory lets the original roster protocol report that fact.
-        "get_local_shares" => json!([]),
+        "stop_file_server" => {
+            app.folders.lock().await.clear().await;
+            Value::Null
+        }
+        "get_local_shares" => json!(app.folders.lock().await.local()),
         _ => {
             return Err(ApiError(
                 StatusCode::NOT_IMPLEMENTED,
@@ -421,6 +488,8 @@ fn router(app: Arc<App>) -> Router {
         .route("/api/chat/stream", get(chat_stream))
         .route("/api/chat/attachment", post(attachments::download))
         .route("/api/chat/upload", post(attachments::upload))
+        .route("/api/folders/upload", post(folders::upload))
+        .route("/api/folders/download", post(folders::download))
         .route("/*path", get(assets))
         .layer(DefaultBodyLimit::max(16 * 1024 * 1024))
         .layer(tower::limit::ConcurrencyLimitLayer::new(16))

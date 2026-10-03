@@ -116,6 +116,7 @@ export function setupShell() {
     : '当前浏览器未提供输出设备切换；暂不可用，使用系统默认。';
 
   return {
+    showConnect() { show('connect'); },
     canJoin: browser.canJoin,
     blockedReason: browser.warning,
     setSessionState(next: typeof session) {
