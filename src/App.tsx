@@ -42,7 +42,7 @@ import { isSafeResourceId, sanitizeUntrustedText } from './security/trustBoundar
 import './App.css';
 import { syncBuiltinEmojiItems } from './services/emoji/emojiLibrary';
 import { NativeCapturePicker } from './components/NativeCapture/NativeCapture';
-import { ScreenRecordingStatus } from './components/RoomTools/ScreenRecording';
+import { ScreenRecordingExitHandler } from './components/RoomTools/ScreenRecording';
 import { startQuarkSupport } from './services/quarkSupport';
 import { QuarkStartupPrompt } from './components/QuarkSupport/QuarkStartupPrompt';
 import { DesktopComplianceGate } from './components/ComplianceGate/ComplianceGate';
@@ -814,7 +814,7 @@ function MainWindowApp() {
         <AntdApp>
           <FeedbackHost />
           <NativeCapturePicker />
-          <ScreenRecordingStatus />
+          <ScreenRecordingExitHandler />
           <GlobalTooltip />
           <GlobalButtonTheme />
           <div className="app-container">

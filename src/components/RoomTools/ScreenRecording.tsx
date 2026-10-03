@@ -7,8 +7,7 @@ import { tl } from '../../i18n';
 import { screenRecording, type RecordingOptions } from '../../services/screenRecording';
 import './ScreenRecording.css';
 
-export function ScreenRecordingStatus() {
-  const state = useSyncExternalStore(screenRecording.subscribe, screenRecording.getSnapshot);
+export function ScreenRecordingExitHandler() {
   useEffect(() => {
     const unlisten = listen('screen-recording-exit', async () => {
       await screenRecording.stop();
@@ -18,8 +17,7 @@ export function ScreenRecordingStatus() {
     });
     return () => { void unlisten.then(f => f()); };
   }, []);
-  if (!['recording', 'paused', 'saving'].includes(state.phase)) return null;
-  return <div className="record-dock" role="status"><VideoCameraOutlined /><span>{state.phase === 'paused' ? tl('录屏已暂停', 'Recording paused') : tl('屏幕录制', 'Screen recording')} · {Math.floor(state.seconds / 60)}:{String(state.seconds % 60).padStart(2, '0')}</span><Button size="small" disabled={state.phase === 'saving'} onClick={() => screenRecording.pause()}>{state.phase === 'paused' ? tl('继续', 'Resume') : tl('暂停', 'Pause')}</Button><Button size="small" danger loading={state.phase === 'saving'} onClick={() => void screenRecording.stop()}>{tl('停止并保存', 'Stop and save')}</Button></div>;
+  return null;
 }
 
 export function ScreenRecordingPanel() {

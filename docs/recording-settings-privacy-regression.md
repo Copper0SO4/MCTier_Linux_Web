@@ -170,3 +170,10 @@ adb -s 192.168.0.103:5555 shell am instrument -w -e check quark-work top.pmh13.m
 - 待提交 TypeScript 文件单独执行 ESLint：0 错误、181 警告。提交钩子最初因录屏测试夹具的空负载循环失败，补充用途注释后检查通过。全仓 `cargo fmt --check` 仍报告格式差异，包含未修改的既有文件；为避免全仓格式化，本次提交单次跳过本地 hook，未宣称格式检查或 `cargo clippy -- -D warnings` 通过。构建也有既有 chunk/dead-code 等警告。
 - 提交清单排除了所有点号目录、构建产物、安装包、日志、缓存、本地配置与凭据；新增忽略根目录 `release-artifacts/`、`binaries/`。保留必要源码、测试、构建配置、依赖锁和项目文档。已跟踪的 Android 原生依赖和表情资源保持原样，本次没有重新上传其内容。
 - 详细输出位于本地 `.artifacts/v390-*.log`，这些日志不提交。本次没有重新执行 MuMu、NSIS 安装或真实音频采集测试，之前实测范围见前文。
+
+## 录屏操作入口与停止观看按钮调整
+
+- Android 屏幕观看页红色“停止观看”按钮显式指定白色内容颜色，点击行为保持原样。
+- Windows 移除大厅底部录屏悬浮操作条及其 CSS；暂停、继续、停止并保存从房间小工具进入操作。原组件改为不渲染界面的 `ScreenRecordingExitHandler`，继续监听退出事件并完成保存。
+- `npm run build`、`node --test tests/screen-recording.test.mjs`（5 项）及 Android `:app:assembleDebug :app:assembleDebugAndroidTest :app:testDebugUnitTest --console=plain` 通过（自定义 JVM 入口 83 项，AGP 任务仍为既有 SKIPPED）。变更的 TypeScript 文件 ESLint 为 0 错误、34 警告，差异空白检查通过；本轮没有进行设备安装和人工界面复验。
+- 为保持小范围差异，手动执行检查后单次跳过会整文件自动格式化的本地提交 hook；没有修改永久 hook 配置。构建、测试日志保留在忽略的 `.artifacts/v390-recording-controls-*` 和 `v390-screen-watch-android.log`。

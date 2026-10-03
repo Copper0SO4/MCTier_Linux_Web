@@ -12,7 +12,6 @@
 .record-dot { width: 8px; height: 8px; background: #eb5757; border-radius: 50%; }
 .record-actions { display: flex; gap: 8px; justify-content: flex-end; width: 100%; }
 .record-actions-start > .ant-btn { width: 100%; justify-content: center; }
-.record-dock { position: fixed; z-index: 1100; bottom: 14px; right: 14px; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 12px; background: var(--ant-color-bg-elevated, #223128); color: var(--ant-color-text, #fff); border: 1px solid rgba(128,128,128,.3); box-shadow: 0 4px 24px #0003; font-size: 12px; }
 @media(max-width: 420px) { .record-fields { grid-template-columns: 1fr; } }
 
 .record-panel-hint { font-size: 11px; white-space: nowrap; }

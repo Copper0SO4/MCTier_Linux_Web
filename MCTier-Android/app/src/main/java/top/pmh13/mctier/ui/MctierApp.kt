@@ -4691,7 +4691,7 @@ private fun ScreenViewer(state: MctierUiState, repository: MctierRepository, sha
                 onClick = { repository.stopViewingScreen() },
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = DangerRed),
+                colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = Color.White),
             ) { Text(L("停止观看", "Stop watching")) }
         }
     }
