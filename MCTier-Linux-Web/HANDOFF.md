@@ -1,6 +1,6 @@
 # MCTier Linux Web：维护者接手说明
 
-> **最近维护：** 2026-10-04，Linux Web 3.6.0 发行准备完成；已同步官方稳定 3.9.5 及 master 依赖维护 e8d792d。Magic DNS 设置/标签/功能卡片隐藏；房间导航、桌面 UI、房主管理与网络修复随本版打包。用户反馈 UFW 放行后重连可 P2P；新增自动重连仍待真实房间复测。Firefox 1006 入口继续封锁。每次维护必须同步更新本文件及 README；历史章节保留原当时结论，当前状态以本段和末尾 3.6.0 章节为准。
+> **最近维护：** 2026-10-04，Linux Web 3.6.0 已正式发布；已同步官方稳定 3.9.5 及 master 依赖维护 e8d792d。Magic DNS 设置/标签/功能卡片隐藏；房间导航、桌面 UI、房主管理与网络修复随本版打包。用户反馈 UFW 放行后重连可 P2P；新增自动重连仍待真实房间复测。Firefox 1006 入口继续封锁。每次维护必须同步更新本文件及 README；历史章节保留原当时结论，当前状态以本段和末尾 3.6.0 章节为准。
 
 ## 项目目的
 
@@ -305,3 +305,5 @@ Linux 服务 Cargo 版本改为 3.6.0，共享 package.json 的官方 3.9.5 协�
 发行文件：mctier-linux-web-linux-x86_64-3.6.0.zip 及相对文件名 SHA-256 清单。
 ZIP SHA-256：88c8d119acf7ef56823bb7db2d62047c3077e3c605c9ec05e27100d2635c60e8。
 目标：origin/master 与独立标签 3.6.0；发行页面 https://github.com/Copper0SO4/MCTier_Linux_Web/releases/tag/3.6.0 。当前运行中的本地服务未自动替换；需要下次重启才能加载本版界面。
+
+发布结果：2026-10-04 14:31（Asia/Shanghai）已推送 origin/master 与标签 3.6.0，并在 GitHub 发布 Latest 正式发行。页面确认标签 3.6.0 对应提交 8598674，附件 ZIP 和 .sha256 已上传完成。发布页：https://github.com/Copper0SO4/MCTier_Linux_Web/releases/tag/3.6.0 。本段为发布后文档记录；发行标签保持原构建提交，不重打包或移动标签。
