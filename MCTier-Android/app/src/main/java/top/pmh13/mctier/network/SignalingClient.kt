@@ -38,6 +38,7 @@ class SignalingClient(
     @Volatile private var connectionGeneration = 0L
     @Volatile private var serverSessionGeneration: Long? = null
     @Volatile private var registrationSent = false
+    @Volatile private var sessionAccepted = false
     @Volatile private var reconnectJob: Job? = null
     @Volatile private var stableJob: Job? = null
     @Volatile private var heartbeatJob: Job? = null
@@ -68,6 +69,8 @@ class SignalingClient(
     val connectionError: StateFlow<String?> = _connectionError
 
     fun connect(args: ConnectArgs) {
+        require(args.entryMode in setOf("create", "join", "auto")) { "Invalid lobby entry mode" }
+        sessionAccepted = false
         require(LobbyInviteCodec.isValidSignalingServer(args.url)) { "Signaling requires WSS" }
         _connectionError.value = null
         val generation = synchronized(this) {
@@ -169,6 +172,7 @@ class SignalingClient(
                                 return@onSuccess
                             }
                             registrationAccepted = true
+                            sessionAccepted = true
                             _connectionError.value = null
                             serverSessionGeneration = assignedGeneration
                             _connected.value = true
@@ -179,7 +183,8 @@ class SignalingClient(
                             _events.tryEmit(message)
                             registrationResult?.complete(Unit)
                         }
-                        "register-error" -> {
+                        "register-error", "version-too-old" -> {
+                            if (message.type == "version-too-old") _events.tryEmit(message)
                             val detail = message.message ?: "大厅注册失败"
                             val pending = registrationResult
                             // Explicit rejection is terminal for this socket. Do not
@@ -195,7 +200,7 @@ class SignalingClient(
                             ws.close(1008, "registration-rejected")
                             if (pending?.isActive == true) {
                                 pending.completeExceptionally(RegistrationRejected(detail))
-                            } else {
+                            } else if (message.type != "version-too-old") {
                                 _events.tryEmit(message)
                             }
                         }
@@ -251,6 +256,22 @@ class SignalingClient(
         message: SignalingEnvelope,
     ) {
         if (ws !== webSocket || generation != connectionGeneration || registrationSent) return
+        if (message.lobbyEntryModes != true) {
+            val detail = "信令服务器尚未支持创建/加入校验，请联系服务器管理员升级"
+            val pending = registrationResult
+            connectArgs = null
+            serverSessionGeneration = null
+            _connected.value = false
+            _connectionError.value = detail
+            reconnectJob?.cancel()
+            stableJob?.cancel()
+            heartbeatJob?.cancel()
+            webSocket = null
+            ws.close(1008, "lobby-entry-modes-required")
+            if (pending?.isActive == true) pending.completeExceptionally(RegistrationRejected(detail))
+            else _events.tryEmit(SignalingEnvelope(type = "register-error", message = detail))
+            return
+        }
         val challenge = message.challenge?.trim().orEmpty()
         if (message.protocolVersion != ChatAuth.SIGNALING_PROTOCOL_VERSION || !isValidChallenge(challenge)) {
             android.util.Log.e("SignalingClient", "拒绝无效的 server-challenge")
@@ -287,6 +308,7 @@ class SignalingClient(
                 virtualIp = args.virtualIp,
                 lobbyName = args.lobbyName,
                 lobbyPassword = args.lobbyPassword,
+                entryMode = if (sessionAccepted) "auto" else args.entryMode,
                 clientVersion = AppClientVersion,
                 useDomain = args.useDomain,
             ),
@@ -328,4 +350,5 @@ data class ConnectArgs(
     val signer: ChatAuth.ChatSigner,
     val useDomain: Boolean = false,
     val chatPublicKey: String = signer.publicKeyBase64(),
+    val entryMode: String = "join",
 )

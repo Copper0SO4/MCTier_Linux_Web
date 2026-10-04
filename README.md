@@ -68,7 +68,7 @@ npm ci
 
 ## 上游和维护
 
-本次已 pull 用户仓库 `origin/master`，并合入官方 `upstream/master` 的 `e8d792d`；官方最新非预发行版仍为 **3.9.5**，之后该分支仅追加 Rust Cargo.lock 依赖维护。Linux Web 版本 **3.6.0** 独立于官方 MCTier 的版本，不修改共享协议版本。
+2026-10-04 已同步官方最新稳定标签 **v3.10.0**（`d6af338`）。当前源码正在进行 Linux Web 兼容性审查，尚不代表新的可用发行包；已发布的 3.6.0 仍基于此前的 3.9.5 源码。审查结果见 [项目审查](MCTier-Linux-Web/PROJECT-REVIEW-2026-10-04.md)。Linux Web 版本 **3.6.0** 独立于官方 MCTier 的版本，不修改共享协议版本。
 
 以后先检查工作区，运行 `./MCTier-Linux-Web/scripts/sync-upstream.sh` 获取并审查变更；清晰保存本地修改后才使用 `--merge`。不要覆盖 Linux 补丁或手动改坏 Windows/Android 的共享实现。
 

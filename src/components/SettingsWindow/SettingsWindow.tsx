@@ -1,3 +1,4 @@
+import { DownloadFolderSetting } from '../FileShareManager/DownloadFolderSetting';
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Form, Input, Switch, message, Tooltip, App, Slider, Button, Modal } from 'antd';
@@ -77,7 +78,6 @@ export const SettingsWindow: React.FC<{ onClose: () => void }> = ({ onClose }) =
   const [closeToTray, setCloseToTray] = useState(false);
   const [startMinimized, setStartMinimized] = useState(false);
   const [enableGpuRendering, setEnableGpuRendering] = useState(true);
-  const [fileShareDownloadDir, setFileShareDownloadDir] = useState<string | null>(null);
   const [avatarData, setAvatarData] = useState<string | undefined>();
   // 全局快捷键：用户可自定义，改完立即重新注册生效
   const [hotkeys, setHotkeys] = useState<Record<HotkeyKey, string>>({ ...DEFAULT_HOTKEYS });
@@ -130,7 +130,6 @@ export const SettingsWindow: React.FC<{ onClose: () => void }> = ({ onClose }) =
       setCloseToTray(ctt);
       setStartMinimized(sm);
       setEnableGpuRendering(egr);
-      setFileShareDownloadDir(fsdd);
       setAvatarData(settings.avatarData || undefined);
       useAppStore.getState().updateConfig({ avatarData: settings.avatarData || undefined });
       setLang(language);
@@ -215,7 +214,6 @@ export const SettingsWindow: React.FC<{ onClose: () => void }> = ({ onClose }) =
       setCloseToTray(false);
       setStartMinimized(false);
       setEnableGpuRendering(true);
-      setFileShareDownloadDir(null);
       setAvatarData(undefined);
       useAppStore.getState().updateConfig({ avatarData: undefined });
       setHotkeys({ ...DEFAULT_HOTKEYS });
@@ -259,32 +257,6 @@ export const SettingsWindow: React.FC<{ onClose: () => void }> = ({ onClose }) =
       message.error(tl('删除头像失败', 'Failed to remove avatar'));
     }
   }, [avatarData]);
-
-  const chooseFileShareDownloadDir = useCallback(async () => {
-    try {
-      const selected = await invoke<string | null>('select_file_share_download_folder');
-      if (!selected) return;
-      await invoke('set_file_share_download_dir', { path: selected });
-      setFileShareDownloadDir(selected);
-      settingsRef.current = { ...settingsRef.current, fileShareDownloadDir: selected };
-      message.success(tl('文件共享下载目录已更新', 'File sharing download folder updated'));
-    } catch (error) {
-      console.error('保存文件共享下载目录失败:', error);
-      message.error(tl('保存下载目录失败', 'Failed to save download folder'));
-    }
-  }, []);
-
-  const resetFileShareDownloadDir = useCallback(async () => {
-    try {
-      await invoke('set_file_share_download_dir', { path: null });
-      setFileShareDownloadDir(null);
-      settingsRef.current = { ...settingsRef.current, fileShareDownloadDir: null };
-      message.success(tl('已恢复系统默认下载目录', 'System default download folder restored'));
-    } catch (error) {
-      console.error('恢复文件共享下载目录失败:', error);
-      message.error(tl('恢复默认目录失败', 'Failed to restore default folder'));
-    }
-  }, []);
 
   useEffect(() => {
     loadSettings();
@@ -539,23 +511,7 @@ export const SettingsWindow: React.FC<{ onClose: () => void }> = ({ onClose }) =
               <div className="settings-card-desc">
                 {tl('设置文件夹共享中下载的所有文件的保存位置，不影响聊天图片等其他下载。', 'Choose where all files downloaded from folder sharing are saved. Other downloads are not affected.')}
               </div>
-              <div className="settings-download-path-row">
-                <Input
-                  value={fileShareDownloadDir || tl('系统默认下载目录（MCTier）', 'System default download folder (MCTier)')}
-                  readOnly
-                  className="settings-download-path-input"
-                />
-                <div className="settings-download-actions">
-                  <Button type="primary" onClick={chooseFileShareDownloadDir}>
-                    {tl('选择文件夹', 'Choose folder')}
-                  </Button>
-                  {fileShareDownloadDir && (
-                    <Button onClick={resetFileShareDownloadDir}>
-                      {tl('恢复默认', 'Reset')}
-                    </Button>
-                  )}
-                </div>
-              </div>
+              <DownloadFolderSetting />
             </motion.div>
 
             <motion.div className="settings-card" variants={itemVariants}>

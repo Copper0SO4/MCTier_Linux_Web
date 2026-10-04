@@ -25,7 +25,8 @@ import java.io.File
 /** Test APK only. Synthetic peers exercise the actual Compose UI, not network delivery. */
 class PeerUiInstrumentation : Instrumentation() {
     private var checkMode: String? = null
-    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); checkMode = arguments?.getString("check"); start() }
+    private var checkServer: String? = null
+    override fun onCreate(arguments: Bundle?) { super.onCreate(arguments); checkMode = arguments?.getString("check"); checkServer = arguments?.getString("server"); start() }
     private fun find(label: String): AccessibilityNodeInfo? {
         fun visit(node: AccessibilityNodeInfo): AccessibilityNodeInfo? {
             if (!node.refresh()) return null
@@ -177,6 +178,8 @@ class PeerUiInstrumentation : Instrumentation() {
         }
     }
     override fun onStart() {
+        if (checkMode == "lobby-entry") { LobbyEntryChecks(this, checkServer).run(); return }
+        if (checkMode == "shared-file-settings") { SharedFileSettingsChecks(this).run(); return }
         if (checkMode == "lobby-compatibility") { LobbyCompatibilityChecks(this).run(); return }
         if (checkMode == "quark-work") { QuarkWorkChecks(this).run(); return }
         if (checkMode?.startsWith("quark-upgrade-") == true) { QuarkUpgradeChecks(this).run(checkMode!!.removePrefix("quark-upgrade-")); return }

@@ -96,7 +96,7 @@ export const MainWindow: React.FC<{ startupReady?: boolean }> = ({ startupReady 
   // ESC键返回 - 在表单或关于页面时返回主界面
   useEscapeKey(() => {
     if (showForm) {
-      handleCloseForm();
+      if (useAppStore.getState().appState !== 'connecting') handleCloseForm();
     } else if (showAbout) {
       handleCloseAbout();
     } else if (showSettings) {

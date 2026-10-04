@@ -9,6 +9,7 @@ import { audioService } from '../../services/audio/AudioService';
 import { VoiceChangerPicker } from '../VoiceChanger/VoiceChangerPicker';
 import { DanmakuSettings } from '../Danmaku/DanmakuSettings';
 import { GameHudSettings } from '../GameHud/GameHudSettings';
+import { DownloadFolderSetting } from '../FileShareManager/DownloadFolderSetting';
 import { useTranslation } from 'react-i18next';
 import { tl } from '../../i18n';
 import './LobbySettingsModal.css';
@@ -186,8 +187,14 @@ export const LobbySettingsModal: React.FC<LobbySettingsModalProps> = ({
       <div className="lobby-settings-content">
         <div className="lobby-settings-header">
           <h2>{tl('大厅动态设置', 'Lobby Settings')}</h2>
-          <p>{tl('修改设置后将自动重新加入大厅', 'Changes will rejoin the lobby automatically')}</p>
+          <p>{tl('常用设置即时保存；网络配置保存后重新加入大厅', 'General settings save immediately; saving network settings rejoins the lobby')}</p>
         </div>
+
+        <div className="lobby-voice-section">
+          <div className="lobby-voice-section-title">{tl('文件共享下载目录', 'File sharing download folder')}</div>
+          <DownloadFolderSetting />
+        </div>
+        <div className="lobby-voice-divider" />
 
         {/* 语音设备设置（麦克风 / 扬声器选择与试音） */}
         <div className="lobby-voice-section">

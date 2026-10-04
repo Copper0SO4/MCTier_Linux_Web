@@ -451,7 +451,7 @@ function MainWindowApp() {
 
   // 当进入大厅时初始化WebRTC
   useEffect(() => {
-    if (appState === 'in-lobby' && lobby) {
+    if ((appState === 'connecting' || appState === 'in-lobby') && lobby) {
       const initWebRTC = async () => {
         const sessionTicket =
           lobbySessionCoordinator.current() ?? lobbySessionCoordinator.begin();
@@ -564,9 +564,12 @@ function MainWindowApp() {
           // and the first roster before resolving.
           webrtcClient.onSignalingStatus((status, error) => {
             if (lobbySessionCoordinator.isCurrent(sessionTicket)) {
-              if (status === 'connected') recoveryLobby = { ...recoveryLobby, addressRecoveryStartedAt: undefined };
+              if (status === 'failed' && error) {
+                void handleRegistrationFailure(new Error(error));
+                return;
+              }
+              if (status === 'connected') recoveryLobby = { ...recoveryLobby, entryMode: 'auto', addressRecoveryStartedAt: undefined };
               useAppStore.getState().setSignalingStatus(status, error);
-              if (status === 'failed' && error) void handleRegistrationFailure(new Error(error));
             }
           });
           webrtcClient.onPlayerJoined(
@@ -708,9 +711,13 @@ function MainWindowApp() {
           const signalingServer = lobby.signalingServer || 'wss://mctier.pmhs.top/signaling';
           await webrtcClient.initialize(
             playerId, playerName, lobby.name, lobby.password || '',
-            undefined, lobby.useDomain, signalingServer, sessionTicket
+            undefined, lobby.useDomain, signalingServer, sessionTicket, lobby.entryMode ?? 'join'
           );
           lobbySessionCoordinator.assertCurrent(sessionTicket);
+
+          if (useAppStore.getState().appState === 'connecting') {
+            useAppStore.getState().setAppState('in-lobby');
+          }
 
           console.log('✅ WebRTC 初始化完成，玩家ID:', playerId);
 
@@ -733,7 +740,7 @@ function MainWindowApp() {
     }
     // 注意：不在这里添加cleanup，因为退出大厅时会在MiniWindow中手动调用cleanup
     // 这样可以确保cleanup在正确的时机执行，避免状态不一致
-  }, [appState, lobby, addPlayer, removePlayer, updatePlayerStatus, addChatMessage]);
+  }, [appState === 'connecting' || appState === 'in-lobby', lobby, addPlayer, removePlayer, updatePlayerStatus, addChatMessage]);
 
   // 监听窗口位置变化并保存
   useEffect(() => {

@@ -1,4 +1,5 @@
 package top.pmh13.mctier.ui
+import androidx.compose.ui.platform.testTag
 import androidx.compose.material.icons.rounded.Videocam
 
 import top.pmh13.mctier.network.ScreenShareQuality
@@ -1111,7 +1112,11 @@ private fun HomeScreen(state: MctierUiState, repository: MctierRepository, onQua
                     PrimaryButton(
                         text = if (connecting) L("正在组网…", "Connecting…") else if (mode == "create") L("创建大厅", "Create Lobby") else L("加入大厅", "Join Lobby"),
                         enabled = isValidLobbyName(lobbyName) && isValidLobbyPassword(password) && !connecting && state.versionError == null,
-                    ) { repository.createOrJoinLobby(lobbyName, password, joinNodeOverride, joinSignalingOverride) }
+                    ) { repository.createOrJoinLobby(lobbyName, password, joinNodeOverride, joinSignalingOverride, entryMode = mode) }
+                    if (state.state == AppConnectionState.Error && !state.error.isNullOrBlank()) {
+                        Spacer(Modifier.height(12.dp))
+                        LobbyEntryError(state.error.orEmpty())
+                    }
                 }
             }
             item {
@@ -1126,6 +1131,12 @@ private fun HomeScreen(state: MctierUiState, repository: MctierRepository, onQua
             item { Spacer(Modifier.height(20.dp)) }
         }
     }
+}
+
+@Composable
+internal fun LobbyEntryError(message: String) {
+    Text(message, color = DangerRed, fontSize = 14.sp,
+        modifier = Modifier.fillMaxWidth().testTag("lobby-entry-error"))
 }
 
 @Composable
@@ -2156,6 +2167,9 @@ private fun LobbyDynamicConfigView(state: MctierUiState, repository: MctierRepos
     var useGlobal by remember { mutableStateOf(state.settings.lobbyUseGlobalConfig) }
     var cfg by remember { mutableStateOf(state.settings) }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.fillMaxSize()) {
+        item {
+            SectionCard { FileShareDownloadFolderSetting(state.settings, repository) }
+        }
         // 语音频道（小队语音）：所有玩家可选
         item {
             SectionCard {
@@ -2268,7 +2282,13 @@ private fun LobbyDynamicConfigView(state: MctierUiState, repository: MctierRepos
                     Box(
                         Modifier.weight(1f).clip(RoundedCornerShape(12.dp)).background(GrassGreen)
                             .clickable {
-                                repository.updateSettings(cfg.copy(lobbyUseGlobalConfig = useGlobal))
+                                repository.updateSettings(repository.state.value.settings.copy(
+                                    lobbyUseGlobalConfig = useGlobal,
+                                    mtu = cfg.mtu, latencyFirst = cfg.latencyFirst, multiThread = cfg.multiThread,
+                                    useSmoltcp = cfg.useSmoltcp, enableKcpProxy = cfg.enableKcpProxy, enableQuicProxy = cfg.enableQuicProxy,
+                                    disableP2p = cfg.disableP2p, disableUdpHolePunching = cfg.disableUdpHolePunching,
+                                    relayAllPeerRpc = cfg.relayAllPeerRpc, privateMode = cfg.privateMode, enableAsExitNode = cfg.enableAsExitNode,
+                                ))
                                 onClose()
                                 repository.reloadLobby()
                                 android.widget.Toast.makeText(ctx, L("配置已保存，正在重新加入大厅…", "Config saved, rejoining lobby..."), android.widget.Toast.LENGTH_SHORT).show()
@@ -4368,6 +4388,38 @@ private fun SharedFolderRow(folder: SharedFolder, repository: MctierRepository) 
 }
 
 @Composable
+internal fun RemoteFileSelectionBar(
+    files: List<RemoteFileInfo>,
+    selectedPaths: List<String>,
+    onSelectionChanged: (List<String>) -> Unit,
+    onDownload: (List<RemoteFileInfo>) -> Unit,
+) {
+    val selectable = files.filter { !it.isDir }.distinctBy { it.path }
+    if (selectable.isEmpty()) return
+    val selected = selectable.filter { it.path in selectedPaths }
+    val allSelected = selected.size == selectable.size
+    Column(Modifier.fillMaxWidth()) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(L("已选 ${selected.size} 个文件", "${selected.size} selected"),
+                fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.75f), modifier = Modifier.weight(1f))
+            TextButton(onClick = { onSelectionChanged(if (allSelected) emptyList() else selectable.map { it.path }) }) {
+                Text(if (allSelected) L("取消全选", "Deselect all") else L("全选", "Select all"), color = GrassGreen)
+            }
+        }
+        if (selected.isNotEmpty()) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = { onSelectionChanged(emptyList()) }) {
+                    Text(L("清空", "Clear"), color = TextPrimary.copy(alpha = 0.65f))
+                }
+                Box(Modifier.weight(1f)) {
+                    PrimaryButton(L("下载选中", "Download selected")) { onDownload(selected) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun RemoteBrowser(entry: RemoteShareEntry, repository: MctierRepository, onBack: () -> Unit) {
     val context = LocalContext.current
     var path by remember { mutableStateOf("") }
@@ -4403,17 +4455,15 @@ private fun RemoteBrowser(entry: RemoteShareEntry, repository: MctierRepository,
             PrimaryButton(L("确认密码并刷新", "Confirm and refresh")) { loadKey++ }
         }
         Spacer(Modifier.height(10.dp))
-        val selectedFiles = files.filter { !it.isDir && it.path in selectedPaths }
-        if (selectedFiles.isNotEmpty()) {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
-                Text(L("已选 ${selectedFiles.size} 个文件", "${selectedFiles.size} selected"), color = TextPrimary.copy(alpha = 0.75f), fontSize = 12.sp, modifier = Modifier.weight(1f))
-                TextButton(onClick = { selectedPaths.clear() }) { Text(L("清空", "Clear"), color = TextPrimary.copy(alpha = 0.65f)) }
-                TextButton(onClick = {
-                    repository.downloadRemoteFiles(entry, selectedFiles, password.ifBlank { null },
+        if (!loading && error == null) {
+            RemoteFileSelectionBar(files, selectedPaths,
+                onSelectionChanged = { paths -> selectedPaths.clear(); selectedPaths.addAll(paths) },
+                onDownload = { selected ->
+                    repository.downloadRemoteFiles(entry, selected, password.ifBlank { null },
                         onResult = { p -> android.widget.Toast.makeText(context, L("已下载到 $p", "Downloaded to $p"), android.widget.Toast.LENGTH_LONG).show() },
                         onError = { e -> android.widget.Toast.makeText(context, e, android.widget.Toast.LENGTH_SHORT).show() })
-                }) { Text(L("下载选中", "Download selected"), color = GrassGreen, fontWeight = FontWeight.SemiBold) }
-            }
+                },
+            )
             Spacer(Modifier.height(8.dp))
         }
         when {
@@ -4939,13 +4989,8 @@ private fun CommunityNodesSection(state: MctierUiState, repository: MctierReposi
 
 // ============================ 设置面板 ============================
 @Composable
-private fun SettingsPanel(state: MctierUiState, repository: MctierRepository) {
-    val settings = state.settings
-    val onChange: (UserSettings) -> Unit = repository::updateSettings
+internal fun FileShareDownloadFolderSetting(settings: UserSettings, repository: MctierRepository) {
     val context = LocalContext.current
-    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        if (uri != null) repository.updateAvatar(uri)
-    }
     val downloadFolderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
         if (uri != null) {
             runCatching {
@@ -4953,7 +4998,7 @@ private fun SettingsPanel(state: MctierUiState, repository: MctierRepository) {
                     uri,
                     Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
                 )
-                onChange(settings.copy(fileShareDownloadTreeUri = uri.toString()))
+                repository.updateSettings(repository.state.value.settings.copy(fileShareDownloadTreeUri = uri.toString()))
             }.onFailure { error ->
                 android.widget.Toast.makeText(
                     context,
@@ -4962,6 +5007,44 @@ private fun SettingsPanel(state: MctierUiState, repository: MctierRepository) {
                 ).show()
             }
         }
+    }
+    Column {
+        Text(L("文件共享下载目录", "File sharing download folder"), fontSize = 13.sp, color = TextPrimary.copy(alpha = 0.7f))
+        Spacer(Modifier.height(4.dp))
+        val downloadFolderLabel = settings.fileShareDownloadTreeUri.takeIf { it.isNotBlank() }?.let { uriText ->
+            runCatching { Uri.decode(Uri.parse(uriText).lastPathSegment ?: uriText) }.getOrDefault(uriText)
+        } ?: L("默认：应用下载目录 / MCTier", "Default: app download folder / MCTier")
+        Text(downloadFolderLabel, color = TextPrimary.copy(alpha = 0.55f), fontSize = 12.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+        Spacer(Modifier.height(6.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Button(
+                onClick = { downloadFolderLauncher.launch(null) },
+                modifier = Modifier.weight(1f).height(44.dp),
+                shape = RoundedCornerShape(12.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = GrassGreen, contentColor = Color.White),
+            ) {
+                Icon(Icons.Rounded.Folder, null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(6.dp))
+                Text(L("选择文件夹", "Choose folder"), fontWeight = FontWeight.SemiBold)
+            }
+            if (settings.fileShareDownloadTreeUri.isNotBlank()) {
+                TextButton(onClick = { repository.updateSettings(repository.state.value.settings.copy(fileShareDownloadTreeUri = "")) }) {
+                    Text(L("恢复默认", "Reset"), color = GrassGreen)
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
+        Text(L("修改后自动保存，对后续下载生效。", "Saved automatically and applied to subsequent downloads."), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.55f))
+    }
+}
+
+@Composable
+private fun SettingsPanel(state: MctierUiState, repository: MctierRepository) {
+    val settings = state.settings
+    val onChange: (UserSettings) -> Unit = repository::updateSettings
+    val context = LocalContext.current
+    val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) repository.updateAvatar(uri)
     }
     SectionCard {
         Text(L("设置", "Settings"), fontWeight = FontWeight.Bold, color = TextPrimary)
@@ -4997,30 +5080,7 @@ private fun SettingsPanel(state: MctierUiState, repository: MctierRepository) {
             }
         }
         Spacer(Modifier.height(12.dp))
-        Text(L("文件共享下载目录", "File sharing download folder"), fontSize = 13.sp, color = TextPrimary.copy(alpha = 0.7f))
-        Spacer(Modifier.height(4.dp))
-        val downloadFolderLabel = settings.fileShareDownloadTreeUri.takeIf { it.isNotBlank() }?.let { uriText ->
-            runCatching { Uri.decode(Uri.parse(uriText).lastPathSegment ?: uriText) }.getOrDefault(uriText)
-        } ?: L("默认：应用下载目录 / MCTier", "Default: app download folder / MCTier")
-        Text(downloadFolderLabel, color = TextPrimary.copy(alpha = 0.55f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        Spacer(Modifier.height(6.dp))
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Button(
-                onClick = { downloadFolderLauncher.launch(null) },
-                modifier = Modifier.weight(1f).height(44.dp),
-                shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = GrassGreen, contentColor = Color.White),
-            ) {
-                Icon(Icons.Rounded.Folder, null, modifier = Modifier.size(18.dp))
-                Spacer(Modifier.width(6.dp))
-                Text(L("选择文件夹", "Choose folder"), fontWeight = FontWeight.SemiBold)
-            }
-            if (settings.fileShareDownloadTreeUri.isNotBlank()) {
-                TextButton(onClick = { onChange(settings.copy(fileShareDownloadTreeUri = "")) }) {
-                    Text(L("恢复默认", "Reset"), color = GrassGreen)
-                }
-            }
-        }
+        FileShareDownloadFolderSetting(settings, repository)
         Spacer(Modifier.height(12.dp))
         Text(L("EasyTier 节点", "EasyTier Node"), fontSize = 13.sp, color = TextPrimary.copy(alpha = 0.7f))
         Spacer(Modifier.height(8.dp))

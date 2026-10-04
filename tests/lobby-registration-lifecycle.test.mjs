@@ -26,6 +26,8 @@ for (const failed of [false, true]) {
     let complete;
     const finished = new Promise(resolve => { complete = resolve; });
     const store = {
+      appState: 'connecting',
+      setAppState(state) { this.appState = state; events.push(['screen', state]); },
       currentPlayerId: 'local', config: { playerName: 'Local' }, versionError: null,
       setSignalingStatus(status, error) { events.push(['status', status, error]); if (status === 'failed') complete(); },
       setHostId(id) { events.push(['host', id]); },
@@ -41,7 +43,7 @@ for (const failed of [false, true]) {
       : callback => { callbacks[name] = callback; }
     });
     vm.runInNewContext(compiled, {
-      appState: 'in-lobby', lobby: { name: 'Test', password: '', virtualIp: '10.126.126.1' },
+      appState: 'connecting', lobby: { name: 'Test', password: '', virtualIp: '10.126.126.1', entryMode: 'create' },
       lobbySessionCoordinator: { current: () => ({}), isCurrent: () => true, assertCurrent() {} },
       useAppStore: { getState: () => store }, webrtcClient,
       addPlayer(player) { events.push(['player', player.id]); }, removePlayer() {},
@@ -56,7 +58,7 @@ for (const failed of [false, true]) {
     await finished;
     assert.deepEqual(events, failed
       ? [['invoke', 'leave_lobby'], ['status', 'failed', 'virtual adapter unavailable']]
-      : [['host', 'local'], ['player', 'remote'], ['status', 'connected', undefined]]);
+      : [['host', 'local'], ['player', 'remote'], ['status', 'connected', undefined], ['screen', 'in-lobby']]);
   });
 }
 
@@ -89,7 +91,7 @@ for (const reconnect of [false, true]) {
     let finish;
     const finished = new Promise(resolve => { finish = resolve; });
     const lobby = { name: 'room', password: '', virtualIp: '10.126.126.1', automaticVirtualIp: true,
-      serverNode: 'udp://selected:11010', signalingServer: 'wss://selected' };
+      serverNode: 'udp://selected:11010', signalingServer: 'wss://selected', entryMode: 'create' };
     const store = { currentPlayerId: 'alice', config: { playerName: 'Alice' }, versionError: null,
       setSignalingStatus() {}, setLobby(value) { events.push(['publish', value.virtualIp]); finish(value); } };
     const conflict = 'virtualIp 已被大厅内其他成员使用';
@@ -117,5 +119,6 @@ for (const reconnect of [false, true]) {
     const replacement = await finished;
     assert.deepEqual(events, [['cleanup'], ['leave_lobby'], ['join_lobby'], ['publish', '10.126.126.2']]);
     assert.equal(replacement.addressAttempt, 1);
+    assert.equal(replacement.entryMode, reconnect ? 'auto' : 'create');
   });
 }

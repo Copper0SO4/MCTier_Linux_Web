@@ -19,6 +19,6 @@ export async function recoverVirtualAddress(
   }
   const replacement = await restart(attempt);
   if (!isCurrent()) return null;
-  return { ...replacement, serverNode: lobby.serverNode, signalingServer: lobby.signalingServer,
+  return { ...replacement, entryMode: lobby.entryMode, serverNode: lobby.serverNode, signalingServer: lobby.signalingServer,
     addressAttempt: attempt, addressRecoveryStartedAt: startedAt };
 }
