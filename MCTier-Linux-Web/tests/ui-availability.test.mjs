@@ -42,6 +42,7 @@ test('unimplemented native and file operations cannot be advertised as available
     assert.ok(indexed.get(id)?.reason.length > 10);
   }
   // Receiving attachments and viewing screens remain independent of blocked sending/control.
-  for (const id of ['chat', 'screen', 'voice', 'network', 'send-file', 'send-image', 'record-voice', 'folder-share', 'room-tools', 'invite', 'lobby-history', 'appearance','magic-dns','advanced-network','network-fix'])
+  assert.equal(indexed.has('magic-dns'), false, 'Magic DNS stays hidden for this release');
+  for (const id of ['chat', 'screen', 'voice', 'network', 'send-file', 'send-image', 'record-voice', 'folder-share', 'room-tools', 'invite', 'lobby-history', 'appearance','advanced-network','network-fix'])
     assert.equal(indexed.get(id)?.state, 'experimental');
 });

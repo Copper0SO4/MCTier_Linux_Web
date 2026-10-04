@@ -1,59 +1,72 @@
-MCTier Linux Web v3.5.0
-Debian / Ubuntu x86_64
-======================
+MCTier Linux Web 3.6.0 — 中文使用说明
+====================================
 
-【安装运行依赖】
+【系统和运行依赖】
+x86_64 桌面，glibc 2.39 或更新、OpenSSL 3，例如 Ubuntu 24.04+、Debian 13。
+较旧的系统请在本机从源码构建，不要自行替换系统 libc。
+推荐 Chrome/Chromium。本版 Firefox 大厅入口仍封锁：信令 WebSocket
+1006 持续断连曾在干净配置复现，根因未确认。广告拦截也可能阻止信令。
 
-请按系统版本安装以下运行库和桌面工具：
+Debian/Ubuntu 按系统版本安装：
+  sudo apt install curl xdg-utils libcap2-bin policykit-1 libdbus-1-3 libsystemd0 zlib1g libgcc-s1 libssl3
+使用 t64 包名的系统将 libssl3 换成 libssl3t64；部分系统 polkit 包名为
+polkitd pkexec。另需桌面认证代理、用户 D-Bus/Secret Service 密钥环
+（例如 GNOME Keyring）、/dev/net/tun、coreutils/awk 和互联网连接。
+随包已提供 EasyTier core/CLI，不需 Tauri/WebKitGTK 媒体环境。
 
-  sudo apt update
-  sudo apt install xdg-utils libcap2-bin policykit-1 libdbus-1-3 libsystemd0 zlib1g libgcc-s1 libssl3
-
-Debian 13 若 OpenSSL 3 使用 t64 包，请将 libssl3 替换为 libssl3t64。
-
-还需要：
-- Debian/Ubuntu 系 x86_64 桌面环境和已安装的 Chrome/Chromium 浏览器。
-- 用户 D-Bus 会话及 Secret Service 密钥环（例如 GNOME Keyring）。
-- /dev/net/tun 设备及可连接互联网。
-- Firefox 当前存在 MCTier 信令 WebSocket 1006 连续断连问题，本版仍封锁 Firefox 大厅入口。请使用 Chrome/Chromium。
-
-不需要安装 Tauri、WebKitGTK 或 GTK WebView。服务使用浏览器本身处理语音/屏幕权限。
-
-【启动】
-
-完整解压本压缩包，在解压目录运行：
-
+【校验、解压、运行】
+在下载目录执行：
+  sha256sum -c mctier-linux-web-linux-x86_64-3.6.0.zip.sha256
+  unzip mctier-linux-web-linux-x86_64-3.6.0.zip
+  cd mctier-linux-web-linux-x86_64-3.6.0
   ./mctier-linux-web
 
-程序以当前普通用户启动。本地服务只监听 127.0.0.1:14700；服务就绪后尝试打开系统默认浏览器。若浏览器没有自动打开，请在 Chrome/Chromium 手动访问：
-
+启动器以普通用户启动本地服务，仅监听 127.0.0.1:14700。
+就绪后尝试打开系统默认浏览器；请用 Chrome/Chromium 访问：
   http://127.0.0.1:14700
+保持终端运行。Ctrl+C 或关闭终端停止服务。用户手动加入房间、打开
+麦克风或共享屏幕；启动器不自动连接房间或启用防火墙操作。
 
-保持终端运行；按 Ctrl+C 或关闭终端停止服务。程序不会自动加入房间或连接节点。请在页面中检查并选择 MCTier 信令服务与 EasyTier 节点。信令服务用于大厅和 WebRTC 信令；EasyTier 节点用于虚拟组网。连接失败不会静默切换服务器。
-
-【EasyTier 网络权限】
-
-程序默认以普通用户身份运行。只有随包 easytier-core 缺少 cap_net_admin、cap_net_raw 时，启动器才会通过 pkexec 请求系统授权，并只对该 core 设置 capability 后复核。用户可以取消授权。不要通过 sudo/pkexec 以 root 启动 mctier-linux-web 或整个 MCTier。
-
-【功能与已知限制】
-
-用户真实环境反馈确认：虚拟组网、消息和文件收发、双向麦克风、双向屏幕共享及大厅邀请码正常。应用内“功能状态”页面标明用户已验收、实验性及未开放项目。Firefox 信令重连、ICE/断线恢复细项仍待专项测试；文件夹共享/房间工具等跨端行为以功能菜单状态为准。远程输入操控不支持，系统音频/录屏未开放；房主管理已接入。当前源码另有待验收的高级网络、游戏快连、Magic DNS 与防火墙修复，具体以本包功能菜单为准。
-
-Linux Web 仍为实验性平台移植。遇到连接异常时，分别检查大厅信令状态、EasyTier 虚拟网卡/对端收发以及 WebRTC 媒体状态；成员显示在线并不等于网络或通话已建立。
-
-【校验】
-
-发布页提供 ZIP 的 SHA-256 文件。可使用：
-
-  sha256sum -c mctier-linux-web-linux-x86_64-v3.5.0.zip.sha256
-
-随包 EasyTier core 校验和：
+【EasyTier 权限】
+只有随包核心缺少 cap_net_admin,cap_net_raw=ep 时，才通过 pkexec setcap
+请求系统授权并复核。由用户在认证窗口输入密码；可以取消。
+不要用 sudo/pkexec 以 root 启动整个 MCTier 或 EasyTier。
+core SHA-256：
   f1bd60be7a50da84f50732ed4b826b70284c84f05dadbd3fe448429dfe184322
 
-【网络与游戏功能的额外依赖和权限】
+【网络和防火墙】
+MCTier 信令负责大厅/WebRTC；EasyTier 负责虚拟组网。大厅成员在线
+不代表虚拟接口、对端数据或媒体成功。失败不会自动更换服务器/节点。
+普通节点同一主端口监听 TCP/UDP；WS 节点保持 WS/TCP。
+高级参数保存后下次手动加入生效；游戏快连需用户自行开服。
 
-若本包提供网络与游戏面板：高级参数保存后下次手动加入生效；游戏快连需用户自行开服。Magic DNS 只在确认后通过 pkexec 更新 /etc/hosts 的 LinuxWeb 段；成员变化需手动更新，退房后请清理。防火墙修复需要本机已安装并启用 ufw 或 firewalld（firewall-cmd），只选正在使用的一个，不自动安装或切换。需要 pkexec 及桌面认证代理。请预览具体端口、区域、虚拟网段和可选动态 UDP 范围后再授权；动态范围会影响其它程序，不能保证 P2P/NAT 打洞成功。授权助手只执行固定的一次性操作，不以 root 启动服务或核心。
+网络修复只操作已安装且使用中的 UFW 或 firewalld，不自动安装/切换。
+先预览规则，再完整输入“我确认修改本机防火墙”，然后完成系统认证。
+额外动态 UDP/TCP 范围及 UFW 出站扩展默认关闭，会影响匹配范围内
+其它程序，不能视为按进程放行。14700 和 RPC 不向外网放行。
+UFW 规则持久保存；firewalld 仅运行时规则，1 小时后失效。
 
-ufw 规则持久保存，退出后可在面板撤销；firewalld 运行时规则 1 小时后失效，不写永久配置。不会关闭/重置防火墙，不开放本地管理服务 14700/RPC。新网络功能是否经真实环境验收，请看应用功能状态，不将已有语音/聊天验收等同于网络修复通过。
+变更成功复核后，会静默重启当前 EasyTier，沿用节点、身份、虚拟 IP
+和主端口。数据会短暂中断，正在传输的文件/媒体可能需恢复。重连失败
+明确提示；仍可使用“重新组网”手动重试。退出房间时批量撤销不重连。
+撤销规则/恢复状态不要求额外文字，但仍需系统认证。手动退出房间会
+询问撤销或保留本应用更改。崩溃/断电不能自动授权撤销，请下次检查。
+备用暂停整个防火墙需输入“我确认暂停整个防火墙”，影响所有程序。
+UFW 保持关闭直到恢复；firewalld 停止服务可能丢失其它运行时规则。
+认证等待最多 180 秒；请求已提交后的取消/超时可能留下部分更改。
+详细排障见随包 UFW-P2P-TROUBLESHOOTING.md。
 
-系统授权：认证完成后再次核对状态才提交操作。可关闭面板或取消操作；等待认证最多180秒。请求已提交后取消/超时可能部分应用，需检查系统状态及撤销入口，不保证回滚。新网络功能尚待真实系统验收，本说明用于下一次打包，本轮不生成发行包。
+【功能与本版限制】
+用户已反馈组网、消息/文件收发、双向麦克风/屏幕、邀请码、房主管理
+正常，并确认 UFW 放行后重新连接可以 P2P。新增自动重连流程仍待
+真实房间复测；不能保证所有 NAT 环境直连。
+Magic DNS 设置、标签及功能卡片暂时隐藏；升级不自动改写/清理 hosts。
+已有 LinuxWeb hosts 段需保留或由用户自行核对清理，勿删除其它记录。
+Firefox、ICE/长期断线恢复、firewalld 实机效果、高级参数各选项、
+文件夹共享及房间工具跨端同步仍需专项验收。
+Linux Web 不支持远程输入操控；系统音频、录屏、托盘尚未开放。
+
+【发行和源码】
+Linux Web 版本 3.6.0 独立于官方 MCTier 3.9.5。已同步官方 master 的
+依赖维护提交 e8d792d。正式发行不表示每项实验性功能已完成兼容验收。
+源码和构建方式：https://github.com/Copper0SO4/MCTier_Linux_Web

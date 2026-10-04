@@ -117,7 +117,7 @@ const community = setupCommunity({
   text:(content)=>sendOutgoing({content,type:'text'},id=>p2pChatService.sendTextMessage(content,id)),
 });
 
-const networkPanel=setupNetworkPanel({online:()=>online,busy:()=>busy,players:()=>[...players.values()],status:notice});
+const networkPanel=setupNetworkPanel({online:()=>online,busy:()=>busy,players:()=>[...players.values()],restartNetwork,status:notice});
 
 el('copy-ip').onclick = async () => {
   if (!online) return;
@@ -343,9 +343,19 @@ async function join() {
     if (!cancelled) notice(`加入失败：${label(error)}`, true);
   }
 }
+async function restartNetwork() {
+  if (!online || busy || leaving) throw new Error('请等待当前房间操作完成。');
+  busy = true; controlState(online);
+  el<HTMLButtonElement>('leave').disabled = true;
+  try {
+    notice('正在重新建立 EasyTier 连接，数据传输暂时中断…');
+    await localInvoke('restart_easytier_network');
+    notice('EasyTier 已重新启动，虚拟接口就绪；请核对对端数据、P2P 路由及媒体恢复。');
+  } finally { busy = false; controlState(online); }
+}
 async function leave() {
   if (leaving) return;
-  leaving = true; online = false; community.reset(); composer.cancel(); stopViewing();
+  leaving = true; online = false; community.reset(); networkPanel.reset(); composer.cancel(); stopViewing();
   for (const controller of downloads) controller.abort(); downloads.clear();
   for (const url of downloadUrls) URL.revokeObjectURL(url); downloadUrls.clear();
   for (const url of previewUrls) URL.revokeObjectURL(url); previewUrls.clear();
@@ -381,7 +391,13 @@ el('signal-probe').onclick = async () => {
   catch (error) { notice(`信令握手检查失败：${label(error)}`, true); }
   finally { button.disabled = busy || online || !serviceReady; }
 };
-el('leave').onclick = () => { void leave(); };
+let exitPrompt = false;
+el('leave').onclick = () => {
+  if (exitPrompt || leaving) return;
+  exitPrompt = true;
+  void networkPanel.beforeLeave().then(confirmed => confirmed ? leave() : undefined)
+    .catch(error => notice(label(error), true)).finally(() => { exitPrompt = false; });
+};
 el('mic').onclick = async () => {
   const next = !useAppStore.getState().micEnabled;
   el<HTMLButtonElement>('mic').disabled = true;

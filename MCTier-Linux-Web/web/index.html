@@ -13,14 +13,16 @@
         >
         <div class="header-actions">
           <span id="service-state" class="badge">连接本地服务…</span
+          ><button type="button" id="return-room" hidden>返回大厅</button
           ><button type="button" data-view="capabilities">功能状态</button
           ><button type="button" id="leave" disabled hidden>退出 / 取消</button>
         </div>
       </header>
       <div id="notice" class="notice" role="status">
-        Linux 实验版 · 用户已验收组网、消息、文件、双向语音与屏幕；其他功能状态见菜单。
+        Linux Web · 请手动加入大厅，功能范围见右上角。
       </div>
       <div id="browser-warning" class="browser-warning" role="status" hidden></div>
+      <p id="session-navigation" class="session-navigation" role="status" hidden></p>
       <main>
         <section id="home-view" class="main-window web-view" aria-label="主界面">
           <div class="main-window-content">
@@ -110,7 +112,6 @@
             </form>
             <div class="form-locks">
               <div data-feature="lobby-history"></div>
-              <div data-feature="magic-dns"></div>
               <div data-feature="advanced-network"></div>
             </div>
             <p class="hint">
@@ -164,6 +165,7 @@
               >
               <button id="resume-audio" disabled>恢复音频播放</button>
               <button type="button" data-view="settings">音频设备与软件设置</button>
+              <h3 class="sidebar-section-title">大厅操作</h3>
               <div class="sidebar-locks">
                 <div data-feature="lobby-management"></div>
                 <div data-feature="invite"></div>
@@ -177,7 +179,7 @@
               <button type="button" data-panel="chat" aria-pressed="true">聊天室</button
               ><button type="button" data-panel="screen" aria-pressed="false">屏幕共享</button
               ><button type="button" data-panel="diagnostics" aria-pressed="false">连接诊断</button
-              ><button type="button" data-view="capabilities">更多功能 · 暂未开放</button>
+              ><button type="button" data-view="capabilities">功能总览</button>
             </nav>
             <section id="chat-panel" class="chat-room-view lobby-panel" aria-label="聊天室">
               <header class="chat-header">
@@ -240,8 +242,10 @@
                 <p class="hint">
                   电脑共享由浏览器选择窗口，只采集视频。观看手机前，请先在手机端共享屏幕并允许录屏，再刷新列表。
                 </p>
-                <div data-feature="system-audio"></div>
-                <div data-feature="remote-control"></div>
+                <details class="scope-details"><summary>屏幕功能范围</summary>
+                  <div data-feature="system-audio"></div>
+                  <div data-feature="remote-control"></div>
+                </details>
                 <p id="screen-status" class="hint">未观看屏幕</p>
                 <div id="shares" class="share-list">暂无共享画面</div>
                 <video id="screen-video" controls playsinline hidden></video
@@ -254,19 +258,28 @@
                 <h2>连接诊断</h2>
                 <span class="subtle">网络与媒体分别检查</span>
               </header>
-              <div class="panel-body">
-                <h3>信令连接</h3>
-                <p id="signal-details" class="hint">暂无断开记录</p>
-                <h3>WebRTC 语音</h3>
-                <p class="hint">
-                  ICE 成功、RTP 增长还需结合两端实际听音确认。不显示 SDP、ICE 密钥或完整候选地址。
-                </p>
-                <div id="voice-diagnostics" class="diag-empty">暂无对端媒体连接。</div>
-                <h3>EasyTier 数据链路</h3>
-                <p class="hint">信令在线不代表虚拟网络互通。查询对端后仍需验证数据收发。</p>
-                <button id="peer-query" disabled>查询 EasyTier 对端</button>
-                <pre id="peer-report"></pre>
-                <div data-feature="network-fix"></div>
+              <div class="panel-body diagnostics-grid">
+                <section class="diagnostic-card">
+                  <h3>信令连接</h3>
+                  <p class="hint">大厅在线与控制消息</p>
+                  <p id="signal-details" class="hint">暂无断开记录</p>
+                </section>
+                <section class="diagnostic-card">
+                  <h3>WebRTC 语音</h3>
+                  <div id="voice-diagnostics" class="diag-empty">暂无对端媒体连接。</div>
+                  <details class="scope-details"><summary>如何判断通话成功</summary>
+                    <p class="hint">检查 ICE、RTP 与两端实际听音；信令在线不代表媒体成功。不显示 SDP 或 ICE 密钥。</p>
+                  </details>
+                </section>
+                <section class="diagnostic-card diagnostic-wide">
+                  <h3>EasyTier 数据链路</h3>
+                  <p class="hint">查询虚拟网络对端，再核对实际数据收发。</p>
+                  <button id="peer-query" disabled>查询 EasyTier 对端</button>
+                  <pre id="peer-report"></pre>
+                </section>
+                <section class="diagnostic-card diagnostic-wide">
+                  <div data-feature="network-fix"></div>
+                </section>
               </div>
             </section>
           </div>

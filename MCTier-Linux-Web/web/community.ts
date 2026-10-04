@@ -808,6 +808,7 @@ export function setupCommunity(ctx: Context) {
         })
       );
       actionButton.className = 'feature-action';
+      actionButton.title = card.querySelector('p')?.textContent || name;
       card.append(actionButton);
     }
   }

@@ -1,5 +1,6 @@
 mod attachments;
 mod firewall;
+mod firewall_pause;
 mod folders;
 #[allow(dead_code)]
 mod modules;
@@ -198,7 +199,7 @@ async fn invoke(
         }
         "get_magic_dns_status" => network_operations::dns_status(&app).await,
         "prepare_magic_dns" => network_operations::prepare_dns(&app, value(input.args)?).await?,
-        "get_firewall_status" => network_operations::firewall_status().await?,
+        "get_firewall_status" => network_operations::firewall_status(&app).await?,
         "prepare_firewall_repair" => {
             network_operations::prepare_firewall(&app, value(input.args)?).await?
         }
@@ -259,6 +260,7 @@ async fn invoke(
             app.leave().await;
             Value::Null
         }
+        "restart_easytier_network" => app.restart_network().await?,
         "get_virtual_ip" => json!(app.virtual_ip().await),
         "get_config" => json!(modules::config_manager::UserConfig::default()),
         "get_settings" => json!({"language":"system"}),

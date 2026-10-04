@@ -57,6 +57,7 @@ const hint = (text: string) => {
 const err = (e: unknown) => (e instanceof Error ? e.message : String(e));
 type Preview = {
   token: string;
+  confirmationText: string;
   title: string;
   lines: string[];
   entries?: { playerName: string; domain: string; ip: string }[];
@@ -66,6 +67,7 @@ type Context = {
   online: () => boolean;
   busy: () => boolean;
   players: () => Player[];
+  restartNetwork?: () => Promise<void>;
   status: (text: string, error?: boolean) => void;
 };
 
@@ -131,6 +133,7 @@ export function setupNetworkPanel(ctx: Context) {
   dialog.append(header, body);
   let generation = 0,
     authorizing = false;
+  let leaveDialog: HTMLDialogElement | null = null;
   dialog.addEventListener('close', () => {
     cancelAuthorization();
     generation++;
@@ -200,7 +203,6 @@ export function setupNetworkPanel(ctx: Context) {
     const names = [
       ['settings', '高级网络'],
       ['games', '游戏快连'],
-      ['dns', 'Magic DNS'],
       ['repair', '网络修复'],
     ] as const;
     const buttons = names.map(([key, title]) => {
@@ -240,10 +242,10 @@ export function setupNetworkPanel(ctx: Context) {
     else void run(repair);
   }
   let target: HTMLElement = body;
-  const card = (title: string) => {
-    const s = make('section');
-    s.className = 'community-tool-section';
-    s.append(make('h3', title));
+  const card = (title: string, collapsed = false) => {
+    const s = make(collapsed ? 'details' : 'section');
+    s.className = 'community-tool-section' + (collapsed ? ' network-disclosure' : '');
+    s.append(make(collapsed ? 'summary' : 'h3', title));
     target.append(s);
     return s;
   };
@@ -285,7 +287,10 @@ export function setupNetworkPanel(ctx: Context) {
     grid.append(listener.label, ip.label, mtu.label, threads.label, compression.label, mode.label);
     const flags = make('div');
     flags.className = 'network-grid';
-    controls.append(flags);
+    const protocols = make('details');
+    protocols.className = 'network-disclosure';
+    protocols.append(make('summary', '打洞与传输协议'), flags);
+    controls.append(protocols);
     const checks = [
       ['multiThread', '多线程'],
       ['latencyFirst', '延迟优先'],
@@ -305,13 +310,13 @@ export function setupNetworkPanel(ctx: Context) {
     const quicPort = field('QUIC 固定 UDP 端口（启用时必填）', String(settings.quicPort), 'number');
     quicPort.input.min = '1024';
     quicPort.input.max = '65535';
-    controls.append(
+    protocols.append(
       quicPort.label,
       hint(
         'KCP 和 QUIC 沿用原版 EasyTier 参数；不是浏览器 WebRTC 加速开关。保持 AES-256-GCM 加密，TUN 和虚拟网段固定。'
       )
     );
-    const routing = card('子网与出口'),
+    const routing = card('子网与出口', true),
       exits = make('textarea'),
       proxies = make('textarea');
     exits.value = settings.exitNodes.join('\n');
@@ -331,7 +336,7 @@ export function setupNetworkPanel(ctx: Context) {
         '使用出口节点会改变本机流量路径，需对端已提供出口。子网共享会向大厅成员开放所填私有网段，请只填你希望共享的网段；不能覆盖 MCTier 网段。系统转发、提供出口节点和 SOCKS5 服务仍未开放。'
       )
     );
-    const forwards = card('本地端口转发'),
+    const forwards = card('本地端口转发', true),
       rows = make('div');
     rows.className = 'network-forward-list';
     forwards.append(
@@ -613,7 +618,7 @@ export function setupNetworkPanel(ctx: Context) {
       pane = target;
     pane.append(
       hint(
-        '只添加/撤销本次规则；不会启用、关闭或重置防火墙，不会变更服务器或路由器。14700 和 EasyTier RPC 保持回环监听。'
+        '常规修复放行本次 EasyTier 主监听：普通节点同一端口 TCP + UDP，WebSocket 节点为 TCP。备用方式可单独确认暂停整个防火墙。14700 / RPC 保持回环监听，节点地址不变。'
       )
     );
     const result = await localInvoke<{
@@ -623,17 +628,54 @@ export function setupNetworkPanel(ctx: Context) {
         zones: string[];
         defaultZone: string;
         overlayZone: string;
+        firewalldState?: string;
+        activeZones?: { name: string; interfaces: string[] }[];
         ephemeralRange: [number, number] | null;
       };
+      currentCore?: {
+        listenerPort: number;
+        configuredListenerProtocols?: string[];
+        sockets: { udp?: number[]; tcp?: number[]; error?: string };
+      } | null;
       savedRules: {
         token: string;
         backend: string;
         zone: string;
         port: number;
         protocol: string;
+        tcpListener?: boolean;
+        pause?: boolean;
       }[];
     }>('get_firewall_status');
     if (current !== generation) return;
+    if (ctx.restartNetwork) {
+      const restart = ctx.restartNetwork;
+      const reconnect = button('重新组网', () => run(async () => {
+        if (!ctx.online() || ctx.busy() || authorizing) throw new Error('请在大厅连接完成且系统操作结束后重试。');
+        if (!window.confirm('重新启动当前 EasyTier 连接？节点、虚拟 IP 和主监听端口保持不变，数据传输会短暂中断，正在进行的文件传输可能失败；语音/屏幕可能需要重新连接。')) return;
+        reconnect.disabled = true;
+        try { await restart(); }
+        finally { reconnect.disabled = !ctx.online() || ctx.busy(); }
+      }));
+      reconnect.disabled = !ctx.online() || ctx.busy();
+      pane.append(reconnect, hint('成功应用、撤销或暂停/恢复防火墙更改后，会静默重新连接 EasyTier；若自动重连失败，这里会提示并保留手动重连入口。直连仍取决于网络与对端配置。'));
+    }
+    if (result.currentCore) {
+      const snapshot = result.currentCore;
+      const note = make('details');
+      note.className = 'network-disclosure';
+      note.append(
+        make('summary', `核心端口诊断 · 配置主监听 ${snapshot.listenerPort}${snapshot.configuredListenerProtocols?.length ? ' · ' + snapshot.configuredListenerProtocols.join('/').toUpperCase() : ''}`),
+        hint(
+          snapshot.sockets.error ||
+            `当前 UDP：${snapshot.sockets.udp?.join('、') || '无'}；TCP：${snapshot.sockets.tcp?.join('、') || '无'}。仅当前快照，打洞会新建 socket，固定主端口规则不能覆盖全部。`
+        ),
+        hint(
+          'UFW 在用户规则前可能丢弃 conntrack INVALID；若扩展范围仍只走 relay，需要对照丢包日志判断，不能仅凭规则存在宣布 P2P 成功。'
+        )
+      );
+      pane.append(note);
+    }
     const options: [string, string][] = [];
     if (result.tools.ufw) options.push(['ufw', 'ufw']);
     if (result.tools.firewalld) options.push(['firewalld', 'firewalld']);
@@ -643,57 +685,125 @@ export function setupNetworkPanel(ctx: Context) {
           '未找到系统 ufw / firewall-cmd。若你使用其它防火墙，请手动配置，本功能不会安装或切换它。'
         )
       );
-    const backend = select('选择你正在使用的防火墙', options[0]?.[0] || '', options),
+    const backend = select(
+        '使用的防火墙',
+        options.length === 1 ? options[0][0] : '',
+        options.length > 1 ? [['', '请选择实际使用的防火墙'], ...options] : options
+      ),
       zone = select(
         'firewalld 入站所属区域',
         result.tools.defaultZone,
         result.tools.zones.map((z) => [z, z])
       );
-    const dynamic = checkbox('额外放行系统动态 UDP 范围（可选，影响其它程序）', false);
+    const dynamic = checkbox('额外放行系统动态 UDP / TCP 范围（可选，影响其它程序）', false);
     zone.label.hidden = backend.input.value !== 'firewalld';
-    backend.input.onchange = () => {
-      zone.label.hidden = backend.input.value !== 'firewalld';
+    const backendInfo = make('div');
+    backendInfo.className = 'firewall-backend-info';
+    const refreshBackend = () => {
+      const firewalld = backend.input.value === 'firewalld';
+      zone.label.hidden = !firewalld;
+      backendInfo.hidden = !firewalld;
+      preview.disabled =
+        !backend.input.value ||
+        (firewalld &&
+          (result.tools.firewalldState === 'not-running' ||
+            !result.tools.overlayZone ||
+            !zone.input.value));
     };
-    pane.append(
-      backend.label,
-      zone.label,
+    backend.input.onchange = refreshBackend;
+    zone.input.onchange = refreshBackend;
+    const selection = card('选择后端与区域');
+    selection.className += ' firewall-selection';
+    selection.append(backend.label, zone.label);
+    pane.append(backendInfo);
+    const punching = make('details');
+    punching.className = 'network-disclosure';
+    punching.append(
+      make('summary', '可选：扩展 UDP / TCP 打洞范围'),
       dynamic.label,
       hint(
-        `动态范围：${result.tools.ephemeralRange?.join('–') || '无法读取'}。普通 UDP 会话通常依靠状态跟踪；对称 NAT/严格防火墙可尝试此项，范围内其它程序也可能接收入站 UDP。它不能保证打洞成功，不能修复 NAT、运营商或浏览器信令问题。`
+        `动态范围（EasyTier 打洞会另开随机端口，主监听端口放行并不足够）：${result.tools.ephemeralRange?.join('–') || '无法读取'}。普通 UDP 会话通常依靠状态跟踪；对称 NAT/严格防火墙可尝试此项，同时放行 TCP 打洞启用时的动态 TCP 入站；范围内其它程序也可能接收入站流量。它不能保证打洞成功，不能修复 NAT、运营商或浏览器信令问题。`
       )
     );
-    const preview = button('预览本次网络修复', () =>
+    const outgoing = checkbox('额外放行 UFW 出站（本机限制出站时使用）', false);
+    outgoing.input.disabled = backend.input.value !== 'ufw';
+    const oldBackendChange = backend.input.onchange;
+    backend.input.onchange = event => {
+      oldBackendChange?.call(backend.input, event);
+      outgoing.input.disabled = backend.input.value !== 'ufw';
+      if (outgoing.input.disabled) outgoing.input.checked = false;
+    };
+    punching.append(outgoing.label, hint('出站规则限定本地源端口与虚拟网段，对端打洞目标端口由 NAT 决定。它仍影响匹配端口的其它程序。firewalld 出站策略暂不自动修改。'));
+    const preview = button('预览本次网络修复' , () =>
       run(() =>
         prepare('prepare_firewall_repair', {
           backend: backend.input.value,
           zone: backend.input.value === 'firewalld' ? zone.input.value : '',
           ephemeralUdp: dynamic.input.checked,
+          allowOutgoing: outgoing.input.checked,
         })
       )
     );
-    preview.disabled = !options.length;
-    pane.append(preview);
-    if (result.tools.firewalld)
-      pane.append(
+    pane.append(punching, preview);
+    refreshBackend();
+    if (result.tools.firewalld) {
+      backendInfo.append(
+        make(
+          'strong',
+          `firewalld：${result.tools.firewalldState === 'running' ? '正在运行' : result.tools.firewalldState === 'not-running' ? '尚未运行' : '状态无法确认'}`
+        )
+      );
+      for (const active of result.tools.activeZones || [])
+        backendInfo.append(
+          hint(
+            `${active.name} · ${active.interfaces.length ? active.interfaces.join('、') : '无接口绑定（可能由来源规则匹配）'}`
+          )
+        );
+      backendInfo.append(
         hint(
           `请选择物理入站接口实际使用的区域；虚拟接口区域：${result.tools.overlayZone || '未能确定，不能申请修复'}。虚拟规则限定源虚拟网段和目标虚拟 IP；此版不会调整接口区域，复杂多区域配置需手动核对。firewalld 规则 1 小时后自动失效。`
         )
       );
-    pane.append(make('h3', '已记录规则 / 撤销'));
+    }
+    const pausePanel = make('details');
+    pausePanel.className = 'network-disclosure firewall-danger';
+    const pause = button('预览暂停整个防火墙', () =>
+      run(() =>
+        prepare('prepare_firewall_repair', {
+          backend: backend.input.value,
+          zone: '',
+          ephemeralUdp: false,
+          pause: true,
+        })
+      )
+    );
+    pausePanel.append(
+      make('summary', '备用方式：暂停防火墙'),
+      hint(
+        '此操作影响整个系统，不能按程序限定。需输入“我确认暂停整个防火墙”并由你完成系统授权。ufw 的禁用会保留到恢复；firewalld 仅停止服务，可能丢失其它临时规则。退出大厅时可选择恢复。'
+      ),
+      pause
+    );
+    pause.disabled = !backend.input.value;
+    backend.input.onchange = () => {
+      refreshBackend();
+      pause.disabled = !backend.input.value;
+    };
+    pane.append(pausePanel, make('h3', '已记录更改 / 撤销'));
     for (const p of result.savedRules) {
       const row = make('div');
       row.className = 'community-row';
       row.append(
-        hint(`${p.backend}${p.zone ? ' · ' + p.zone : ''} · ${p.port}/${p.protocol}`),
-        button('预览撤销本次规则', () =>
-          run(() =>
-            prepare('prepare_firewall_repair', {
-              backend: p.backend,
-              zone: p.zone,
-              ephemeralUdp: false,
-              removeToken: p.token,
-            })
-          )
+        hint(
+          p.pause
+            ? `${p.backend} · 已申请暂停（以系统实际状态为准）`
+            : `${p.backend}${p.zone ? ' · ' + p.zone : ''} · ${p.port}/${p.tcpListener ? 'udp+tcp' : p.protocol}`
+        ),
+        button(p.pause ? '恢复防火墙' : '撤销本次更改', () =>
+          run(async () => {
+            await undoFirewall(p);
+            open('repair');
+          })
         )
       );
       pane.append(row);
@@ -704,6 +814,109 @@ export function setupNetworkPanel(ctx: Context) {
           '没有本应用记录的规则。ufw 规则持久保存，退出后请在这里手动撤销；未成功授权的记录也可安全清理。'
         )
       );
+  }
+  async function undoFirewall(plan: { token: string; backend: string; zone: string }, reconnect = true) {
+    if (authorizing) throw new Error('已有系统操作进行中，请先完成或取消。');
+    const preview = await localInvoke<Preview>('prepare_firewall_repair', {
+      backend: plan.backend,
+      zone: plan.zone,
+      removeToken: plan.token,
+      ephemeralUdp: false,
+      restartNetwork: reconnect,
+    });
+    authorizing = true;
+    try {
+      const result = await localInvoke<{ report: string[] }>('apply_network_operation', {
+        token: preview.token,
+        confirmationText: '',
+      });
+      ctx.status(result.report.join('；'));
+    } finally {
+      authorizing = false;
+    }
+  }
+  async function beforeLeave(): Promise<boolean> {
+    if (authorizing) {
+      ctx.status('请先完成或取消正在进行的系统操作，再退出大厅。', true);
+      return false;
+    }
+    let plans: { token: string; backend: string; zone: string; pause?: boolean }[];
+    try {
+      plans = (await localInvoke<{ savedRules: typeof plans }>('get_firewall_status')).savedRules;
+    } catch (e) {
+      ctx.status(`防火墙更改检查失败：${err(e)}。请在网络面板检查残留更改。`, true);
+      return true;
+    }
+    if (!plans.length) return true;
+    if (dialog.open) dialog.close();
+    return new Promise<boolean>((resolve) => {
+      const question = make('dialog');
+      leaveDialog = question;
+      question.className = 'community-dialog';
+      const head = make('header');
+      head.className = 'community-header';
+      head.append(make('h2', '是否撤销防火墙更改？'));
+      const content = make('div');
+      content.className = 'community-body';
+      content.append(
+        hint(
+          `本应用记录了 ${plans.length} 组更改（含之前留下的）。撤销仅处理本应用规则或恢复暂停前的运行状态，系统认证仍由你完成。`
+        )
+      );
+      for (const p of plans)
+        content.append(hint(`${p.backend} · ${p.pause ? '恢复暂停前运行状态' : '移除本应用规则'}`));
+      const output = make('p');
+      output.setAttribute('role', 'status');
+      let closed = false,
+        finished = false;
+      const finish = (value: boolean) => {
+        if (finished) return;
+        finished = true;
+        resolve(value);
+        question.close();
+      };
+      const revert = button(
+        '撤销更改并退出',
+        () =>
+          void (async () => {
+            revert.disabled = true;
+            keep.disabled = true;
+            output.textContent = '请处理系统认证窗口…';
+            try {
+              for (const p of plans) {
+                if (closed) return;
+                await undoFirewall(p, false);
+              }
+              if (!closed) finish(true);
+            } catch (e) {
+              output.textContent = err(e);
+              ctx.status(err(e), true);
+            } finally {
+              revert.disabled = false;
+              keep.disabled = false;
+            }
+          })()
+      );
+      const keep = button('保留更改并退出', () => finish(true));
+      const cancel = button('取消退出', () => question.close());
+      const actions = make('div');
+      actions.className = 'community-tool-actions';
+      actions.append(revert, keep, cancel);
+      content.append(output, actions);
+      question.append(head, content);
+      document.body.append(question);
+      question.addEventListener('close', () => {
+        closed = true;
+        if (authorizing) cancelAuthorization();
+        if (!finished) {
+          finished = true;
+          resolve(false);
+        }
+        if (leaveDialog === question) leaveDialog = null;
+        question.remove();
+      });
+      question.showModal();
+    });
   }
   async function prepare(command: string, args: Record<string, unknown>) {
     const current = generation;
@@ -716,7 +929,7 @@ export function setupNetworkPanel(ctx: Context) {
     summary.className = 'community-tool-section';
     summary.append(
       hint(
-        '请核对以下改动。点击“确认并申请系统授权”后会出现系统认证窗口；请自行输入密码或取消。预览两分钟内有效。'
+        '第 1 步：核对下列范围与规则。第 2 步：在输入框完整输入确认文字，再申请系统授权。预览两分钟内有效；认证窗口由你自行处理。'
       )
     );
     for (const line of preview.lines) summary.append(hint(line));
@@ -732,17 +945,29 @@ export function setupNetworkPanel(ctx: Context) {
       details.append(code);
       summary.append(details);
     }
+    const confirmation = field(`第 2 步：请输入“${preview.confirmationText}”`, '');
+    confirmation.label.className = 'network-confirmation';
+    confirmation.input.autocomplete = 'off';
+    confirmation.input.spellcheck = false;
+    confirmation.input.placeholder = preview.confirmationText;
     const output = make('p');
     output.setAttribute('role', 'status');
     const apply = button('确认并申请系统授权', () =>
       run(async () => {
+        if (confirmation.input.value !== preview.confirmationText) {
+          output.textContent = '请输入完整且一致的确认文字。';
+          confirmation.input.focus();
+          return;
+        }
         authorizing = true;
+        confirmation.input.disabled = true;
         apply.disabled = true;
         cancel.textContent = '取消系统操作';
         output.textContent = '等待系统授权，请处理认证窗口…';
         try {
           const r = await localInvoke<{ report: string[] }>('apply_network_operation', {
             token: preview.token,
+            confirmationText: confirmation.input.value,
           });
           output.textContent = r.report.join('\n');
           ctx.status('系统操作已完成并复核；实际组网、解析和 P2P 仍需验证。');
@@ -756,6 +981,13 @@ export function setupNetworkPanel(ctx: Context) {
         }
       })
     );
+    apply.disabled = true;
+    confirmation.input.oninput = () => {
+      apply.disabled =
+        authorizing ||
+        confirmation.input.disabled ||
+        confirmation.input.value !== preview.confirmationText;
+    };
     const cancel = button('取消，返回网络面板', () => {
       if (authorizing) {
         cancelAuthorization();
@@ -767,11 +999,10 @@ export function setupNetworkPanel(ctx: Context) {
     const actions = make('div');
     actions.className = 'community-tool-actions';
     actions.append(apply, cancel);
-    summary.append(actions, output);
+    summary.append(confirmation.label, actions, output);
     body.append(summary);
   }
   for (const [id, title, tab] of [
-    ['magic-dns', '管理 Magic DNS', 'dns'],
     ['advanced-network', '高级网络 / 游戏快连', 'settings'],
     ['network-fix', '预览网络修复', 'repair'],
   ] as const) {
@@ -781,15 +1012,18 @@ export function setupNetworkPanel(ctx: Context) {
       const container = p.querySelector('.feature-card') ?? p;
       const b = button(title, () => open(tab));
       b.className = 'feature-action';
+      b.title = container.querySelector('p')?.textContent || title;
       container.append(b);
     }
   }
   document
     .querySelector('.sidebar-locks')
-    ?.append(button('网络设置 / 游戏 / Magic DNS', () => open('games')));
+    ?.append(button('网络设置 / 游戏', () => open('games')));
   return {
     settings: () => structuredClone(settings),
+    beforeLeave,
     reset() {
+      if (leaveDialog?.open) leaveDialog.close();
       if (dialog.open) dialog.close();
     },
   };

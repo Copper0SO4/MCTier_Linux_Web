@@ -26,9 +26,11 @@ pub struct Helper {
 impl Helper {
     pub async fn start(switch: &str, cancel: &mut watch::Receiver<u64>) -> Result<Self, String> {
         let mut command = Command::new("/usr/bin/pkexec");
-        command
-            .arg(std::env::current_exe().map_err(|e| e.to_string())?)
-            .arg(switch);
+        let executable = std::env::current_exe().map_err(|e| e.to_string())?;
+        if !executable.is_file() {
+            return Err("服务可执行文件已更新，请先重启服务再申请系统授权".into());
+        }
+        command.arg(executable).arg(switch);
         Self::spawn(command, cancel, Duration::from_secs(180)).await
     }
     async fn spawn(

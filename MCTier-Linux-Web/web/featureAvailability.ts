@@ -89,12 +89,6 @@ export const FEATURES = [
     reason: '常用大厅、最近记录和原版公开广场查询已接入；广场缺少节点时明确禁止加入。',
   },
   {
-    id: 'magic-dns',
-    name: 'Magic DNS',
-    state: 'experimental',
-    reason: '原版身份域名映射已接入；预览确认后通过 pkexec 更新/清理 hosts。成员变更需手动更新，实际解析待验收。',
-  },
-  {
     id: 'advanced-network',
     name: '高级网络 / 游戏增强',
     state: 'experimental',
@@ -104,7 +98,7 @@ export const FEATURES = [
     id: 'network-fix',
     name: '一键修复网络',
     state: 'experimental',
-    reason: '按实际 EasyTier 监听端口预览 ufw/firewalld 规则，确认后一次性 pkexec 授权并复核，可撤销。不能保证 NAT/P2P；系统授权与真实链路待验收。',
+    reason: '按实际 TCP/UDP 监听预览 ufw/firewalld 规则，确认授权并复核后自动重连 EasyTier。用户已实测 UFW 放行后重连可 P2P；其它 NAT/对端及 firewalld 仍需验收。',
   },
   {
     id: 'desktop-integration',

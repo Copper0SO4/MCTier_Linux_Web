@@ -37,9 +37,36 @@ enum Action {
     Firewall {
         plan: firewall::Plan,
         remove: bool,
+        restart_network: bool,
     },
 }
+impl Action {
+    fn confirmation_text(&self) -> &'static str {
+        match self {
+            Action::Dns {
+                identities: Some(_),
+                ..
+            } => "我确认更新本机域名映射",
+            Action::Dns {
+                identities: None, ..
+            } => "我确认清理本机域名映射",
+            Action::Firewall {
+                plan,
+                remove: false,
+                ..
+            } if plan.pause => "我确认暂停整个防火墙",
+            Action::Firewall { remove: false, .. } => "我确认修改本机防火墙",
+            Action::Firewall { remove: true, .. } => "",
+        }
+    }
+}
 impl Operations {
+    pub fn restart_guard(&self) -> Result<tokio::sync::SemaphorePermit<'_>, String> {
+        self.gate
+            .try_acquire()
+            .map_err(|_| "系统操作仍在进行，请完成后再重新组网".into())
+    }
+
     pub async fn cancel(&self) {
         self.cancellation.send_modify(|n| *n = n.wrapping_add(1));
         self.pending.lock().await.take();
@@ -207,7 +234,7 @@ pub async fn prepare_dns(app: &App, args: DnsArgs) -> Result<Value, String> {
         });
     }
     let token = uuid::Uuid::new_v4().simple().to_string();
-    let preview = json!({"token":token,"title":if args.remove{"清理 Linux Web 域名"}else{"更新 Magic DNS"},"lines":["仅修改 /etc/hosts 中 LinuxWeb 标记段，保留其它记录。","成员变更后需手动更新；退出大厅不会自动弹出授权或清理，请及时撤销。"],"entries":entries});
+    let preview = json!({"token":token,"title":if args.remove{"清理 Linux Web 域名"}else{"更新 Magic DNS"},"lines":["仅修改 /etc/hosts 中 LinuxWeb 标记段，保留其它记录。","成员变更后需手动更新；退出大厅不会自动弹出授权或清理，请及时撤销。"],"entries":entries,"confirmationText": if args.remove { "我确认清理本机域名映射" } else { "我确认更新本机域名映射" }});
     *app.network_operations.pending.lock().await = Some(Pending {
         token,
         created: Instant::now(),
@@ -227,8 +254,15 @@ pub struct FirewallArgs {
     #[serde(default)]
     pub ephemeral_udp: bool,
     #[serde(default)]
+    pub allow_outgoing: bool,
+    #[serde(default)]
     pub remove_token: Option<String>,
+    #[serde(default)]
+    pub pause: bool,
+    #[serde(default = "default_true")]
+    pub restart_network: bool,
 }
+fn default_true() -> bool { true }
 fn ledger_path() -> Result<std::path::PathBuf, String> {
     Ok(crate::modules::app_paths::data_root()
         .map_err(|e| e.to_string())?
@@ -305,8 +339,90 @@ fn write_ledger_at(path: &std::path::Path, plans: &[firewall::Plan]) -> Result<(
     }
     result
 }
-pub async fn firewall_status() -> Result<Value, String> {
-    Ok(json!({"tools":firewall::detect().await,"savedRules":read_ledger()?}))
+pub async fn firewall_status(app: &App) -> Result<Value, String> {
+    let socket_status = {
+        let runtime = app.runtime.lock().await;
+        runtime.session.as_ref().map(
+            |s| json!({
+                "listenerPort":s.listener_port,
+                "configuredListenerProtocols":if crate::runtime::uses_websocket_listener(&s.input.server_node) {vec!["tcp"]} else {vec!["udp", "tcp"]},
+                "sockets":firewall_sockets(s.child.id())
+            }),
+        )
+    };
+    Ok(
+        json!({"tools":firewall::detect().await,"savedRules":read_ledger()?,"currentCore":socket_status}),
+    )
+}
+fn socket_ports(content: &str, owned: &BTreeSet<u64>) -> Vec<u16> {
+    let mut result = BTreeSet::new();
+    for row in content.lines().skip(1) {
+        let cols = row.split_whitespace().collect::<Vec<_>>();
+        if cols.len() < 10
+            || !cols[9]
+                .parse::<u64>()
+                .ok()
+                .is_some_and(|inode| owned.contains(&inode))
+        {
+            continue;
+        }
+        if let Some(port) = cols[1]
+            .rsplit(':')
+            .next()
+            .and_then(|p| u16::from_str_radix(p, 16).ok())
+        {
+            if port != 0 {
+                result.insert(port);
+            }
+        }
+    }
+    result.into_iter().collect()
+}
+fn firewall_sockets(pid: Option<u32>) -> Value {
+    use std::io::Read;
+    let result = (|| -> Result<Value, String> {
+        let pid = pid.ok_or("核心进程已退出")?;
+        let mut owned = BTreeSet::new();
+        for entry in std::fs::read_dir(format!("/proc/{pid}/fd"))
+            .map_err(|_| "无法读取核心 socket（capability 可能限制访问）")?
+        {
+            let entry = entry.map_err(|_| "核心 socket 列表变化，请刷新")?;
+            if let Ok(link) = std::fs::read_link(entry.path()) {
+                if let Some(inode) = link
+                    .to_str()
+                    .and_then(|s| s.strip_prefix("socket:["))
+                    .and_then(|s| s.strip_suffix(']'))
+                    .and_then(|s| s.parse::<u64>().ok())
+                {
+                    owned.insert(inode);
+                }
+            }
+        }
+        if owned.is_empty() {
+            return Err("没有可读的核心 socket；端口可能随打洞变化，请刷新".into());
+        }
+        let mut udp = BTreeSet::new();
+        let mut tcp = BTreeSet::new();
+        for table in ["udp", "udp6", "tcp", "tcp6"] {
+            let mut content = String::new();
+            std::fs::File::open(format!("/proc/{pid}/net/{table}"))
+                .map_err(|_| "无法读取核心 socket 状态")?
+                .take(262145)
+                .read_to_string(&mut content)
+                .map_err(|_| "socket 表编码无效")?;
+            if content.len() > 262144 {
+                return Err("socket 表超出诊断上限".into());
+            }
+            let ports = socket_ports(&content, &owned);
+            if table.starts_with("udp") {
+                udp.extend(ports);
+            } else {
+                tcp.extend(ports);
+            }
+        }
+        Ok(json!({"udp":udp,"tcp":tcp}))
+    })();
+    result.unwrap_or_else(|error| json!({"error":error}))
 }
 pub async fn prepare_firewall(app: &App, args: FirewallArgs) -> Result<Value, String> {
     let _guard = app
@@ -325,6 +441,28 @@ pub async fn prepare_firewall(app: &App, args: FirewallArgs) -> Result<Value, St
             .into_iter()
             .find(|p| p.token == token)
             .ok_or("没有本次规则记录，不能撤销")?
+    } else if args.pause {
+        if read_ledger()?
+            .iter()
+            .any(|p| p.pause && p.backend == args.backend)
+        {
+            return Err("请先恢复该后端之前的暂停操作".into());
+        }
+        firewall::Plan {
+            backend: args.backend,
+            zone: String::new(),
+            port: 0,
+            protocol: String::new(),
+            tcp_listener: false,
+            overlay_zone: String::new(),
+            quic_port: None,
+            virtual_ip: String::new(),
+            token: uuid::Uuid::new_v4().simple().to_string(),
+            ephemeral_udp: None,
+            ephemeral_tcp: None,
+            pause: true,
+            allow_outgoing: false,
+        }
     } else {
         let rt = app.runtime.lock().await;
         let s = rt
@@ -343,14 +481,13 @@ pub async fn prepare_firewall(app: &App, args: FirewallArgs) -> Result<Value, St
                 .unwrap_or("")
                 .into(),
             port: s.listener_port,
-            protocol: if s.input.server_node.starts_with("ws://")
-                || s.input.server_node.starts_with("wss://")
-            {
+            protocol: if crate::runtime::uses_websocket_listener(&s.input.server_node) {
                 "tcp"
             } else {
                 "udp"
             }
             .into(),
+            tcp_listener: !crate::runtime::uses_websocket_listener(&s.input.server_node),
             quic_port: s
                 .input
                 .network_settings
@@ -358,6 +495,15 @@ pub async fn prepare_firewall(app: &App, args: FirewallArgs) -> Result<Value, St
                 .then_some(s.input.network_settings.quic_port),
             virtual_ip: s.virtual_ip.clone(),
             token: uuid::Uuid::new_v4().simple().to_string(),
+            pause: false,
+            allow_outgoing: args.allow_outgoing,
+            ephemeral_tcp: if args.ephemeral_udp
+                && (s.input.network_settings.tcp_hole_punching || args.allow_outgoing)
+            {
+                Some(firewall::ephemeral_range().ok_or("不能读取安全的动态 TCP 范围")?)
+            } else {
+                None
+            },
             ephemeral_udp: if args.ephemeral_udp {
                 Some(firewall::ephemeral_range().ok_or("不能读取安全的动态 UDP 范围")?)
             } else {
@@ -367,18 +513,23 @@ pub async fn prepare_firewall(app: &App, args: FirewallArgs) -> Result<Value, St
     };
     plan.validate()?;
     let token = uuid::Uuid::new_v4().simple().to_string();
-    let preview = json!({"token":token,"title":if remove{"撤销本次防火墙规则"}else{"修复本次 EasyTier 防火墙"},"lines":plan.descriptions(),"commands":plan.commands(remove)});
+    let preview = json!({"token":token,"title":if remove{"撤销本次防火墙规则"}else{"修复本次 EasyTier 防火墙"},"lines":plan.descriptions(),"commands":plan.commands(remove),"confirmationText":if remove { "" } else if plan.pause { "我确认暂停整个防火墙" } else { "我确认修改本机防火墙" }});
     *app.network_operations.pending.lock().await = Some(Pending {
         token,
         created: Instant::now(),
-        action: Action::Firewall { plan, remove },
+        action: Action::Firewall {
+            plan,
+            remove,
+            restart_network: args.restart_network,
+        },
     });
     Ok(preview)
 }
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct Confirm {
     pub token: String,
+    pub confirmation_text: String,
 }
 pub async fn apply(app: &App, args: Confirm) -> Result<Value, String> {
     let _guard = app
@@ -391,6 +542,12 @@ pub async fn apply(app: &App, args: Confirm) -> Result<Value, String> {
     let p = lock.as_ref().ok_or("请先预览操作")?;
     if p.token != args.token || p.created.elapsed() > Duration::from_secs(120) {
         return Err("预览失效，请重新检查和确认".into());
+    }
+    if args.confirmation_text != p.action.confirmation_text() {
+        return Err(format!(
+            "请完整输入“{}”后再申请系统授权",
+            p.action.confirmation_text()
+        ));
     }
     let p = lock.take().unwrap();
     drop(lock);
@@ -427,8 +584,8 @@ pub async fn apply(app: &App, args: Confirm) -> Result<Value, String> {
             }
             Ok(json!({"report":["hosts 标记段已写入并复核；域名实际解析和游戏访问仍需测试。"]}))
         }
-        Action::Firewall { plan, remove } => {
-            if !remove {
+        Action::Firewall { plan, remove, restart_network } => {
+            if !remove && !plan.pause {
                 let rt = app.runtime.lock().await;
                 let s = rt.session.as_ref().ok_or("大厅已经退出，请重新预览")?;
                 if s.listener_port != plan.port || s.virtual_ip != plan.virtual_ip {
@@ -445,17 +602,34 @@ pub async fn apply(app: &App, args: Confirm) -> Result<Value, String> {
                 write_ledger(&plans)?;
             }
             let helper = firewall::authorize(&mut cancel).await?;
-            if !remove {
+            if !remove && !plan.pause {
                 let rt = app.runtime.lock().await;
                 let session = rt.session.as_ref().ok_or("认证期间已退出大厅")?;
                 if session.listener_port != plan.port || session.virtual_ip != plan.virtual_ip {
                     return Err("认证期间 EasyTier 实例已变化，请重新预览".into());
                 }
             }
-            let report = firewall::apply(helper, plan.clone(), remove, &mut cancel).await?;
+            let mut report = firewall::apply(helper, plan.clone(), remove, &mut cancel).await?;
             if remove {
                 plans.retain(|p| p.token != plan.token);
                 write_ledger(&plans)?;
+            }
+
+            // A firewall update may unblock the existing EasyTier peer, but the
+            // core needs a fresh transport negotiation to use the new policy.
+            // Release the system-operation gate before restart_network acquires it.
+            drop(_guard);
+            let has_session = app.runtime.lock().await.session.is_some();
+            if restart_network && has_session {
+                match app.restart_network().await {
+                    Ok(_) => report.push(
+                        "EasyTier 已在后台静默重新连接；请稍候检查对端路由，直连仍取决于网络与对端配置。"
+                            .into(),
+                    ),
+                    Err(error) => report.push(format!(
+                        "防火墙已变更，但 EasyTier 自动重连失败：{error}。可在网络面板手动重新组网。"
+                    )),
+                }
             }
             Ok(json!({"report":report}))
         }
@@ -489,6 +663,46 @@ pub async fn scan_mc(app: &App, args: Scan) -> Result<Value, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn typed_confirmation_is_required_before_consuming_preview_or_authorizing() {
+        let app = App::new(std::path::PathBuf::from("/missing-test-core"));
+        *app.network_operations.pending.lock().await = Some(Pending {
+            token: "preview".into(),
+            created: Instant::now(),
+            action: Action::Dns {
+                old: "invalid-old-hosts-snapshot".into(),
+                new: String::new(),
+                identities: None,
+            },
+        });
+        let error = apply(
+            &app,
+            Confirm {
+                token: "preview".into(),
+                confirmation_text: "我确认".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("我确认清理本机域名映射"));
+        assert!(app.network_operations.pending.lock().await.is_some());
+        let error = apply(
+            &app,
+            Confirm {
+                token: "preview".into(),
+                confirmation_text: "我确认清理本机域名映射".into(),
+            },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("hosts 已改变"));
+        assert!(app.network_operations.pending.lock().await.is_none());
+    }
+    #[test]
+    fn socket_diagnostics_are_filtered_by_owned_inode_and_return_only_ports() {
+        let input = "header\n0: 0100007F:9DD4 00000000:0000 07 0:0 00:0 0 1000 0 123\n1: 0100007F:FFFF 00000000:0000 07 0:0 00:0 0 1000 0 456\n";
+        assert_eq!(socket_ports(input, &BTreeSet::from([123])), vec![40404]);
+    }
     #[test]
     fn ledger_atomic_private_and_symlink_safe() {
         use std::os::unix::fs::{symlink, PermissionsExt};

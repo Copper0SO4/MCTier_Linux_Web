@@ -219,7 +219,7 @@ impl App {
             .local_addr()
             .map_err(|_| "不能读取 RPC 端口")?
             .port();
-        let ws = input.server_node.starts_with("ws://") || input.server_node.starts_with("wss://");
+        let ws = uses_websocket_listener(&input.server_node);
         let quic_reservation = if input.network_settings.quic {
             Some(
                 std::net::UdpSocket::bind(("0.0.0.0", input.network_settings.quic_port))
@@ -228,29 +228,12 @@ impl App {
         } else {
             None
         };
-        let udp_listener = if ws {
-            None
-        } else {
-            Some(
-                std::net::UdpSocket::bind(("0.0.0.0", input.network_settings.listener_port))
-                    .map_err(|_| "EasyTier UDP 监听端口已占用")?,
-            )
-        };
-        let tcp_listener = if ws {
-            Some(
-                std::net::TcpListener::bind(("0.0.0.0", input.network_settings.listener_port))
-                    .map_err(|_| "EasyTier WebSocket TCP 监听端口已占用")?,
-            )
-        } else {
-            None
-        };
-        let listener_port = if let Some(s) = udp_listener.as_ref() {
-            s.local_addr()
-        } else {
-            tcp_listener.as_ref().unwrap().local_addr()
-        }
-        .map_err(|_| "不能读取 EasyTier 端口")?
-        .port();
+        let (tcp_listener, udp_listener) =
+            reserve_listeners(ws, input.network_settings.listener_port)?;
+        let listener_port = tcp_listener
+            .local_addr()
+            .map_err(|_| "不能读取 EasyTier 端口")?
+            .port();
         let dir = crate::modules::app_paths::data_root()
             .map_err(|_| "不能定位用户数据目录")?
             .join("linux-web")
@@ -282,8 +265,6 @@ impl App {
                 return Err("无法以当前用户启动已校验的 EasyTier 核心".into());
             }
         };
-        let stdout = child.stdout.take().unwrap();
-        let stderr = child.stderr.take().unwrap();
         let status = runtime.status.clone();
         *status.lock().await = NetworkStatus {
             state: "starting".into(),
@@ -291,38 +272,7 @@ impl App {
             pid: child.id(),
             failure: None,
         };
-        // Read bounded lines without recording arguments, passwords or tokens.
-        let mut readers = Vec::new();
-        for stream in [
-            Box::pin(stdout) as std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
-            Box::pin(stderr),
-        ] {
-            let status = status.clone();
-            readers.push(tokio::spawn(async move {
-                let mut reader = BufReader::new(stream);
-                let mut line = Vec::new();
-                loop {
-                    line.clear();
-                    use tokio::io::AsyncReadExt;
-                    let mut bounded = (&mut reader).take(16 * 1024);
-                    match bounded.read_until(b'\n', &mut line).await {
-                        Ok(0) | Err(_) => break,
-                        Ok(_) => {
-                            let text = String::from_utf8_lossy(&line).to_ascii_lowercase();
-                            if text.contains("tun device error")
-                                || text.contains("operation not permitted")
-                                || text.contains("failed to create tun")
-                            {
-                                status.lock().await.failure = Some(
-                                    "EasyTier 报告虚拟网卡创建失败，请核对 TUN 设备及 capability"
-                                        .into(),
-                                );
-                            }
-                        }
-                    }
-                }
-            }));
-        }
+        let readers = core_readers(&mut child, status.clone());
         runtime.session = Some(Session {
             input: input.clone(),
             player_id: player_id.clone(),
@@ -368,6 +318,70 @@ impl App {
         )
     }
 
+    /// Restart only the owned core. Keep the room identity, chat and firewall port stable.
+    pub async fn restart_network(&self) -> Result<Value, String> {
+        let _guard = self.network_operations.restart_guard()?;
+        self.network_operations.cancel().await;
+        let mut runtime = self.runtime.lock().await;
+        let status = runtime.status.clone();
+        let session = runtime.session.as_mut().ok_or("请先加入大厅")?;
+        verify_core(&self.core).await?;
+        let (config, _) = lobby_address::configuration(
+            Some(&session.input.network_settings.config()?),
+            None,
+            &session.input.name,
+            &session.player_id,
+            session.input.address_attempt,
+        )?;
+        if config.ipv4.as_deref().map(|ip| ip.trim_end_matches("/24"))
+            != Some(session.virtual_ip.as_str())
+        {
+            return Err("虚拟地址与当前会话不一致，拒绝重新组网".into());
+        }
+        let mut cmd = build_command(
+            &self.core,
+            &session.config_dir,
+            &session.input,
+            &session.player_id,
+            session.rpc_port,
+            session.listener_port,
+            &config,
+        );
+        cmd.kill_on_drop(true)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        session
+            .child
+            .kill()
+            .await
+            .map_err(|_| "不能停止当前 EasyTier，未启动第二个实例")?;
+        session
+            .child
+            .wait()
+            .await
+            .map_err(|_| "不能确认当前 EasyTier 已退出")?;
+        for reader in session.readers.drain(..) {
+            reader.abort();
+        }
+        let result = match reserve_listeners(
+            uses_websocket_listener(&session.input.server_node),
+            session.listener_port,
+        ) {
+            Ok(reservations) => {
+                drop(reservations);
+                launch_replacement(session, status, cmd).await
+            }
+            Err(error) => Err(error),
+        };
+        if result.is_err() {
+            self.stop_runtime(&mut runtime).await;
+        } else {
+            runtime.last_lease = Instant::now();
+        }
+        result
+    }
+
     pub async fn virtual_ip(&self) -> Option<String> {
         self.runtime
             .lock()
@@ -404,6 +418,86 @@ impl App {
         }
         Ok(json!({"peers":String::from_utf8_lossy(&output.stdout)}))
     }
+}
+
+async fn launch_replacement(
+    session: &mut Session,
+    status: Arc<Mutex<NetworkStatus>>,
+    mut cmd: Command,
+) -> Result<Value, String> {
+    session.child = cmd
+        .spawn()
+        .map_err(|_| "重新启动 EasyTier 失败".to_string())?;
+    *status.lock().await = NetworkStatus {
+        state: "starting".into(),
+        virtual_ip: None,
+        pid: session.child.id(),
+        failure: None,
+    };
+    session.readers = core_readers(&mut session.child, status.clone());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if session
+            .child
+            .try_wait()
+            .map_err(|_| "不能检查 EasyTier 进程")?
+            .is_some()
+        {
+            return Err("重新启动的 EasyTier 已退出".to_string());
+        }
+        if let Some(error) = status.lock().await.failure.clone() {
+            return Err(error);
+        }
+        if std::net::TcpListener::bind((session.virtual_ip.as_str(), 0)).is_ok() {
+            break;
+        }
+        if Instant::now() >= deadline {
+            return Err("重新组网等待虚拟接口超时".to_string());
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    let mut state = status.lock().await;
+    state.state = "interface-ready".into();
+    state.virtual_ip = Some(session.virtual_ip.clone());
+    Ok(json!({"virtualIp":session.virtual_ip,"listenerPort":session.listener_port}))
+}
+
+fn core_readers(child: &mut Child, status: Arc<Mutex<NetworkStatus>>) -> Vec<JoinHandle<()>> {
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    // Read bounded lines without recording arguments, passwords or tokens.
+    let mut readers = Vec::new();
+    for stream in [
+        Box::pin(stdout) as std::pin::Pin<Box<dyn tokio::io::AsyncRead + Send>>,
+        Box::pin(stderr),
+    ] {
+        let status = status.clone();
+        readers.push(tokio::spawn(async move {
+            let mut reader = BufReader::new(stream);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                use tokio::io::AsyncReadExt;
+                let mut bounded = (&mut reader).take(16 * 1024);
+                match bounded.read_until(b'\n', &mut line).await {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {
+                        let text = String::from_utf8_lossy(&line).to_ascii_lowercase();
+                        if text.contains("tun device error")
+                            || text.contains("operation not permitted")
+                            || text.contains("failed to create tun")
+                        {
+                            status.lock().await.failure = Some(
+                                "EasyTier 报告虚拟网卡创建失败，请核对 TUN 设备及 capability"
+                                    .into(),
+                            );
+                        }
+                    }
+                }
+            }
+        }));
+    }
+    readers
 }
 
 pub fn core_path() -> PathBuf {
@@ -519,6 +613,35 @@ pub fn defaults() -> Value {
     json!({"serverNode":config.private_easytier_server,"signalingServer":config.private_signaling_server,"version":"3.8.0"})
 }
 
+pub(crate) fn uses_websocket_listener(server_node: &str) -> bool {
+    server_node.starts_with("ws://") || server_node.starts_with("wss://")
+}
+
+// Keep the stable TCP direct-connect path and UDP listener on the same port.
+// Retry only automatic allocation; never silently replace an explicit port.
+fn reserve_listeners(
+    websocket: bool,
+    port: u16,
+) -> Result<(std::net::TcpListener, Option<std::net::UdpSocket>), String> {
+    for _ in 0..32 {
+        let tcp = std::net::TcpListener::bind(("0.0.0.0", port))
+            .map_err(|_| "EasyTier TCP 监听端口无法绑定，请检查端口占用")?;
+        if websocket {
+            return Ok((tcp, None));
+        }
+        let allocated = tcp
+            .local_addr()
+            .map_err(|_| "不能读取 EasyTier TCP 端口")?
+            .port();
+        match std::net::UdpSocket::bind(("0.0.0.0", allocated)) {
+            Ok(udp) => return Ok((tcp, Some(udp))),
+            Err(error) if port == 0 && error.kind() == std::io::ErrorKind::AddrInUse => {}
+            Err(_) => return Err("EasyTier UDP 监听端口无法绑定，请检查端口占用".into()),
+        }
+    }
+    Err("不能分配同时可用的 EasyTier TCP/UDP 监听端口".into())
+}
+
 pub fn build_command(
     core: &std::path::Path,
     dir: &std::path::Path,
@@ -536,11 +659,14 @@ pub fn build_command(
             cmd.env_remove(key);
         }
     }
-    let ws = input.server_node.starts_with("ws://") || input.server_node.starts_with("wss://");
-    let listener = if ws {
-        format!("ws://0.0.0.0:{listener}/")
+    let ws = uses_websocket_listener(&input.server_node);
+    let listeners = if ws {
+        vec![format!("ws://0.0.0.0:{listener}/")]
     } else {
-        format!("udp://0.0.0.0:{listener}")
+        vec![
+            format!("udp://0.0.0.0:{listener}"),
+            format!("tcp://0.0.0.0:{listener}"),
+        ]
     };
     cmd.args([
         "--network-name",
@@ -556,14 +682,10 @@ pub fn build_command(
         "--config-dir",
     ])
     .arg(dir)
-    .args([
-        "--rpc-portal",
-        &format!("127.0.0.1:{rpc}"),
-        "--listeners",
-        &listener,
-        "--default-protocol",
-        if ws { "ws" } else { "udp" },
-    ]);
+    .args(["--rpc-portal", &format!("127.0.0.1:{rpc}")])
+    .arg("--listeners")
+    .args(listeners)
+    .args(["--default-protocol", if ws { "ws" } else { "udp" }]);
     network_arguments::apply_advanced_config(&mut cmd, config);
     cmd
 }
@@ -582,6 +704,147 @@ mod tests {
             network_settings: Default::default(),
         }
     }
+    #[test]
+    fn reservations_require_both_protocols_and_fixed_port_conflicts_do_not_fallback() {
+        let (tcp, udp) = reserve_listeners(false, 0).unwrap();
+        let port = tcp.local_addr().unwrap().port();
+        assert_eq!(udp.as_ref().unwrap().local_addr().unwrap().port(), port);
+        assert!(reserve_listeners(false, port).unwrap_err().contains("TCP"));
+        drop(tcp);
+        // Parallel process tests can briefly retain a forked descriptor until
+        // exec closes it. Wait for TCP release while retaining the UDP conflict.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            let error = reserve_listeners(false, port).unwrap_err();
+            if error.contains("UDP") {
+                break;
+            }
+            assert!(
+                error.contains("TCP") && Instant::now() < deadline,
+                "{error}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // A failed UDP reservation must release the partially reserved TCP socket.
+        let available_tcp = loop {
+            match std::net::TcpListener::bind(("0.0.0.0", port)) {
+                Ok(tcp) => break tcp,
+                Err(error) => {
+                    assert!(Instant::now() < deadline, "{error}");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+            }
+        };
+        drop(available_tcp);
+        drop(udp);
+
+        let (ws_tcp, ws_udp) = reserve_listeners(true, 0).unwrap();
+        assert!(ws_udp.is_none());
+        assert_ne!(ws_tcp.local_addr().unwrap().port(), 0);
+    }
+
+    #[test]
+    fn ordinary_nodes_get_tcp_udp_listeners_but_websocket_keeps_its_transport() {
+        let mut input = sample_input();
+        for (node, expected) in [
+            (
+                "tcp://node.example:11010",
+                vec!["udp://0.0.0.0:31111", "tcp://0.0.0.0:31111"],
+            ),
+            (
+                "udp://node.example:11010",
+                vec!["udp://0.0.0.0:31111", "tcp://0.0.0.0:31111"],
+            ),
+            ("wss://node.example:11010/", vec!["ws://0.0.0.0:31111/"]),
+        ] {
+            input.server_node = node.into();
+            let cmd = build_command(
+                std::path::Path::new("core"),
+                std::path::Path::new("private-instance"),
+                &input,
+                &"a".repeat(64),
+                15889,
+                31111,
+                &input.network_settings.config().unwrap(),
+            );
+            let args = cmd
+                .as_std()
+                .get_args()
+                .map(|s| s.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            let start = args.iter().position(|s| s == "--listeners").unwrap() + 1;
+            let end = args.iter().position(|s| s == "--default-protocol").unwrap();
+            assert_eq!(&args[start..end], expected.as_slice());
+            assert_eq!(
+                args[args.iter().position(|s| s == "--peers").unwrap() + 1],
+                node
+            );
+            assert_eq!(
+                args[args
+                    .iter()
+                    .position(|s| s == "--encryption-algorithm")
+                    .unwrap()
+                    + 1],
+                "aes-256-gcm"
+            );
+        }
+    }
+    #[tokio::test]
+    async fn restart_requires_an_active_session_and_exclusive_operation_guard() {
+        let app = App::new(PathBuf::from("/unused-test-core"));
+        assert!(app.restart_network().await.unwrap_err().contains("先加入"));
+        let _permit = app.network_operations.restart_guard().unwrap();
+        assert!(app
+            .restart_network()
+            .await
+            .unwrap_err()
+            .contains("系统操作"));
+    }
+
+    #[tokio::test]
+    async fn replacement_exits_are_detected_without_claiming_network_success() {
+        let dir = tempfile::tempdir().unwrap();
+        let child = Command::new("/usr/bin/false")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut session = Session {
+            input: sample_input(),
+            player_id: "a".repeat(64),
+            virtual_ip: "not-an-ip".into(),
+            rpc_port: 31000,
+            listener_port: 31001,
+            child,
+            readers: vec![],
+            config_dir: dir.path().into(),
+        };
+        session.child.wait().await.unwrap();
+        let status = Arc::new(Mutex::new(NetworkStatus {
+            state: "stopped".into(),
+            virtual_ip: None,
+            pid: None,
+            failure: None,
+        }));
+        let mut cmd = Command::new("/usr/bin/false");
+        cmd.kill_on_drop(true)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let error = launch_replacement(&mut session, status.clone(), cmd)
+            .await
+            .unwrap_err();
+        assert!(error.contains("已退出"));
+        assert_ne!(status.lock().await.state, "interface-ready");
+        assert_eq!(session.listener_port, 31001);
+        assert_eq!(session.input.server_node, "tcp://node.example:11010");
+        for reader in session.readers.drain(..) {
+            reader.abort();
+        }
+        let error = launch_replacement(&mut session, status, Command::new("/does-not-exist-test"))
+            .await
+            .unwrap_err();
+        assert!(error.contains("启动 EasyTier 失败"));
+    }
+
     #[test]
     fn capabilities_require_both_effective_and_permitted_without_overgrant() {
         assert!(capabilities_present("/binary cap_net_admin,cap_net_raw=ep"));

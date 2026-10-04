@@ -11,10 +11,21 @@ export function setupShell() {
     session: 'idle' | 'connecting' | 'online' | 'orphaned' = 'idle';
   let previous: View = 'home';
   const views: View[] = ['home', 'connect', 'lobby', 'settings', 'capabilities', 'about'];
+  const scrollPositions = new Map<View, number>();
   const show = (next: View) => {
+    scrollPositions.set(view, window.scrollY);
     for (const candidate of views) element(`${candidate}-view`).hidden = candidate !== next;
     view = next;
+    element('return-room').hidden = session === 'idle' || next === returnView();
+    element('session-navigation').hidden = session === 'idle' || next === returnView();
+    element('session-navigation').textContent =
+      session === 'online'
+        ? '大厅连接保持中 · 查看其他页面不会退出大厅；可点击右上角返回大厅。'
+        : '大厅连接处理中 · 可点击右上角返回连接页面查看进度。';
+    for (const button of document.querySelectorAll<HTMLButtonElement>('[data-view]'))
+      button.setAttribute('aria-current', button.dataset.view === next ? 'page' : 'false');
     document.title = `MCTier · ${next === 'home' ? 'Linux Web' : next === 'lobby' ? '大厅' : element(`${next}-view`).getAttribute('aria-label')}`;
+    window.scrollTo({ top: scrollPositions.get(next) ?? 0, behavior: 'instant' });
     const heading = element(`${next}-view`).querySelector<HTMLElement>('h1,h2');
     if (heading) {
       heading.tabIndex = -1;
@@ -35,7 +46,7 @@ export function setupShell() {
     button.disabled = !browser.canJoin;
     button.title = browser.canJoin ? '' : browser.warning;
     button.onclick = () => {
-      if (!browser.canJoin) return;
+      if (!browser.canJoin || session !== 'idle') return;
       const create = button.dataset.connect === 'create';
       element('form-title').textContent = create ? '创建大厅' : '加入大厅';
       element('join').textContent = create ? '创建 / 连接大厅' : '加入大厅';
@@ -58,8 +69,9 @@ export function setupShell() {
       );
   element('home-link').onclick = (event) => {
     event.preventDefault();
-    show(returnView());
+    show('home');
   };
+  element('return-room').onclick = () => show(returnView());
   const setPanel = (panel: Panel) => {
     for (const candidate of ['chat', 'screen', 'diagnostics'] as const)
       element(`${candidate}-panel`).hidden = panel !== candidate;
@@ -69,6 +81,8 @@ export function setupShell() {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-panel]'))
     button.onclick = () => setPanel(button.dataset.panel as Panel);
   document.addEventListener('keydown', (event) => {
+    if (event.defaultPrevented || event.isComposing || document.querySelector('dialog[open]'))
+      return;
     if (event.key === 'Escape' && view !== 'lobby' && view !== 'home') {
       show(returnView());
     }
@@ -86,7 +100,12 @@ export function setupShell() {
     name.textContent = feature.name;
     const state = document.createElement('span');
     state.className = 'feature-state';
-    state.textContent = feature.state === 'blocked' ? '暂未开放' : userAccepted.has(id) ? '已接入 · 用户已验收' : '已接入 · 实验性';
+    state.textContent =
+      feature.state === 'blocked'
+        ? '暂未开放'
+        : userAccepted.has(id)
+          ? '已接入 · 用户已验收'
+          : '已接入 · 实验性';
     if (userAccepted.has(id)) state.classList.add('user-accepted');
     header.append(name, state);
     const reason = document.createElement('p');
@@ -120,19 +139,33 @@ export function setupShell() {
     : '当前浏览器未提供输出设备切换；暂不可用，使用系统默认。';
 
   return {
-    showConnect() { show('connect'); },
+    showConnect() {
+      show(session === 'idle' ? 'connect' : returnView());
+    },
     canJoin: browser.canJoin,
     blockedReason: browser.warning,
     setSessionState(next: typeof session) {
-      const wasOnline = session === 'online';
+      const prior = session;
       session = next;
+      for (const button of document.querySelectorAll<HTMLButtonElement>('[data-connect]')) {
+        button.disabled = !browser.canJoin || next !== 'idle';
+        button.title = !browser.canJoin
+          ? browser.warning
+          : next !== 'idle'
+            ? '请先退出当前大厅，再创建或加入另一个大厅。'
+            : '';
+      }
+      element('return-room').textContent = next === 'online' ? '返回大厅' : '返回连接';
+      element('return-room').hidden = next === 'idle' || view === returnView();
+      element('session-navigation').hidden = next === 'idle' || view === returnView();
       element('leave').hidden = next === 'idle';
       element<HTMLButtonElement>('copy-ip').disabled = next !== 'online';
+      if (next === prior) return;
       if (next === 'online') {
         setPanel('chat');
         show('lobby');
       } else if (next === 'orphaned') show('connect');
-      else if (next === 'idle' && wasOnline) show('home');
+      else if (next === 'idle' && prior !== 'idle') show('home');
     },
   };
 }
