@@ -3,6 +3,7 @@
 
 // 错误处理模块
 pub mod error;
+pub mod app_paths;
 
 // 配置管理模块
 pub mod config_manager;
@@ -14,10 +15,16 @@ pub mod resource_manager;
 pub mod network_service;
 
 // 大厅管理模块
+pub mod lobby_address;
 pub mod lobby_manager;
 
 // Hosts文件管理模块（Magic DNS）
+pub mod helper_handshake;
 pub mod hosts_manager;
+pub mod hosts_security;
+#[cfg(unix)]
+pub mod unix_hosts_helper;
+pub mod virtual_network;
 
 // 语音服务模块
 #[cfg(windows)]
@@ -54,7 +61,9 @@ pub mod file_transfer;
 pub mod chat_service;
 
 // 聊天鉴权：每成员密钥对 + 请求签名（消除虚拟IP伪造空间）
+pub mod builtin_emoji;
 pub mod chat_auth;
+pub mod secret_store;
 
 // Minecraft 局域网世界自动发现模块
 pub mod minecraft_discovery;
@@ -64,7 +73,21 @@ pub mod mc_lan_bridge;
 
 // 远程控制（输入注入）模块
 pub mod remote_control;
+pub mod speech_transcription;
+pub mod media_permission;
+pub mod native_capture;
+pub mod native_microphone;
+pub mod voice_ice;
+pub mod quark_support;
+pub mod quark_background;
+#[cfg(windows)]
+mod quark_scheduler;
+#[cfg(all(test, windows))]
+mod quark_webview_test;
+
 
 // Linux 平台支撑（TUN 文件能力 / 网卡检测 / 防火墙 / XDG 自启动）
 #[cfg(target_os = "linux")]
 pub mod linux_platform;
+
+pub mod screen_recording;

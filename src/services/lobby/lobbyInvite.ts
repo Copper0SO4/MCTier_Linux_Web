@@ -3,6 +3,7 @@ import {
   isSafeSignalingServer,
   sanitizeUntrustedText,
 } from '../../security/trustBoundary.ts';
+import { invoke } from '@tauri-apps/api/core';
 
 export interface LobbyInvite {
   name: string;
@@ -16,11 +17,12 @@ const cleanOptional = (value?: string | null): string | undefined => {
   return cleaned || undefined;
 };
 
-export const buildLobbyInviteLink = (invite: LobbyInvite): string => {
+export const buildLobbyInviteLink = async (invite: LobbyInvite): Promise<string> => {
+  const secret = invite.password ? await invoke<string>('export_lobby_password', { password: invite.password }) : '';
   const params = new URLSearchParams({
-    v: '2',
+    v: '3',
     name: sanitizeUntrustedText(invite.name, 64),
-    pwd: sanitizeUntrustedText(invite.password, 128),
+    secret,
   });
   const serverNode = cleanOptional(invite.serverNode);
   const signalingServer = cleanOptional(invite.signalingServer);
@@ -34,6 +36,10 @@ export const parseLobbyInviteLink = (raw: string): LobbyInvite | null => {
   if (!match) return null;
 
   const params = new URLSearchParams(match[1]);
+  const version = params.get('v');
+  if (version && !['1', '2', '3'].includes(version)) return null;
+  const secret = params.get('secret') || '';
+  if (version === '3' && (secret.length > 4096 || (secret && !/^mctier-invite-v3:[A-Za-z0-9_-]+$/.test(secret)))) return null;
   const name = sanitizeUntrustedText(params.get('name'), 64).trim();
   if (!name) return null;
 
@@ -46,7 +52,7 @@ export const parseLobbyInviteLink = (raw: string): LobbyInvite | null => {
 
   return {
     name,
-    password: sanitizeUntrustedText(params.get('pwd'), 128),
+    password: version === '3' ? secret : sanitizeUntrustedText(params.get('pwd'), 128),
     serverNode: rawServerNode,
     signalingServer: rawSignalingServer,
   };
@@ -63,7 +69,7 @@ export const parseLobbyInviteText = (text: string): LobbyInvite | null => {
   const deepLink = text.match(/mctier:\/\/join\/?\?[^\s]+/i)?.[0];
   if (deepLink) {
     const parsed = parseLobbyInviteLink(deepLink);
-    if (parsed) return parsed;
+    return parsed;
   }
 
   const name = extractField(text, ['大厅名称', 'Lobby Name']);
@@ -90,20 +96,18 @@ export const parseLobbyInviteText = (text: string): LobbyInvite | null => {
   return null;
 };
 
-export const formatLobbyInviteText = (invite: LobbyInvite, language: 'zh' | 'en'): string => {
-  const link = buildLobbyInviteLink(invite);
+export const formatLobbyInviteText = async (invite: LobbyInvite, language: 'zh' | 'en'): Promise<string> => {
+  const link = await buildLobbyInviteLink(invite);
   const serverNode = cleanOptional(invite.serverNode);
   const signalingServer = cleanOptional(invite.signalingServer);
   const safeServerNode = serverNode && isSafeServerNode(serverNode) ? serverNode : undefined;
   const safeSignalingServer = signalingServer && isSafeSignalingServer(signalingServer) ? signalingServer : undefined;
   const name = sanitizeUntrustedText(invite.name, 64);
-  const password = sanitizeUntrustedText(invite.password, 128);
   if (language === 'en') {
     return [
       '——————— Invitation to Join Lobby ———————',
       'Copy everything, then open MCTier - Join Lobby (auto-detected)',
       `Lobby Name: ${name}`,
-      `Password: ${password}`,
       ...(safeServerNode ? [`Server Node: ${safeServerNode}`] : []),
       ...(safeSignalingServer ? [`Signaling Server: ${safeSignalingServer}`] : []),
       `Invite Link: ${link}`,
@@ -115,7 +119,6 @@ export const formatLobbyInviteText = (invite: LobbyInvite, language: 'zh' | 'en'
     '——————— 邀请您加入大厅 ———————',
     '完整复制后打开 MCTier-加入大厅 界面（自动识别）',
     `大厅名称：${name}`,
-    `密码：${password}`,
     ...(safeServerNode ? [`服务器节点：${safeServerNode}`] : []),
     ...(safeSignalingServer ? [`信令服务器：${safeSignalingServer}`] : []),
     `邀请链接：${link}`,

@@ -1,39 +1,43 @@
 package top.pmh13.mctier.ui
 
-import android.content.ContentValues
 import android.content.Context
 import android.graphics.BitmapFactory
 import android.graphics.Color
 import android.graphics.PixelFormat
+import android.hardware.input.InputManager
 import android.os.Build
-import android.os.Environment
-import android.provider.MediaStore
 import android.provider.Settings
 import android.util.Base64
 import android.view.Gravity
-import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.MotionEvent
+import android.os.Handler
+import android.os.Looper
+import android.widget.LinearLayout
+import android.widget.Toast
 import android.view.animation.LinearInterpolator
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
-import android.widget.Toast
 import java.io.File
+import top.pmh13.mctier.data.MessagePreview
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
- * 安卓系统级弹幕覆盖层。
- * 使用 SYSTEM_ALERT_WINDOW 悬浮窗在所有应用之上显示从右向左飘过的聊天弹幕。
- *
- * 交互：
- * - 点击飘动的弹幕 → 暂停定在原地，并在其下方弹出操作按钮（文本=复制内容，图片=下载图片）；
- * - 点击空白处 → 取消定住，弹幕继续飘动；
- * - 支持图片消息弹幕（缩略图），点击后可一键下载原图到相册。
- *
- * 穿透策略：覆盖层只占据屏幕顶部弹幕区域（含按钮空间）。无弹幕时整窗设为不可触摸（完全穿透，
- * 不影响游戏）；有弹幕飘动时该顶部条可点击；点击条以外区域（含下方游戏区）的触摸照常传给后面的应用。
+ * 每条弹幕使用独立的小窗口，点击立即复制/播放/下载；空白区域保持触摸穿透。
+ * 所有窗口均不获取键盘焦点，避免打断游戏输入。
  */
 object DanmakuOverlay {
+    data class Action(val label: String, val perform: () -> Unit)
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val activeBullets = linkedSetOf<BulletView>()
+    private var voicePlayer: android.media.MediaPlayer? = null
+    private val mediaScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile var enabled = false
     var fontSizeSp = 20f
     var speedDp = 130f
@@ -47,11 +51,6 @@ object DanmakuOverlay {
     private var appCtx: Context? = null
     private val trackFreeAt = LongArray(16)
 
-    // 当前被定住的弹幕视图（点击暂停）及其操作按钮
-    private var pinnedView: View? = null
-    private var actionView: View? = null
-    // 当前窗口是否可触摸（无弹幕时不可触摸=完全穿透）
-    private var touchable = false
 
     fun hasPermission(ctx: Context): Boolean =
         Build.VERSION.SDK_INT < Build.VERSION_CODES.M || Settings.canDrawOverlays(ctx)
@@ -68,7 +67,7 @@ object DanmakuOverlay {
         if (enabled && hasPermission(ctx)) {
             show(ctx)
             updateWindowMetrics()
-        } else if (!enabled) {
+        } else {
             hide()
         }
     }
@@ -90,18 +89,11 @@ object DanmakuOverlay {
         return sb + (12 * d).toInt()
     }
 
-    /** 弹幕顶部条高度（含轨道与按钮空间），单位 px */
-    private fun stripHeightPx(): Int {
-        val d = density()
-        val lineH = fontSizeSp * 1.95f * d
-        return (topInsetPx() + tracks.coerceIn(1, 12) * lineH + 64f * d).toInt()
-    }
-
     private fun baseFlags(): Int =
         WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
             WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-            WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL
 
     private fun overlayType(): Int =
@@ -117,28 +109,28 @@ object DanmakuOverlay {
         val manager = appCtx!!.getSystemService(Context.WINDOW_SERVICE) as WindowManager
         val fl = DanmakuContainer(appCtx!!)
         val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            stripHeightPx(),
+            1,
+            1,
             overlayType(),
-            // 初始无弹幕：不可触摸=完全穿透
-            baseFlags() or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE,
+            baseFlags(),
             PixelFormat.TRANSLUCENT,
         )
         lp.gravity = Gravity.TOP or Gravity.START
-        runCatching { manager.addView(fl, lp) }
+        lp.alpha = 0f // 无弹幕时连透明覆盖窗口也不参与触摸遮挡判定。
+        if (runCatching { manager.addView(fl, lp) }.isFailure) return
         wm = manager
         container = fl
-        touchable = false
     }
 
     fun hide() {
-        dismissPinned(resume = false)
         val c = container
         val m = wm
+        activeBullets.toList().forEach(::removeBullet)
+        stopVoice()
         if (c != null && m != null) runCatching { m.removeView(c) }
+        trackFreeAt.fill(0)
         container = null
         wm = null
-        touchable = false
     }
 
     /** 更新窗口尺寸（轨道/字号变化或旋转后调用） */
@@ -146,26 +138,18 @@ object DanmakuOverlay {
         val c = container ?: return
         val m = wm ?: return
         val lp = c.layoutParams as? WindowManager.LayoutParams ?: return
-        lp.height = stripHeightPx()
+        lp.height = 1
+        lp.alpha = 0f
         runCatching { m.updateViewLayout(c, lp) }
+        // Old positions are no longer meaningful after a density/orientation/config change.
+        activeBullets.toList().forEach(::removeBullet)
     }
 
-    /** 切换窗口是否可触摸：无弹幕时不可触摸（完全穿透），有弹幕/定住时可触摸 */
-    private fun setTouchable(value: Boolean) {
-        if (touchable == value) return
-        val c = container ?: return
-        val m = wm ?: return
-        val lp = c.layoutParams as? WindowManager.LayoutParams ?: return
-        lp.flags = if (value) baseFlags() else (baseFlags() or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE)
-        runCatching { m.updateViewLayout(c, lp) }
-        touchable = value
-    }
-
-    /** 屏幕上是否还有正在飘动/定住的弹幕；据此决定是否保持可触摸 */
-    private fun refreshTouchable() {
-        val c = container ?: return
-        val hasBullets = (0 until c.childCount).any { c.getChildAt(it) is BulletView }
-        setTouchable(hasBullets || pinnedView != null)
+    private fun windowAlpha(c: DanmakuContainer): Float {
+        val limit = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            (c.context.getSystemService(Context.INPUT_SERVICE) as InputManager).maximumObscuringOpacityForTouch
+        } else 1f
+        return DanmakuTouchPolicy.opacity(alphaValue, limit)
     }
 
     /** 推送一条文本弹幕。copyText 为点击后可复制的原始消息内容 */
@@ -175,34 +159,44 @@ object DanmakuOverlay {
         val ctx = appCtx ?: return
         val finalColor = if (rainbow) randomBrightColor() else color
         c.post {
+            if (!enabled || container !== c) return@post
             val tv = TextView(ctx).apply {
                 this.text = text
                 setTextColor(finalColor)
                 textSize = fontSizeSp
                 maxLines = 1
+                maxWidth = (ctx.resources.displayMetrics.widthPixels * .85f).toInt()
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 setShadowLayer(6f, 0f, 1f, Color.argb(220, 0, 0, 0))
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
             }
             tv.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
-            launchBullet(BulletView(ctx, tv, isImage = false, copyText = copyText, imageData = null), tv.measuredWidth.coerceAtLeast(1))
+            launchBullet(BulletView(ctx, tv, copyAction(copyText ?: text)), tv.measuredWidth.coerceAtLeast(1))
         }
     }
 
     /** 推送一条图片弹幕。dataUrl 为 data:image/...;base64,xxx */
-    fun pushImage(label: String, dataUrl: String, color: Int = colorValue) {
+    fun pushImage(label: String, dataUrl: String, color: Int = colorValue, downloadImage: Boolean = true, copyText: String? = null, action: Action? = null) {
         if (!enabled) return
         val c = container ?: return
         val ctx = appCtx ?: return
         val finalColor = if (rainbow) randomBrightColor() else color
         c.post {
+            if (!enabled || container !== c) return@post
             val bytes = decodeDataUrl(dataUrl)
             if (bytes == null) { push(label, finalColor, null); return@post }
-            val bmp = runCatching { BitmapFactory.decodeByteArray(bytes, 0, bytes.size) }.getOrNull()
-            if (bmp == null) { push(label, finalColor, null); return@post }
+            val drawable = runCatching {
+                if (Build.VERSION.SDK_INT >= 28) android.graphics.ImageDecoder.decodeDrawable(
+                    android.graphics.ImageDecoder.createSource(java.nio.ByteBuffer.wrap(bytes))) { decoder, info, _ ->
+                    val scale = minOf(1f, 320f / info.size.width, 180f / info.size.height)
+                    decoder.setTargetSize((info.size.width * scale).toInt().coerceAtLeast(1), (info.size.height * scale).toInt().coerceAtLeast(1))
+                } else android.graphics.drawable.BitmapDrawable(ctx.resources, BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
+            }.getOrNull()
+            if (drawable == null) { pushCard(label, MessagePreview("image", "[图片预览不可用]")); return@post }
             val d = density()
             // 缩略图大小适中：高度贴合轨道行高，宽度按比例但限制最大值，既能看清又不过度遮挡
             val targetH = (fontSizeSp * 1.55f * d).toInt().coerceIn((26 * d).toInt(), (54 * d).toInt())
-            val ratio = bmp.width.toFloat() / bmp.height.toFloat().coerceAtLeast(1f)
+            val ratio = drawable.intrinsicWidth.toFloat() / drawable.intrinsicHeight.toFloat().coerceAtLeast(1f)
             val maxW = (fontSizeSp * 3.6f * d).toInt()
             val targetW = (targetH * ratio).toInt().coerceIn((targetH * 0.4f).toInt(), maxW)
             // 名字 + 缩略图 横向排布，让用户知道是谁发的图
@@ -215,12 +209,18 @@ object DanmakuOverlay {
                 setTextColor(finalColor)
                 textSize = fontSizeSp
                 maxLines = 1
+                maxWidth = (ctx.resources.displayMetrics.widthPixels * .55f).toInt()
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 setShadowLayer(6f, 0f, 1f, Color.argb(220, 0, 0, 0))
                 setTypeface(typeface, android.graphics.Typeface.BOLD)
             }
             val iv = ImageView(ctx).apply {
-                setImageBitmap(bmp)
+                setImageDrawable(drawable)
                 scaleType = ImageView.ScaleType.FIT_CENTER
+                addOnAttachStateChangeListener(object : View.OnAttachStateChangeListener {
+                    override fun onViewAttachedToWindow(v: View) { (drawable as? android.graphics.drawable.Animatable)?.start() }
+                    override fun onViewDetachedFromWindow(v: View) { (drawable as? android.graphics.drawable.Animatable)?.stop() }
+                })
             }
             row.addView(nameTv, android.widget.LinearLayout.LayoutParams(
                 android.widget.LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -231,7 +231,76 @@ object DanmakuOverlay {
             })
             row.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
             val totalW = row.measuredWidth.coerceAtLeast(targetW)
-            launchBullet(BulletView(ctx, row, isImage = true, copyText = null, imageData = dataUrl), totalW)
+            launchBullet(BulletView(ctx, row, action ?: if (downloadImage) imageAction(dataUrl) else copyAction(copyText ?: label)), totalW)
+        }
+    }
+
+    fun pushCard(label: String, preview: MessagePreview, action: Action? = null, voiceData: String? = null) {
+        val c = container ?: return
+        val ctx = appCtx ?: return
+        if (!enabled) return
+        c.post {
+            if (!enabled || container !== c) return@post
+            val icon = when (preview.kind) { "voice" -> "▂▅▃▇▅▂"; "audio" -> "♫"; "video" -> "▶"; "image" -> "▧"; else -> "▤" }
+            val text = "$label $icon ${preview.text}" + if (preview.detail.isNotBlank()) " · ${preview.detail}" else ""
+            val view = TextView(ctx).apply {
+                this.text = text; textSize = fontSizeSp * .85f; setTextColor(Color.WHITE)
+                maxLines = 1; ellipsize = android.text.TextUtils.TruncateAt.END
+                maxWidth = (ctx.resources.displayMetrics.widthPixels * .85f).toInt()
+                setPadding((10 * density()).toInt(), (4 * density()).toInt(), (10 * density()).toInt(), (4 * density()).toInt())
+                background = android.graphics.drawable.GradientDrawable().apply {
+                    setColor(Color.argb(238, 23, 37, 29)); cornerRadius = 7 * density(); setStroke(1, Color.rgb(113, 164, 85))
+                }
+            }
+            view.measure(View.MeasureSpec.UNSPECIFIED, View.MeasureSpec.UNSPECIFIED)
+            val operation = action ?: if (preview.kind == "voice") Action(L("播放语音", "Play voice")) { playVoice(voiceData) }
+                else copyAction("${preview.text} ${preview.detail}".trim())
+            launchBullet(BulletView(ctx, view, operation), view.measuredWidth)
+        }
+    }
+
+    fun pushMediaFile(label: String, file: File, preview: MessagePreview, action: Action? = null) {
+        if (!enabled) return
+        val expectedContainer = container ?: return
+        mediaScope.launch {
+            val image = runCatching {
+                if (preview.kind == "image" && file.length() <= 2 * 1024 * 1024) {
+                    val bytes = file.readBytes()
+                    val mime = top.pmh13.mctier.data.sniffChatImageMime(bytes) ?: error("Unsupported image")
+                    "data:$mime;base64," + Base64.encodeToString(bytes, Base64.NO_WRAP)
+                } else {
+                    val bitmap = if (preview.kind == "video") {
+                        val retriever = android.media.MediaMetadataRetriever()
+                        try {
+                            retriever.setDataSource(file.absolutePath)
+                            if (Build.VERSION.SDK_INT >= 27) retriever.getScaledFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC, 320, 180)
+                            else retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC)?.let { original ->
+                                val scale = minOf(1f, 320f / original.width, 180f / original.height)
+                                val scaled = android.graphics.Bitmap.createScaledBitmap(original, (original.width * scale).toInt().coerceAtLeast(1), (original.height * scale).toInt().coerceAtLeast(1), true)
+                                if (scaled !== original) original.recycle()
+                                scaled
+                            }
+                        }
+                        finally { retriever.release() }
+                    } else {
+                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeFile(file.absolutePath, bounds)
+                        val options = BitmapFactory.Options().apply { inSampleSize = maxOf(1, maxOf(bounds.outWidth / 320, bounds.outHeight / 180)) }
+                        BitmapFactory.decodeFile(file.absolutePath, options)
+                    } ?: error("No preview frame")
+                    try {
+                        val output = java.io.ByteArrayOutputStream()
+                        bitmap.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, output)
+                        "data:image/jpeg;base64," + Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+                    } finally { bitmap.recycle() }
+                }
+            }.getOrNull()
+            withContext(Dispatchers.Main) {
+                if (!enabled || container !== expectedContainer) return@withContext
+                if (image != null) pushImage(if (preview.kind == "video") "$label ▶ ${preview.text}" else label, image,
+                    downloadImage = preview.kind == "image", copyText = "${preview.text} ${preview.detail}", action = action)
+                else pushCard(label, preview.copy(detail = "${preview.detail} · 预览暂不可用"), action)
+            }
         }
     }
 
@@ -241,7 +310,7 @@ object DanmakuOverlay {
         val ctx = appCtx ?: return
         val d = density()
         val sw = ctx.resources.displayMetrics.widthPixels
-        bullet.alpha = alphaValue
+        bullet.alpha = 1f
         val lineH = fontSizeSp * 1.95f * d
         val now = System.currentTimeMillis()
         val nTracks = tracks.coerceIn(1, 12)
@@ -258,121 +327,115 @@ object DanmakuOverlay {
         val releaseDelay = ((tw + 40) / speedPx * 1000f).toLong()
         trackFreeAt[track] = now + releaseDelay
         val topPx = (topInsetPx() + track * lineH).toInt()
-        val lp = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-        ).apply { topMargin = topPx; leftMargin = 0 }
-        c.addView(bullet, lp)
-        bullet.translationX = sw.toFloat()
-        val anim = android.animation.ObjectAnimator.ofFloat(bullet, "translationX", sw.toFloat(), -tw.toFloat())
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.WRAP_CONTENT, WindowManager.LayoutParams.WRAP_CONTENT,
+            overlayType(), (baseFlags() and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE.inv()) or WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH, PixelFormat.TRANSLUCENT,
+        ).apply {
+            gravity = Gravity.TOP or Gravity.START
+            x = sw; y = topPx; alpha = windowAlpha(c)
+        }
+        if (activeBullets.size >= 24) activeBullets.firstOrNull()?.let(::removeBullet)
+        if (runCatching { wm?.addView(bullet, lp) }.isFailure) return
+        activeBullets.add(bullet)
+        val anim = android.animation.ValueAnimator.ofFloat(sw.toFloat(), -tw.toFloat())
+        anim.addUpdateListener { value ->
+            lp.x = (value.animatedValue as Float).toInt()
+            if (bullet in activeBullets) runCatching { wm?.updateViewLayout(bullet, lp) }
+        }
         anim.duration = dur
         anim.interpolator = LinearInterpolator()
         anim.addListener(object : android.animation.AnimatorListenerAdapter() {
             override fun onAnimationEnd(animation: android.animation.Animator) {
-                if (pinnedView === bullet) return
-                runCatching { c.removeView(bullet) }
-                refreshTouchable()
+                removeBullet(bullet)
             }
         })
         bullet.animator = anim
-        bullet.setOnClickListener { pinBullet(bullet) }
         anim.start()
-        setTouchable(true)
     }
 
-    /** 定住一条弹幕：暂停动画并在下方弹出操作按钮 */
-    private fun pinBullet(bullet: BulletView) {
-        val c = container ?: return
-        // 先取消之前定住的
-        if (pinnedView != null && pinnedView !== bullet) dismissPinned(resume = true)
-        bullet.animator?.pause()
-        pinnedView = bullet
-        bullet.bringToFront()
-        setTouchable(true)
-
-        val ctx = c.context
-        val d = density()
-        val btnLabel = if (bullet.isImage) L("下载图片", "Download") else L("复制内容", "Copy")
-        val btn = makeActionButton(ctx, btnLabel) {
-            if (bullet.isImage) downloadImage(bullet.imageData) else copyText(bullet.copyText ?: "")
-            dismissPinned(resume = true)
-        }
-        // 放在弹幕正下方
-        val top = (bullet.layoutParams as? FrameLayout.LayoutParams)?.topMargin ?: 0
-        val left = bullet.translationX.toInt().coerceAtLeast(0)
-        val lp = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-            FrameLayout.LayoutParams.WRAP_CONTENT,
-        ).apply {
-            topMargin = top + bullet.height + (6 * d).toInt()
-            leftMargin = left
-        }
-        c.addView(btn, lp)
-        btn.bringToFront()
-        actionView = btn
+    private fun removeBullet(bullet: BulletView) {
+        if (!activeBullets.remove(bullet)) return
+        bullet.dispose()
+        runCatching { wm?.removeView(bullet) }
     }
 
-    /** 取消定住：移除按钮，可选恢复动画 */
-    private fun dismissPinned(resume: Boolean) {
-        val c = container
-        val av = actionView
-        if (c != null && av != null) runCatching { c.removeView(av) }
-        actionView = null
-        val pv = pinnedView as? BulletView
-        pinnedView = null
-        if (pv != null) {
-            if (resume) {
-                runCatching { pv.animator?.resume() }
-            } else {
-                runCatching { pv.animator?.cancel() }
-                if (c != null) runCatching { c.removeView(pv) }
-            }
-        }
-        refreshTouchable()
+    private fun toast(text: String) { appCtx?.let { Toast.makeText(it, text, Toast.LENGTH_SHORT).show() } }
+
+    private fun copyAction(text: String) = Action(L("复制内容", "Copy")) {
+        val clipboard = appCtx?.getSystemService(Context.CLIPBOARD_SERVICE) as? android.content.ClipboardManager
+        clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("MCTier", text))
+        toast(L("已复制消息内容", "Message copied"))
     }
 
-    /** 构造一个圆角操作按钮 */
-    private fun makeActionButton(ctx: Context, label: String, onClick: () -> Unit): View {
-        val d = density()
-        return TextView(ctx).apply {
-            text = label
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            setTypeface(typeface, android.graphics.Typeface.BOLD)
-            val padH = (14 * d).toInt()
-            val padV = (8 * d).toInt()
-            setPadding(padH, padV, padH, padV)
-            background = android.graphics.drawable.GradientDrawable().apply {
-                cornerRadius = 10 * d
-                setColor(Color.parseColor("#7CCF00"))
-            }
-            isClickable = true
-            setOnClickListener { onClick() }
+    private fun imageAction(data: String) = Action(L("下载图片", "Download image")) {
+        val ctx = appCtx ?: return@Action
+        mediaScope.launch {
+            val ok = runCatching {
+                val bytes = decodeDataUrl(data) ?: error("Invalid image")
+                val mime = top.pmh13.mctier.data.sniffChatImageMime(bytes) ?: error("Invalid image")
+                val extension = top.pmh13.mctier.data.imageExtension(mime)
+                val name = "MCTier_${System.currentTimeMillis()}.$extension"
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    val resolver = ctx.contentResolver
+                    val values = android.content.ContentValues().apply {
+                        put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, name)
+                        put(android.provider.MediaStore.Images.Media.MIME_TYPE, mime)
+                        put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/MCTier")
+                        put(android.provider.MediaStore.Images.Media.IS_PENDING, 1)
+                    }
+                    val uri = resolver.insert(android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values) ?: error("No output")
+                    try {
+                        checkNotNull(resolver.openOutputStream(uri)).use { it.write(bytes) }
+                        values.clear(); values.put(android.provider.MediaStore.Images.Media.IS_PENDING, 0)
+                        resolver.update(uri, values, null, null)
+                    } catch (e: Exception) { resolver.delete(uri, null, null); throw e }
+                } else {
+                    val dir = File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_PICTURES), "MCTier")
+                    check(dir.mkdirs() || dir.isDirectory)
+                    File(dir, name).writeBytes(bytes)
+                }
+            }.isSuccess
+            withContext(Dispatchers.Main) { toast(if (ok) L("图片已保存到 Pictures/MCTier", "Image saved to Pictures/MCTier") else L("图片保存失败", "Image save failed")) }
         }
     }
 
-    /** 复制文本到剪贴板 */
-    private fun copyText(text: String) {
-        val ctx = appCtx ?: return
+    private fun stopVoice() {
+        voicePlayer?.let { runCatching { it.release() } }
+        voicePlayer = null
+    }
+
+    private fun playVoice(data: String?) {
+        stopVoice()
+        if (data == null || data.length > 3 * 1024 * 1024 || !data.matches(Regex("^data:audio/(webm|ogg|mp4|wav);base64,[A-Za-z0-9+/]+=*$"))) {
+            toast(L("语音不可用，请在聊天室重试", "Voice unavailable. Try in chat")); return
+        }
         runCatching {
-            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
-            cm.setPrimaryClip(android.content.ClipData.newPlainText("MCTier", text))
-            toast(L("已复制消息内容", "Message content copied"))
-        }
-    }
-
-    /** 下载图片到相册 */
-    private fun downloadImage(dataUrl: String?) {
-        val ctx = appCtx ?: return
-        val bytes = dataUrl?.let { decodeDataUrl(it) }
-        if (bytes == null) { toast(L("图片下载失败", "Image download failed")); return }
-        val ok = saveImageToGallery(ctx, bytes)
-        toast(if (ok) L("图片已保存到相册", "Image saved to gallery") else L("图片下载失败", "Image download failed"))
-    }
-
-    private fun toast(msg: String) {
-        val ctx = appCtx ?: return
-        runCatching { Toast.makeText(ctx, msg, Toast.LENGTH_SHORT).show() }
+            val bytes = decodeDataUrl(data) ?: error("Invalid voice")
+            check(bytes.size <= 2 * 1024 * 1024)
+            val player = android.media.MediaPlayer().also { voicePlayer = it }
+            player.setAudioAttributes(android.media.AudioAttributes.Builder().setUsage(android.media.AudioAttributes.USAGE_MEDIA).setContentType(android.media.AudioAttributes.CONTENT_TYPE_SPEECH).build())
+            player.setDataSource(object : android.media.MediaDataSource() {
+                override fun getSize() = bytes.size.toLong()
+                override fun close() { bytes.fill(0) }
+                override fun readAt(position: Long, buffer: ByteArray, offset: Int, size: Int): Int {
+                    if (position < 0 || position >= bytes.size) return -1
+                    val count = minOf(size, bytes.size - position.toInt())
+                    bytes.copyInto(buffer, offset, position.toInt(), position.toInt() + count)
+                    return count
+                }
+            })
+            player.setOnPreparedListener {
+                if (voicePlayer === it) runCatching { it.start() }.onFailure {
+                    stopVoice(); toast(L("语音播放失败", "Voice playback failed"))
+                }
+            }
+            player.setOnCompletionListener { if (voicePlayer === it) stopVoice() }
+            player.setOnErrorListener { failed, _, _ ->
+                if (voicePlayer === failed) { stopVoice(); toast(L("语音播放失败", "Voice playback failed")) }
+                true
+            }
+            player.prepareAsync()
+        }.onFailure { stopVoice(); toast(L("语音播放失败", "Voice playback failed")) }
     }
 
     /** 解析 data URL 为字节数组 */
@@ -380,34 +443,6 @@ object DanmakuOverlay {
         val idx = dataUrl.indexOf(',')
         val b64 = if (idx >= 0) dataUrl.substring(idx + 1) else dataUrl
         return runCatching { Base64.decode(b64, Base64.DEFAULT) }.getOrNull()
-    }
-
-    /** 保存图片字节到相册（Pictures/MCTier） */
-    private fun saveImageToGallery(ctx: Context, bytes: ByteArray): Boolean {
-        val name = "MCTier_弹幕图片_${System.currentTimeMillis()}.jpg"
-        return runCatching {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val values = ContentValues().apply {
-                    put(MediaStore.Images.Media.DISPLAY_NAME, name)
-                    put(MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-                    put(MediaStore.Images.Media.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/MCTier")
-                }
-                val uri = ctx.contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
-                    ?: return false
-                ctx.contentResolver.openOutputStream(uri)?.use { it.write(bytes) } ?: return false
-                true
-            } else {
-                @Suppress("DEPRECATION")
-                val dir = File(Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "MCTier")
-                dir.mkdirs()
-                val f = File(dir, name)
-                f.writeBytes(bytes)
-                runCatching {
-                    android.media.MediaScannerConnection.scanFile(ctx, arrayOf(f.absolutePath), arrayOf("image/jpeg"), null)
-                }
-                true
-            }
-        }.getOrDefault(false)
     }
 
     /** 跳转到系统悬浮窗授权页 */
@@ -421,34 +456,57 @@ object DanmakuOverlay {
     private class BulletView(
         ctx: Context,
         content: View,
-        val isImage: Boolean,
-        val copyText: String?,
-        val imageData: String?,
-    ) : FrameLayout(ctx) {
-        var animator: android.animation.ObjectAnimator? = null
+        private val action: Action,
+    ) : LinearLayout(ctx) {
+        var animator: android.animation.ValueAnimator? = null
+        private var actioned = false
+        private val resumeTask = Runnable { resume() }
         init {
-            isClickable = true
-            addView(
-                content,
-                LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT),
-            )
+            orientation = VERTICAL
+            content.contentDescription = action.label
+            content.setOnClickListener {
+                if (!actioned) {
+                    actioned = true
+                    runCatching { action.perform() }.onFailure { toast(L("操作失败，请在聊天室重试", "Action failed. Try in chat")) }
+                    resume()
+                }
+            }
+            addView(content, LayoutParams(LayoutParams.WRAP_CONTENT, LayoutParams.WRAP_CONTENT))
+        }
+
+        override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+            if (event.actionMasked == MotionEvent.ACTION_OUTSIDE) { resume(); return false }
+            if (event.actionMasked == MotionEvent.ACTION_DOWN) pin()
+            return super.dispatchTouchEvent(event)
+        }
+
+        override fun dispatchHoverEvent(event: MotionEvent): Boolean {
+            when (event.actionMasked) {
+                MotionEvent.ACTION_HOVER_ENTER, MotionEvent.ACTION_HOVER_MOVE -> pin()
+                MotionEvent.ACTION_HOVER_EXIT -> { mainHandler.removeCallbacks(resumeTask); mainHandler.postDelayed(resumeTask, 250) }
+            }
+            return super.dispatchHoverEvent(event)
+        }
+
+        private fun pin() {
+            if (actioned || this !in activeBullets) return
+            activeBullets.filter { it !== this }.forEach { it.resume() }
+            animator?.pause()
+            mainHandler.removeCallbacks(resumeTask)
+            mainHandler.postDelayed(resumeTask, 8000)
+        }
+
+        fun resume() {
+            mainHandler.removeCallbacks(resumeTask)
+            if (this in activeBullets) runCatching { wm?.updateViewLayout(this, layoutParams) }
+            animator?.resume()
+        }
+
+        fun dispose() {
+            mainHandler.removeCallbacks(resumeTask)
+            animator?.removeAllListeners(); animator?.removeAllUpdateListeners(); animator?.cancel()
         }
     }
 
-    /** 覆盖层容器：处理空白/窗口外点击以取消定住 */
-    private class DanmakuContainer(ctx: Context) : FrameLayout(ctx) {
-        override fun onTouchEvent(ev: MotionEvent): Boolean {
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_OUTSIDE -> {
-                    if (pinnedView != null) dismissPinned(resume = true)
-                    return false
-                }
-                MotionEvent.ACTION_DOWN -> {
-                    if (pinnedView != null) { dismissPinned(resume = true); return true }
-                    return false
-                }
-            }
-            return false
-        }
-    }
+    private class DanmakuContainer(ctx: Context) : FrameLayout(ctx)
 }

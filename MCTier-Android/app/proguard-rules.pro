@@ -6,6 +6,7 @@
 # 类名或方法名一旦被改写就会在运行时抛 UnsatisfiedLinkError。
 -keep class com.easytier.jni.EasyTierJNI { *; }
 -keep class top.pmh13.mctier.audio.LocalVqeNative { *; }
+-keep class top.pmh13.mctier.network.ImageOptimizer { *; }
 -keepclasseswithmembernames class * {
     native <methods>;
 }

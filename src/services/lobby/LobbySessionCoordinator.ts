@@ -2,6 +2,7 @@ export interface LobbySessionTicket {
   readonly generation: number;
   readonly signal: AbortSignal;
 }
+import { resetLobbyNoiseMode } from '../voice/nvidiaNoise';
 
 class LobbySessionCoordinator {
   private generation = 0;
@@ -33,6 +34,7 @@ class LobbySessionCoordinator {
 
   cancel(ticket?: LobbySessionTicket): void {
     if (ticket && !this.isCurrent(ticket)) return;
+    resetLobbyNoiseMode();
     this.controller?.abort('lobby-session-cancelled');
     this.controller = null;
     this.generation += 1;

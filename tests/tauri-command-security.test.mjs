@@ -3,11 +3,12 @@ import fs from 'node:fs';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { readTauriCommandSources } from './helpers/tauriCommandsSource.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const read = (relativePath) => fs.readFileSync(path.join(root, relativePath), 'utf8');
 
-const commands = read('src-tauri/src/modules/tauri_commands.rs');
+const commands = readTauriCommandSources();
 const configManager = read('src-tauri/src/modules/config_manager.rs');
 const cargoManifest = read('src-tauri/Cargo.toml');
 const capability = JSON.parse(read('src-tauri/capabilities/default.json'));
@@ -101,9 +102,9 @@ test('desktop auto-lobby password stays in the OS credential store', () => {
   assert.match(commands, /CredReadW/);
   assert.match(commands, /CredWriteW/);
   assert.match(commands, /CRED_PERSIST_LOCAL_MACHINE/);
-  assert.match(commands, /auto_lobby_session_secret/);
+  assert.match(commands, /keyring::Entry::new\("MCTier", "auto-lobby-password"\)/);
   assert.match(commands, /spawn_blocking\(read_auto_lobby_secret\)/);
   assert.match(commands, /lobby_password:\s*None/);
   assert.match(commands, /"lobbyPassword": lobby_password/);
-  assert.match(configManager, /#\[serde\(default, skip_serializing\)\][\s\S]{0,100}pub lobby_password/);
+  assert.match(configManager, /secret_store::protect_lobby_password\(password\)/);
 });

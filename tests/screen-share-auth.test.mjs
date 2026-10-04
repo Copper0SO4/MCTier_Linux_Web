@@ -31,9 +31,9 @@ test('ICE buffering is partitioned by direction, peer, and route version', () =>
 });
 
 test('Android capture announcement is gated on capture success and stop callback', () => {
-  assert.match(androidController, /fun startSharing\(shareId: String, permissionData: Intent, password: String\? = null\): Boolean/);
+  assert.match(androidController, /fun startSharing\(shareId: String, permissionData: Intent, password: String\? = null, quality: ScreenShareQuality = ScreenShareQuality\(\)\): Boolean/);
   assert.match(androidController, /onCaptureStopped\?\.invoke\(shareId\)/);
-  assert.match(androidRepository, /val started = screenController\?\.startSharing\(shareId, data, password\) == true/);
+  assert.match(androidRepository, /val started = screenController\?\.startSharing\(shareId, data, password, selectedQuality\) == true/);
   assert.match(androidRepository, /announcedScreenShares \+= shareId/);
 });
 
@@ -95,7 +95,7 @@ test('required screen-share passwords cannot be empty on either platform', () =>
   const desktopStart = desktop.slice(desktop.indexOf('async startSharing'), desktop.indexOf('async stopSharing'));
   const androidAnnounce = androidRepository.slice(androidRepository.indexOf('fun announceScreenShare'), androidRepository.indexOf('// ========================= 文件夹共享'));
   assert.match(desktopStart, /if \(requirePassword && !password\?\.trim\(\)\)/);
-  assert.ok(desktopStart.indexOf('!password?.trim()') < desktopStart.indexOf('getDisplayMedia'));
+  assert.ok(desktopStart.indexOf('!password?.trim()') < desktopStart.indexOf('requestNativeScreen'));
   assert.match(androidAnnounce, /if \(requirePassword && password\?\.trim\(\)\.isNullOrEmpty\(\)\)/);
 });
 

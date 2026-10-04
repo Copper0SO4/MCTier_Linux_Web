@@ -11,8 +11,8 @@ export const MAX_CHAT_TEXT_LENGTH = 10_000;
 export const MAX_ANNOUNCEMENT_LENGTH = 200;
 export const MAX_TODO_ITEMS = 200;
 export const MAX_TODO_TEXT_LENGTH = 200;
-export const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
-export const MAX_IMAGE_DATA_URL_LENGTH = 14 * 1024 * 1024;
+export const MAX_IMAGE_BYTES = 2 * 1024 * 1024;
+export const MAX_IMAGE_DATA_URL_LENGTH = 3 * 1024 * 1024;
 export const CHAT_TOKEN_LENGTH = 64;
 /** Uncompressed P-256 SubjectPublicKeyInfo DER is 91 bytes (~124 chars of
  * base64). The cap leaves room for encoder differences while still rejecting
@@ -125,7 +125,7 @@ export function isSafeSignalingServer(value: unknown): value is string {
   try {
     const parsed = new URL(trimmed);
     return (
-      (parsed.protocol === 'ws:' || parsed.protocol === 'wss:') &&
+        parsed.protocol === 'wss:' &&
       parsed.hostname.length > 0 &&
       !parsed.username &&
       !parsed.password &&
@@ -141,10 +141,16 @@ export function isSafeServerNode(value: unknown): value is string {
   const trimmed = value.trim();
   if (trimmed === 'custom') return true;
   if (!hasSafeEndpointCharacters(trimmed)) return false;
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//i.exec(trimmed);
+  if (!scheme || !SERVER_NODE_PROTOCOLS.has(`${scheme[1].toLowerCase()}:`)) return false;
+  const remainder = trimmed.slice(scheme[0].length);
+  // Older WebView2 treats tcp/udp/txt URLs as opaque paths (hostname is empty).
+  // Parse the same authority with a standard scheme; never change the actual
+  // EasyTier address. Reject HTTP's slash/backslash repair before parsing.
+  if (!remainder || /^[/?#]/.test(remainder) || remainder.includes('\\')) return false;
   try {
-    const parsed = new URL(trimmed);
+    const parsed = new URL(`http://${remainder}`);
     return (
-      SERVER_NODE_PROTOCOLS.has(parsed.protocol) &&
       parsed.hostname.length > 0 &&
       !parsed.username &&
       !parsed.password &&

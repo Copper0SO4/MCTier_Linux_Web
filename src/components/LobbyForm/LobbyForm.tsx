@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Form, Input, Button, Space, Typography, Modal, Switch, App as AntdApp } from 'antd';
+import { Alert, Form, Input, Button, Space, Typography, Modal, Switch, App as AntdApp } from 'antd';
 import { PasswordInput } from '../PasswordInput/PasswordInput';
 import { invoke } from '@tauri-apps/api/core';
 import { readText } from '@tauri-apps/plugin-clipboard-manager';
@@ -18,6 +18,8 @@ import { statsService } from '../../services/stats/statsService';
 import { PublicPlaza } from '../PublicPlaza/PublicPlaza';
 import type { PublicLobby } from '../../services/lobby/publicLobbies';
 import { parseLobbyInviteText, type LobbyInvite } from '../../services/lobby/lobbyInvite';
+import { isProtectedPassword, protectLobbyPassword } from '../../security/lobbyPassword';
+import { selectSavedLobbyPlayerName } from '../../services/lobby/savedLobbyIdentity';
 import {
   lobbySessionCoordinator,
   type LobbySessionTicket,
@@ -71,10 +73,7 @@ const ServerNodeSelect: React.FC<ServerNodeSelectProps> = ({
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listboxId = React.useId();
-  const selectedIndex = Math.max(
-    0,
-    options.findIndex((option) => option.value === value)
-  );
+  const selectedIndex = options.findIndex((option) => option.value === value);
   const selectedOption = options[selectedIndex];
 
   useEffect(() => {
@@ -105,7 +104,7 @@ const ServerNodeSelect: React.FC<ServerNodeSelectProps> = ({
       const spaceAbove = triggerRect.top - cardRect.top;
       setPlacement(spaceBelow < estimatedMenuHeight && spaceAbove > spaceBelow ? 'top' : 'bottom');
     }
-    setActiveIndex(selectedIndex);
+    setActiveIndex(Math.max(0, selectedIndex));
     setOpen(true);
   };
 
@@ -213,7 +212,7 @@ const ServerNodeSelect: React.FC<ServerNodeSelectProps> = ({
 
 // 内置 EasyTier 公共节点
 const HAIBO_US_EASYTIER_SERVER = 'udp://us01.225284.xyz:11010';
-const DEFAULT_EASYTIER_SERVER = HAIBO_US_EASYTIER_SERVER;
+const DEFAULT_EASYTIER_SERVER = 'tcp://easytier.weiai.org.cn:11010';
 const REMOVED_QINGYUN_NODE = 'wss://mctiers.pmhs.top';
 
 // 旧版官方节点（用于兼容历史配置，自动迁移到 WebSockets 节点）
@@ -222,7 +221,7 @@ const isLegacyOfficialServer = (server?: string) => {
   return (
     server === 'tcp://mctier.pmhs.top:11010' ||
     server === 'udp://mctier.pmhs.top:11010' ||
-    server === 'wss://test.pmhs.top' ||
+    server === 'wss://mctier.pmhs.top/signaling' ||
     server === 'ws://test.pmhs.top' ||
     server === 'wss://public.456469.xyz'
   );
@@ -237,9 +236,9 @@ interface CustomEasyTierNode {
 // 获取服务器节点列表（包含官方节点、默认备用节点和自定义节点）
 const getServerNodes = (customNodes: CustomEasyTierNode[]) => {
   const nodes = [
-    { value: HAIBO_US_EASYTIER_SERVER, label: tl('海波美国节点', 'Haibo US Node') },
+    { value: DEFAULT_EASYTIER_SERVER, label: tl('唯爱厦门节点', 'Weiai Xiamen Node') },
     { value: 'tcp://225284.xyz:11010', label: tl('海波中国大陆节点', 'Haibo Mainland China Node') },
-    { value: 'tcp://easytier.weiai.org.cn:11010', label: tl('唯爱厦门节点', 'Weiai Xiamen Node') },
+    { value: HAIBO_US_EASYTIER_SERVER, label: tl('海波美国节点', 'Haibo US Node') },
   ];
   const knownAddresses = new Set(nodes.map((node) => node.value));
 
@@ -458,6 +457,7 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
   const { setAppState, setLobby, config } = useAppStore();
   const [form] = Form.useForm<LobbyFormValues>();
   const [loading, setLoading] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const preferredServerSaveGeneration = useRef(0);
   const [showCustomServer, setShowCustomServer] = useState(config.preferredServer === 'custom');
   const [showFavoritesModal, setShowFavoritesModal] = useState(false);
@@ -469,8 +469,8 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
     privateSignalingServer: string;
   }>({
     usePrivateServer: false,
-    privateEasytierServer: 'udp://us01.225284.xyz:11010',
-    privateSignalingServer: 'wss://test.pmhs.top',
+    privateEasytierServer: DEFAULT_EASYTIER_SERVER,
+    privateSignalingServer: 'wss://mctier.pmhs.top/signaling',
   });
   // @ts-ignore - customNodes is used in useEffect to load custom nodes
   const [customNodes, setCustomNodes] = useState<CustomEasyTierNode[]>([]);
@@ -579,9 +579,9 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
   }, [i18n.language, customNodes]);
 
   // 一键随机生成大厅名称和密码
-  const handleRandomGenerate = () => {
+  const handleRandomGenerate = async () => {
     const lobbyName = generateRandomLobbyName();
-    const password = generateRandomPassword();
+    const password = await protectLobbyPassword(generateRandomPassword());
 
     form.setFieldsValue({
       lobbyName,
@@ -591,9 +591,12 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
     message.success(tl('已随机生成大厅名称和密码', 'Random lobby name and password generated'));
   };
 
-  const applyImportedLobby = (
+  const applyImportedLobby = async (
     invite: LobbyInvite & { playerName?: string; useDomain?: boolean }
   ) => {
+    let password: string;
+    try { password = await protectLobbyPassword(invite.password); }
+    catch { message.error(tl('无法读取加密密码，请检查系统凭据库或重新获取邀请', 'Cannot read encrypted password. Check system credentials or request a new invite')); return; }
     const rawServerNode = invite.serverNode?.trim() || undefined;
     const legacyCustomSentinel = rawServerNode === 'custom';
     const serverNode = legacyCustomSentinel
@@ -611,7 +614,7 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
     setShowCustomServer(legacyCustomSentinel ? true : false);
     form.setFieldsValue({
       lobbyName: invite.name,
-      password: invite.password,
+      password,
       playerName: invite.playerName || config.playerName || '',
       useDomain: invite.useDomain ?? false,
       ...(legacyCustomSentinel ? { serverNode: 'custom' } : serverNode ? { serverNode } : {}),
@@ -622,8 +625,8 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
   const handleSelectFavorite = (lobby: FavoriteLobby) => {
     applyImportedLobby({
       name: lobby.name,
-      password: '',
-      playerName: lobby.playerName,
+      password: lobby.password || '',
+      playerName: selectSavedLobbyPlayerName(form.getFieldValue('playerName'), lobby.playerName, config.playerName),
       useDomain: lobby.useDomain,
       serverNode: lobby.serverNode,
       signalingServer: lobby.signalingServer,
@@ -634,8 +637,8 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
   const handleSelectRecent = (lobby: RecentLobby) => {
     applyImportedLobby({
       name: lobby.name,
-      password: '',
-      playerName: lobby.playerName,
+      password: lobby.password || '',
+      playerName: selectSavedLobbyPlayerName(form.getFieldValue('playerName'), lobby.playerName, config.playerName),
       useDomain: lobby.useDomain,
       serverNode: lobby.serverNode,
       signalingServer: lobby.signalingServer,
@@ -649,7 +652,7 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
       name: lobby.lobbyName,
       password: '',
       serverNode: hostNode || undefined,
-      signalingServer: hostNode ? 'wss://test.pmhs.top' : undefined,
+      signalingServer: hostNode ? 'wss://mctier.pmhs.top/signaling' : undefined,
     });
     message.info(
       hostNode
@@ -721,10 +724,10 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
           // 使用 ?? 运算符，只在 null/undefined 时使用默认值
           privateEasytierServer: isSafeServerNode(settings.privateEasytierServer)
             ? settings.privateEasytierServer
-            : 'udp://us01.225284.xyz:11010',
+            : DEFAULT_EASYTIER_SERVER,
           privateSignalingServer: isSafeSignalingServer(settings.privateSignalingServer)
             ? settings.privateSignalingServer
-            : 'wss://test.pmhs.top',
+            : 'wss://mctier.pmhs.top/signaling',
         });
 
         // 加载自定义节点
@@ -748,12 +751,14 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
   }, []);
 
   // 检测自动大厅配置，自动填充并提交
+  const pendingAutoConfig = useRef<any>(null);
   useEffect(() => {
-    const autoConfig = (window as any).__autoLobbyConfig;
-    // 没有配置或不是创建模式就跳过
-    if (!autoConfig || mode !== 'create') return;
+    const autoConfig = (window as any).__autoLobbyConfig || pendingAutoConfig.current;
+    // 自动进入使用与手动加入相同的路径
+    if (!autoConfig || mode !== 'join') return;
     // 立即清除，防止重复触发
     delete (window as any).__autoLobbyConfig;
+    pendingAutoConfig.current = autoConfig;
     const { lobbyName, lobbyPassword, playerName, useDomain } = autoConfig;
     form.setFieldsValue({
       lobbyName,
@@ -762,9 +767,11 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
       useDomain: useDomain || false,
       serverNode: resolvedPreferredServer,
     });
-    setTimeout(() => {
+    const timer = setTimeout(() => {
+      pendingAutoConfig.current = null;
       form.submit();
     }, 300);
+    return () => clearTimeout(timer);
   }, [form, mode, config.preferredServer]);
 
   // 检测邀请 deep link 预填（仅填表，不自动提交）
@@ -804,7 +811,7 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
         invite.name.length >= 4 &&
         (invite.password.length === 0 || invite.password.length >= 8)
       ) {
-        applyImportedLobby(invite);
+        await applyImportedLobby(invite);
         message.success(
           invite.serverNode
             ? tl(
@@ -901,13 +908,16 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
     }
   };
 
+  const submissionInFlight = useRef(false);
   const handleSubmit = async (values: LobbyFormValues, overrideNode?: string) => {
+    if (submissionInFlight.current) return;
+    submissionInFlight.current = true;
     // 记录本次实际尝试的节点选择，便于失败时提供「换节点重试」
     const failedNodeValue = overrideNode ?? values.serverNode;
     let sessionTicket: LobbySessionTicket | null = null;
     try {
+      setSubmitError(null);
       setLoading(true);
-      setAppState('connecting');
 
       // 验证输入
       if (!values.lobbyName?.trim()) {
@@ -921,7 +931,7 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
 
       // 确定实际使用的服务器地址
       let serverNode = values.serverNode;
-      let signalingServer = 'wss://test.pmhs.top'; // 默认官方信令服务器
+      let signalingServer = 'wss://mctier.pmhs.top/signaling'; // 默认官方信令服务器
       const usingImportedEndpoint = Boolean(
         temporaryServerNode && values.serverNode === temporaryServerNode && !overrideNode
       );
@@ -929,13 +939,13 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
       if (overrideNode) {
         // 一键换节点重试：强制使用指定的内置节点（官方信令服务器）
         serverNode = overrideNode;
-        signalingServer = 'wss://test.pmhs.top';
+        signalingServer = 'wss://mctier.pmhs.top/signaling';
         console.log('========================================');
         console.log('🔁 一键换节点重试，使用节点:', serverNode);
         console.log('========================================');
       } else if (usingImportedEndpoint && temporaryServerNode) {
         serverNode = temporaryServerNode;
-        signalingServer = temporarySignalingServer || 'wss://test.pmhs.top';
+        signalingServer = temporarySignalingServer || 'wss://mctier.pmhs.top/signaling';
         console.log('使用大厅邀请指定的临时连接节点:', serverNode);
       } else if (privateServerConfig.usePrivateServer) {
         // 如果启用了私有服务器，使用私有服务器配置（不添加默认备用节点）
@@ -975,18 +985,26 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
         console.log('========================================');
       }
 
-      if (
-        !isSafeServerNode(serverNode) ||
-        serverNode === 'custom' ||
-        !isSafeSignalingServer(signalingServer)
-      ) {
-        message.error(
-          tl('服务器地址无效，请检查后重试', 'Invalid server address. Check it and retry.')
-        );
+      const invalidNode = !isSafeServerNode(serverNode) || serverNode === 'custom';
+      const invalidSignaling = !isSafeSignalingServer(signalingServer);
+      if (invalidNode || invalidSignaling) {
+        const detail = invalidNode
+          ? tl('EasyTier 节点地址无效，请重新选择节点或检查自定义节点地址', 'Invalid EasyTier node address. Select a node or check the custom address.')
+          : tl('信令服务器地址无效，必须使用 wss:// 加密连接', 'Invalid signaling address. An encrypted wss:// connection is required.');
+        setSubmitError(detail);
+        message.error(detail);
+        // Diagnose configuration/engine differences without recording endpoints,
+        // which can contain private hostnames or query-string credentials.
+        console.warn('大厅地址校验失败', {
+          invalidNode, invalidSignaling,
+          source: overrideNode ? 'retry' : usingImportedEndpoint ? 'invitation'
+            : privateServerConfig.usePrivateServer ? 'private' : values.serverNode === 'custom' ? 'custom' : 'selected',
+        });
         return;
       }
 
       const commandName = mode === 'create' ? 'create_lobby' : 'join_lobby';
+      setAppState('connecting');
       sessionTicket = lobbySessionCoordinator.begin();
 
       // 记录本次实际使用的节点地址，供公开广场发布时同步给加入者
@@ -1008,7 +1026,9 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
       // 调用后端命令
       const lobby = await invoke<Lobby>(commandName, {
         name: values.lobbyName.trim(),
-        password: values.password.trim(),
+        // Ant Design omits an untouched optional password field at runtime.
+        // Normalize it here so passwordless joins do not call trim() on undefined.
+        password: values.password?.trim() ?? '',
         playerName: values.playerName.trim(),
         playerId: currentPlayerId,
         serverNode: serverNode,
@@ -1074,8 +1094,9 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
 
       // 记录到"最近大厅"，便于下次快速重进
       try {
-        recentService.recordLobby({
+        await recentService.recordLobby({
           name: values.lobbyName.trim(),
+          password: lobby.password || '',
           playerName: values.playerName.trim(),
           useDomain: values.useDomain === true,
           serverNode,
@@ -1092,11 +1113,7 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
         console.warn('记录统计会话失败（忽略）:', e);
       }
 
-      message.success(
-        mode === 'create'
-          ? tl('大厅创建成功！', 'Lobby created!')
-          : tl('成功加入大厅！', 'Joined the lobby!')
-      );
+      message.info(tl('正在连接大厅...', 'Connecting to lobby...'));
 
       // 关闭表单
       onClose();
@@ -1128,6 +1145,8 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
         }
       }
 
+      setSubmitError(errorMessage);
+
       // 检查是否是权限相关的错误
       const isPermissionError =
         errorMessage.includes('拒绝访问') ||
@@ -1151,8 +1170,8 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
             <div>
               <p style={{ marginBottom: '12px' }}>
                 {tl(
-                  'MCTier 需要管理员权限来创建虚拟网卡。',
-                  'MCTier needs administrator rights to create the virtual adapter.'
+                  '请在系统授权提示中允许 EasyTier 创建虚拟网卡。MCTier 主程序无需以管理员身份重启；若仍失败，请检查安全软件的拦截记录。',
+                  'Allow EasyTier to create the virtual adapter when the system requests permission. MCTier itself does not need to restart as administrator. If it still fails, check your security software blocking history.'
                 )}
               </p>
             </div>
@@ -1209,11 +1228,11 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
                 'This node failed to connect. Click a button below to try another node, or:'
               )}
               <br />
-              {tl('1. 以管理员身份运行 MCTier', '1. Run MCTier as administrator')}
+              {tl('1. 检查 EasyTier 内核是否被安全软件隔离或删除', '1. Check whether security software quarantined or deleted the EasyTier core')}
               <br />
               {tl(
-                '2. 将 MCTier 加入杀毒软件 / 防火墙白名单',
-                '2. Add MCTier to your antivirus / firewall whitelist'
+                '2. 恢复官方安装包中的内核，并将 MCTier 加入安全软件信任列表',
+                '2. Restore the core from the official package and trust MCTier in your security software'
               )}
               <br />
               {tl(
@@ -1289,13 +1308,13 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
                   {tl('可尝试：', 'You can try:')}
                   <br />
                   {tl(
-                    '1. 以管理员身份运行 MCTier（创建虚拟网卡需要管理员权限）',
-                    '1. Run MCTier as administrator (creating the virtual adapter needs admin rights)'
+                    '1. 检查 EasyTier 内核是否被安全软件隔离或删除',
+                    '1. Check whether security software quarantined or deleted the EasyTier core'
                   )}
                   <br />
                   {tl(
-                    '2. 将 MCTier 加入杀毒软件 / 防火墙白名单后重试',
-                    '2. Add MCTier to your antivirus / firewall whitelist and retry'
+                    '2. 恢复官方安装包中的内核，并将 MCTier 加入安全软件信任列表后重试',
+                    '2. Restore the core from the official package and trust MCTier in your security software before retrying'
                   )}
                   <br />
                   {tl(
@@ -1315,6 +1334,7 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
         }
       }
     } finally {
+      submissionInFlight.current = false;
       const currentSession = lobbySessionCoordinator.current();
       if (
         !sessionTicket ||
@@ -1495,6 +1515,8 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
         >
           <Form
             form={form}
+            name="lobby-connection"
+            autoComplete="off"
             layout="vertical"
             onFinish={handleSubmit}
             initialValues={initialValues}
@@ -1523,6 +1545,7 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
                 },
                 {
                   validator: (_, value) => {
+                    if (isProtectedPassword(value)) return Promise.resolve();
                     if (!value) return Promise.resolve();
                     const hasAlphanumeric = /[a-zA-Z0-9\u4e00-\u9fa5]/.test(value);
                     if (!hasAlphanumeric) {
@@ -1564,6 +1587,10 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
                 {
                   validator: (_, value) => {
                     if (!value) return Promise.resolve();
+                    // Protected local/invite envelopes are opaque UI values. Their
+                    // ciphertext length is unrelated to the plaintext policy;
+                    // the Tauri command resolves and validates them at the boundary.
+                    if (isProtectedPassword(value)) return Promise.resolve();
                     if (value.trim() !== value || value.length < 8 || value.length > 32) {
                       return Promise.reject(
                         new Error(
@@ -1705,8 +1732,8 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
                 >
                   <Input
                     placeholder={tl(
-                      '例如：udp://us01.225284.xyz:11010 或 wss://your-server.com',
-                      'e.g. udp://us01.225284.xyz:11010 or wss://your-server.com'
+                      '例如：tcp://easytier.weiai.org.cn:11010 或 wss://your-server.com',
+                      'e.g. tcp://easytier.weiai.org.cn:11010 or wss://your-server.com'
                     )}
                     size="large"
                     disabled={loading}
@@ -1726,18 +1753,18 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
                       ),
                     },
                     {
-                      pattern: /^wss?:\/\/.+$/,
+                      pattern: /^wss:\/\/.+$/,
                       message: tl(
-                        '格式：ws://域名/path 或 wss://域名/path',
-                        'Format: ws://host/path or wss://host/path'
+                        '格式：wss://域名/path',
+                        'Format: wss://host/path'
                       ),
                     },
                   ]}
                 >
                   <Input
                     placeholder={tl(
-                      '例如：wss://test.pmhs.top',
-                      'e.g. wss://test.pmhs.top'
+                      '例如：wss://mctier.pmhs.top/signaling',
+                      'e.g. wss://mctier.pmhs.top/signaling'
                     )}
                     size="large"
                     disabled={loading}
@@ -1795,6 +1822,16 @@ export const LobbyForm: React.FC<LobbyFormProps> = ({ mode, onClose }) => {
               <Switch disabled={loading} />
             </Form.Item>
 
+            {submitError && (
+              <Alert
+                type="error"
+                showIcon
+                role="alert"
+                message={mode === 'create' ? tl('创建大厅失败', 'Failed to create lobby') : tl('加入大厅失败', 'Failed to join lobby')}
+                description={submitError}
+                style={{ marginBottom: 16, overflowWrap: 'anywhere' }}
+              />
+            )}
             <Form.Item className="lobby-form-actions">
               <Space size="middle" style={{ width: '100%' }}>
                 <motion.div

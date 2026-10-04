@@ -19,6 +19,7 @@ import org.webrtc.ScreenCapturerAndroid
 import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoSource
+import org.webrtc.VideoSink
 import org.webrtc.VideoTrack
 import top.pmh13.mctier.data.IcePayload
 import top.pmh13.mctier.data.SdpPayload
@@ -68,7 +69,14 @@ class RemoteControlController(
     private var peerId: String? = null
     private var peerName: String? = null
     private var inputChannelOut: DataChannel? = null
+    private var controllerVideoTrack: VideoTrack? = null
+    private var firstFrameProbe: VideoSink? = null
+    private var hasControllerFrame = false
     var onControllerVideoTrack: ((VideoTrack?) -> Unit)? = null
+        set(value) {
+            field = value
+            value?.invoke(controllerVideoTrack)
+        }
     var onControllerActive: ((peerName: String) -> Unit)? = null
     var onRejected: ((reason: String) -> Unit)? = null
     private val pendingIce = BoundedIceCache<String, IceCandidate>(
@@ -93,9 +101,15 @@ class RemoteControlController(
     // 看门狗：若发起请求/接受后迟迟未建立连接(pc 仍为空)，自动复位，避免卡在"忙碌"状态
     private val watchdog = android.os.Handler(android.os.Looper.getMainLooper())
     @Volatile private var stopping = false
-    private fun armWatchdog(ms: Long) {
+    private fun armWatchdog(ms: Long, waitForFrame: Boolean = false) {
         watchdog.removeCallbacksAndMessages(null)
-        watchdog.postDelayed({ if (pc == null && sessionId != null) stop(notify = true) }, ms)
+        val expectedSessionId = sessionId
+        watchdog.postDelayed({
+            if (sessionId == expectedSessionId && (pc == null || (waitForFrame && !hasControllerFrame))) {
+                Log.w(TAG, "远程控制连接或首帧超时")
+                stop(notify = true)
+            }
+        }, ms)
     }
     private fun cancelWatchdog() { watchdog.removeCallbacksAndMessages(null) }
 
@@ -215,7 +229,7 @@ class RemoteControlController(
                         }
 
                         override fun onSetFailure(error: String) {
-                            if (isCurrentConnection(sid, expectedPeerId, connection)) stop(notify = false)
+                            if (isCurrentConnection(sid, expectedPeerId, connection)) stop(notify = true)
                         }
                     }, SessionDescription(SessionDescription.Type.ANSWER, answer.sdp))
                 }
@@ -306,7 +320,7 @@ class RemoteControlController(
                     if (s == PeerConnection.IceConnectionState.FAILED) {
                         watchdog.post {
                             if (isCurrentConnection(expectedSessionId, expectedPeerId, callbackPc)) {
-                                stop(notify = false)
+                                stop(notify = true)
                             }
                         }
                     }
@@ -339,7 +353,24 @@ class RemoteControlController(
                 override fun onAddTrack(receiver: org.webrtc.RtpReceiver, streams: Array<out org.webrtc.MediaStream>) {
                     val callbackPc = currentConnection() ?: return
                     val track = receiver.track()
-                    if (track is VideoTrack) onControllerVideoTrack?.invoke(track)
+                    if (track is VideoTrack) {
+                        firstFrameProbe?.let { controllerVideoTrack?.removeSink(it) }
+                        controllerVideoTrack = track
+                        hasControllerFrame = false
+                        val probe = VideoSink {
+                            watchdog.post {
+                                if (isCurrentConnection(expectedSessionId, expectedPeerId, callbackPc) && controllerVideoTrack === track) {
+                                    hasControllerFrame = true
+                                    cancelWatchdog()
+                                    firstFrameProbe?.let { track.removeSink(it) }
+                                    firstFrameProbe = null
+                                }
+                            }
+                        }
+                        firstFrameProbe = probe
+                        track.addSink(probe)
+                        onControllerVideoTrack?.invoke(track)
+                    }
                 }
             },
         ) ?: return
@@ -381,12 +412,12 @@ class RemoteControlController(
                         sendSignal(SignalingEnvelope(type = "remote-control-offer", from = localPlayerId, to = expectedPeerId, sessionId = expectedSessionId, offer = SdpPayload(desc.type.canonicalForm(), desc.description)))
                         if (!isCurrentConnection(expectedSessionId, expectedPeerId, callbackPc)) return
                         onControllerActive?.invoke(peerName ?: "")
-                        if (isCurrentConnection(expectedSessionId, expectedPeerId, callbackPc)) cancelWatchdog()
+                        if (isCurrentConnection(expectedSessionId, expectedPeerId, callbackPc)) armWatchdog(30_000, waitForFrame = true)
                     }
 
                     override fun onSetFailure(error: String) {
                         if (isCurrentConnection(expectedSessionId, expectedPeerId, callbackPc)) {
-                            stop(notify = false)
+                            stop(notify = true)
                         } else {
                             callbackPc.close()
                         }
@@ -397,7 +428,7 @@ class RemoteControlController(
             override fun onCreateFailure(error: String) {
                 val callbackPc = expectedPc ?: return
                 if (isCurrentConnection(expectedSessionId, expectedPeerId, callbackPc)) {
-                    stop(notify = false)
+                    stop(notify = true)
                 } else {
                     callbackPc.close()
                 }
@@ -494,7 +525,7 @@ class RemoteControlController(
                     if (s == PeerConnection.IceConnectionState.FAILED) {
                         watchdog.post {
                             if (isCurrentConnection(expectedSessionId, expectedControllerId, callbackPc)) {
-                                stop(notify = false)
+                                stop(notify = true)
                             }
                         }
                     }
@@ -573,7 +604,7 @@ class RemoteControlController(
 
                             override fun onSetFailure(error: String) {
                                 if (isCurrentConnection(expectedSessionId, expectedControllerId, callbackPc)) {
-                                    stop(notify = false)
+                                    stop(notify = true)
                                 } else {
                                     callbackPc.close()
                                 }
@@ -583,7 +614,7 @@ class RemoteControlController(
 
                     override fun onCreateFailure(error: String) {
                         if (isCurrentConnection(expectedSessionId, expectedControllerId, callbackPc)) {
-                            stop(notify = false)
+                            stop(notify = true)
                         } else {
                             callbackPc.close()
                         }
@@ -594,7 +625,7 @@ class RemoteControlController(
             override fun onSetFailure(error: String) {
                 val callbackPc = expectedPc ?: return
                 if (isCurrentConnection(expectedSessionId, expectedControllerId, callbackPc)) {
-                    stop(notify = false)
+                    stop(notify = true)
                 } else {
                     callbackPc.close()
                 }
@@ -714,6 +745,10 @@ class RemoteControlController(
         if (notify && other != null && sid != null) {
             sendSignal(SignalingEnvelope(type = "remote-control-stop", from = localPlayerId, to = other, sessionId = sid))
         }
+        firstFrameProbe?.let { probe -> runCatching { controllerVideoTrack?.removeSink(probe) } }
+        firstFrameProbe = null
+        controllerVideoTrack = null
+        hasControllerFrame = false
         runCatching { onControllerVideoTrack?.invoke(null) }
         runCatching { inputChannelOut?.close() }
         inputChannelOut = null

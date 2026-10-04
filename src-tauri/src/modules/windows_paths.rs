@@ -32,9 +32,30 @@ pub fn system_command(name: &str) -> PathBuf {
             && !name.contains('?'),
         "invalid Windows system path"
     );
-    system_directory().join(name)
+    // Explorer lives in the Windows directory, not System32.
+    let directory = system_directory();
+    let command = if name.eq_ignore_ascii_case("explorer.exe") {
+        directory.parent().expect("Windows directory").join(name)
+    } else { directory.join(name) };
+    log::info!(
+        "system_command resolved: name={} command={}",
+        name,
+        command.display()
+    );
+    command
 }
 
 pub fn hosts_path() -> PathBuf {
     system_directory().join("drivers").join("etc").join("hosts")
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn explorer_resolves_to_an_existing_windows_executable() {
+        let explorer = super::system_command("explorer.exe");
+        assert!(explorer.is_file(), "Explorer is missing at {}", explorer.display());
+        assert_ne!(explorer.parent(), Some(super::system_directory().as_path()));
+        assert!(super::system_command("cmd.exe").is_file());
+    }
 }

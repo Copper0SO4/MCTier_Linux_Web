@@ -10,6 +10,10 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.launch
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -21,11 +25,12 @@ import top.pmh13.mctier.data.MctierJson
 import top.pmh13.mctier.data.SignalingEnvelope
 import java.util.concurrent.TimeUnit
 
-class SignalingClient {
-    private val client = OkHttpClient.Builder()
+class SignalingClient(
+    private val client: WebSocket.Factory = OkHttpClient.Builder()
         .pingInterval(15, TimeUnit.SECONDS)
         .retryOnConnectionFailure(true)
-        .build()
+        .build(),
+) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     @Volatile private var webSocket: WebSocket? = null
     @Volatile private var reconnectAttempts = 0
@@ -36,14 +41,35 @@ class SignalingClient {
     @Volatile private var reconnectJob: Job? = null
     @Volatile private var stableJob: Job? = null
     @Volatile private var heartbeatJob: Job? = null
+    @Volatile private var registrationResult: CompletableDeferred<Unit>? = null
+
+    suspend fun connectAndAwaitRegistration(args: ConnectArgs) {
+        val pending = CompletableDeferred<Unit>()
+        registrationResult?.cancel()
+        registrationResult = pending
+        try {
+            connect(args)
+            withTimeout(30_000) { pending.await() }
+        } catch (error: Throwable) {
+            if (registrationResult === pending) close()
+            if (error is TimeoutCancellationException) throw IllegalStateException("大厅注册超时，请检查网络后重试")
+            throw error
+        } finally {
+            if (registrationResult === pending) registrationResult = null
+        }
+    }
 
     private val _events = MutableSharedFlow<SignalingEnvelope>(extraBufferCapacity = 64)
     val events: SharedFlow<SignalingEnvelope> = _events
 
     private val _connected = MutableStateFlow(false)
     val connected: StateFlow<Boolean> = _connected
+    private val _connectionError = MutableStateFlow<String?>(null)
+    val connectionError: StateFlow<String?> = _connectionError
 
     fun connect(args: ConnectArgs) {
+        require(LobbyInviteCodec.isValidSignalingServer(args.url)) { "Signaling requires WSS" }
+        _connectionError.value = null
         val generation = synchronized(this) {
             connectionGeneration += 1
             connectArgs = args
@@ -60,6 +86,7 @@ class SignalingClient {
     }
 
     fun send(message: SignalingEnvelope): Boolean {
+        if (message.type != "register-v3" && (!_connected.value || serverSessionGeneration == null)) return false
         val outgoing = serverSessionGeneration?.let { generation ->
             if (message.type == "register-v3" || message.type == "server-challenge") message
             else message.copy(sessionGeneration = message.sessionGeneration ?: generation)
@@ -88,6 +115,8 @@ class SignalingClient {
     }
 
     fun close() {
+        registrationResult?.cancel(CancellationException("Lobby session closed"))
+        _connectionError.value = null
         synchronized(this) {
             connectionGeneration += 1
             connectArgs = null
@@ -103,10 +132,14 @@ class SignalingClient {
     }
 
     private fun open(args: ConnectArgs, generation: Long) {
+        _connected.value = false
+        serverSessionGeneration = null
+        registrationSent = false
         // 先彻底关闭旧连接，避免与服务器形成“重复连接”被来回踢导致信令抖动(flapping)
         webSocket?.let { runCatching { it.cancel() } }
         webSocket = null
         val request = Request.Builder().url(args.url).build()
+        var registrationAccepted = false
         val ws = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(ws: WebSocket, response: Response) {
                 if (ws !== webSocket || generation != connectionGeneration) return
@@ -123,6 +156,11 @@ class SignalingClient {
                     when (message.type) {
                         "server-challenge" -> handleServerChallenge(ws, args, generation, message)
                         "register-success" -> {
+                            if (registrationAccepted) {
+                                android.util.Log.e("SignalingClient", "拒绝同一连接上的重复注册响应")
+                                ws.close(1008, "duplicate-register-success")
+                                return@onSuccess
+                            }
                             val assignedId = message.clientId
                             val assignedGeneration = message.sessionGeneration
                             if (assignedId != args.identityId || assignedGeneration == null || assignedGeneration <= 0L) {
@@ -130,6 +168,8 @@ class SignalingClient {
                                 ws.close(1008, "invalid-register-success")
                                 return@onSuccess
                             }
+                            registrationAccepted = true
+                            _connectionError.value = null
                             serverSessionGeneration = assignedGeneration
                             _connected.value = true
                             startHeartbeat()
@@ -137,6 +177,27 @@ class SignalingClient {
                             stableJob?.cancel()
                             stableJob = scope.launch { delay(6000); if (ws === webSocket) reconnectAttempts = 0 }
                             _events.tryEmit(message)
+                            registrationResult?.complete(Unit)
+                        }
+                        "register-error" -> {
+                            val detail = message.message ?: "大厅注册失败"
+                            val pending = registrationResult
+                            // Explicit rejection is terminal for this socket. Do not
+                            // turn a password error into an endless reconnect loop.
+                            connectArgs = null
+                            serverSessionGeneration = null
+                            _connected.value = false
+                            _connectionError.value = detail
+                            reconnectJob?.cancel()
+                            stableJob?.cancel()
+                            heartbeatJob?.cancel()
+                            webSocket = null
+                            ws.close(1008, "registration-rejected")
+                            if (pending?.isActive == true) {
+                                pending.completeExceptionally(RegistrationRejected(detail))
+                            } else {
+                                _events.tryEmit(message)
+                            }
                         }
                         else -> {
                             // A top-level sessionGeneration on player-joined identifies
@@ -155,6 +216,7 @@ class SignalingClient {
                 serverSessionGeneration = null
                 registrationSent = false
                 _connected.value = false
+                _connectionError.value = "WebSocket $code"
                 android.util.Log.w("SignalingClient", "WS onClosed code=$code reason=$reason")
                 scheduleReconnect(args, generation)
             }
@@ -170,6 +232,11 @@ class SignalingClient {
                 serverSessionGeneration = null
                 registrationSent = false
                 _connected.value = false
+                _connectionError.value = when (response?.code) {
+                    525 -> "HTTP 525: SSL handshake failed with origin server"
+                    null -> "Network connection failed"
+                    else -> "HTTP ${response.code}"
+                }
                 android.util.Log.e("SignalingClient", "WS onFailure: ${t.message} resp=${response?.code}")
                 scheduleReconnect(args, generation)
             }

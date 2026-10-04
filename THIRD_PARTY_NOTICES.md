@@ -5,11 +5,13 @@
 This file documents the third-party components distributed with MCTier, together with
 their licenses, upstream sources, versions and modification status.
 
-最后更新 / Last updated: 2026-08-31（对应 MCTier 3.0.0）
+最后更新 / Last updated: 2026-10-03（对应 MCTier 3.9.5）
 
 ---
 
 ## 1. 组件总览 / Component Summary
+
+图片发送使用两端共用的 `shared/image-optimizer`：oxipng 10.2.1、turbojpeg 1.5.1 / libjpeg-turbo、webp 0.3.1 / libwebp、weezl 0.2.1、image 0.25.9 及 libdeflate。源码版本由该目录和桌面端的 Cargo.lock 固定，均未修改上游库；完整许可证随包分发于 `licenses/image-optimizer.txt`（Android assets 中为 `image-optimizer.txt`）。This software is based in part on the work of the Independent JPEG Group.
 
 | 组件 | 来源 | 版本 | Commit | 许可证 | 是否修改 |
 | --- | --- | --- | --- | --- | --- |
@@ -389,7 +391,7 @@ Wintun / WireGuard 相关声明见 §7。
 
 | 服务 | 默认地址 | 服务端可见的元数据 |
 | --- | --- | --- |
-| 信令服务器 | `wss://test.pmhs.top` | 客户端公网 IP、连接时间、大厅标识、成员数与昵称、客户端版本 |
+| 信令服务器 | `wss://mctier.pmhs.top/signaling` | 客户端公网 IP、连接时间、大厅标识、成员数与昵称、客户端版本 |
 | EasyTier 节点 | `udp://us01.225284.xyz:11010` | 客户端公网 IP、连接时间、流量特征（作为中继时转发加密流量） |
 | 版本检查 | `https://gitee.com/api/v5/repos/peng-minghang/mctier/tags` | 请求发起 IP 与时间（由 Gitee 记录） |
 
@@ -408,3 +410,14 @@ Wintun / WireGuard 相关声明见 §7。
 
 每次升级第三方组件时，MCTier 将同步更新本文件中的：版本号、commit SHA、修改状态、
 补丁文件与二进制 SHA-256，并在发布说明中一并记录。
+
+## 14. 本地文件预览与语音转写 / Local Preview and Transcription
+
+- `pdfjs-dist` 6.3.289 (Apache-2.0): https://github.com/mozilla/pdf.js . Used without source changes for desktop canvas PDF rendering with MCTier controls. Worker, CMaps, fonts and decoder WASM are bundled locally under `pdfjs/`, including their license files. The built-in browser PDF viewer is not used.
+
+- `@aiden0z/pptx-renderer` 1.3.0 (Apache-2.0): https://github.com/aiden0z/pptx-renderer . Used without source changes to render PPTX slide pages on desktop and Android. Embedded fonts and supported shapes retain their source appearance; complex effects may differ from PowerPoint.
+- `libarchive.js` 2.0.2 (MIT), using libarchive (BSD): https://github.com/nika-begiashvili/libarchivejs . The build inlines WASM and replaces the worker's `import.meta.url` with `self.location.href` for opaque sandbox compatibility. Only archive headers are listed; entries are not extracted.
+- `sherpa-onnx` 1.13.8 (Apache-2.0): https://github.com/k2-fsa/sherpa-onnx . Desktop uses its static Rust/C API; Android uses the official JNI AAR. AAR SHA-256: `633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96`.
+- Zipformer-CTC int8 Chinese model: https://huggingface.co/csukuangfj/sherpa-onnx-streaming-zipformer-small-ctc-zh-int8-2025-04-01 . Both clients bundle gzip-compressed model data and tokens (less than 20,000,000 bytes combined); the revision, extracted sizes and SHA-256 values are pinned in `shared/speech-model.json`. Build machines obtain and verify the assets. Installed clients decompress and verify them locally on first transcription and reuse the verified cache, without network requests. Voice data is processed locally and is not uploaded. This compact model targets Mandarin rather than the previous multilingual SenseVoice model.
+
+Preview engine license texts are bundled with the generated offline viewer assets. The speech model is bundled with the installer as described above. System Office conversion, where available, runs locally with macro automation disabled.

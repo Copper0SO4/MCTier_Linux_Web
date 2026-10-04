@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ConfigProvider, theme, App as AntdApp, Button, Modal } from 'antd';
+import { FeedbackHost } from './components/FeedbackHost/FeedbackHost';
 import zhCN from 'antd/locale/zh_CN';
 import enUS from 'antd/locale/en_US';
 import { invoke } from '@tauri-apps/api/core';
@@ -22,15 +23,16 @@ import { GameHudOverlay } from './components/GameHud/GameHudOverlay';
 import { VersionUpdateModal } from './components/VersionUpdateModal';
 import { useAppStore, initializeStore } from './stores';
 import { hotkeyManager, webrtcClient, audioService, fileShareService } from './services';
-import { screenShareService } from './services/screenShare/ScreenShareService';
 import { speakingDetector } from './services/voice/SpeakingDetector';
-import { versionCheckService } from './services/version/VersionCheckService';
+import { useStartupUpdates, startupVersionStage } from './services/version/startupUpdates';
 import { DOWNLOAD_WEBSITE } from './services/version/versionPolicy';
 import { parseLobbyInviteLink } from './services/lobby/lobbyInvite';
 import { lobbySessionCoordinator } from './services/lobby/LobbySessionCoordinator';
+import { recoverVirtualAddress, isVirtualIpConflict } from './services/lobby/virtualAddressRecovery';
 import type { UserConfig } from './types';
 import {
   THEME_CHANGED_EVENT,
+  THEME_STORAGE_KEY,
   isThemePreference,
   readThemePreference,
   resolveTheme,
@@ -38,8 +40,115 @@ import {
 } from './theme/themePreference';
 import { isSafeResourceId, sanitizeUntrustedText } from './security/trustBoundary';
 import './App.css';
+import { syncBuiltinEmojiItems } from './services/emoji/emojiLibrary';
+import { NativeCapturePicker } from './components/NativeCapture/NativeCapture';
+import { ScreenRecordingExitHandler } from './components/RoomTools/ScreenRecording';
+import { startQuarkSupport } from './services/quarkSupport';
+import { QuarkStartupPrompt } from './components/QuarkSupport/QuarkStartupPrompt';
+import { DesktopComplianceGate } from './components/ComplianceGate/ComplianceGate';
+import './components/ComplianceGate/ComplianceGate.css';
 
 function App() {
+  const search = window.location.search;
+  if (search.includes('danmaku=true')) return <DanmakuOverlay />;
+  if (search.includes('gamehud=true')) return <GameHudOverlay />;
+  if (search.includes('screen-viewer=true')) return <ScreenViewerWindow />;
+  if (getCurrentWindow().label === 'main') return <DesktopComplianceGate><MainWindowApp /></DesktopComplianceGate>;
+  return <MainWindowApp />;
+}
+
+function useLanguagePreference(): void {
+  useEffect(() => {
+    void invoke<{ language?: LanguagePreference }>('get_settings')
+      .then((settings) => setLanguagePreference(settings.language ?? getLanguagePreference()))
+      .catch((error) => console.error('读取语言设置失败:', error));
+  }, []);
+}
+
+function useResolvedTheme(): ThemePreference {
+  const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
+  const [systemDark, setSystemDark] = useState(
+    () => window.matchMedia('(prefers-color-scheme: dark)').matches
+  );
+  const effectiveTheme = resolveTheme(themePreference, systemDark);
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const handleSystemTheme = (event: MediaQueryListEvent) => setSystemDark(event.matches);
+    const handlePreference = (event: Event) => {
+      const preference = (event as CustomEvent<unknown>).detail;
+      if (isThemePreference(preference)) setThemePreference(preference);
+    };
+    media.addEventListener('change', handleSystemTheme);
+    window.addEventListener(THEME_CHANGED_EVENT, handlePreference);
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === THEME_STORAGE_KEY && isThemePreference(event.newValue)) setThemePreference(event.newValue);
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      media.removeEventListener('change', handleSystemTheme);
+      window.removeEventListener(THEME_CHANGED_EVENT, handlePreference);
+      window.removeEventListener('storage', handleStorage);
+    };
+  }, []);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = effectiveTheme;
+    document.documentElement.style.colorScheme = effectiveTheme;
+  }, [effectiveTheme]);
+
+  return effectiveTheme;
+}
+
+function ScreenViewerWindow() {
+  useLanguagePreference();
+  const effectiveTheme = useResolvedTheme();
+  const urlParams = new URLSearchParams(window.location.search);
+  const rawShareId = urlParams.get('shareId');
+  const shareId = isSafeResourceId(rawShareId) ? rawShareId : '';
+  const playerName =
+    sanitizeUntrustedText(urlParams.get('playerName'), 64).trim() ||
+    tl('未知玩家', 'Unknown Player');
+
+  return (
+    <ErrorBoundary>
+      <ConfigProvider
+        locale={getLanguage() === 'en' ? enUS : zhCN}
+        theme={{
+          algorithm: effectiveTheme === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm,
+          token: {
+            colorPrimary: '#52c41a',
+            colorSuccess: '#52c41a',
+            colorWarning: '#f59e0b',
+            colorError: '#ef4444',
+            borderRadius: 8,
+            colorBgContainer: effectiveTheme === 'dark' ? 'rgba(30, 30, 45, 0.95)' : '#ffffff',
+            colorBorder:
+              effectiveTheme === 'dark' ? 'rgba(255, 255, 255, 0.1)' : 'rgba(24, 32, 43, 0.16)',
+            colorText: effectiveTheme === 'dark' ? 'rgba(255, 255, 255, 0.9)' : '#18202b',
+            colorTextSecondary:
+              effectiveTheme === 'dark' ? 'rgba(255, 255, 255, 0.6)' : '#596574',
+            fontFamily:
+              '-apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif',
+          },
+        }}
+      >
+        <AntdApp>
+          <ScreenViewer shareId={shareId} playerName={playerName} />
+        </AntdApp>
+      </ConfigProvider>
+    </ErrorBoundary>
+  );
+}
+
+function MainWindowApp() {
+  const [quarkBlocking, setQuarkBlocking] = useState(true);
+  useEffect(() => { if (getCurrentWindow().label === 'main') void startQuarkSupport(); }, []);
+  useEffect(() => {
+    void syncBuiltinEmojiItems().catch(error => console.warn('启动时准备内置表情失败，可在表情面板重试:', error));
+  }, []);
+  useLanguagePreference();
+  const effectiveTheme = useResolvedTheme();
   const { i18n } = useTranslation();
   const appState = useAppStore((state) => state.appState);
   const lobby = useAppStore((state) => state.lobby);
@@ -51,107 +160,16 @@ function App() {
   const addChatMessage = useAppStore((state) => state.addChatMessage);
   const setPlayerSpeaking = useAppStore((state) => state.setPlayerSpeaking);
   const [showMicrophonePermissionHelp, setShowMicrophonePermissionHelp] = useState(false);
-  const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
-  const [systemDark, setSystemDark] = useState(
-    () => window.matchMedia('(prefers-color-scheme: dark)').matches
-  );
-  const effectiveTheme = resolveTheme(themePreference, systemDark);
 
-  // 版本更新状态
-  const [showVersionModal, setShowVersionModal] = useState(false);
-  const [versionInfo, setVersionInfo] = useState<{
-    latestVersion: string;
-    currentVersion: string;
-    updateMessage: string[];
-  } | null>(null);
-
-  useEffect(() => {
-    void invoke<{ language?: LanguagePreference }>('get_settings')
-      .then((settings) => setLanguagePreference(settings.language ?? getLanguagePreference()))
-      .catch((error) => console.error('读取语言设置失败:', error));
-  }, []);
+  const versionError = useAppStore((state) => state.versionError);
+  const { checked: updateChecked, update: versionInfo, dismiss: dismissUpdate } = useStartupUpdates();
+  const versionStage = startupVersionStage(!!versionError, updateChecked, !!versionInfo);
 
   useEffect(() => {
     const showHelp = () => setShowMicrophonePermissionHelp(true);
     window.addEventListener('mctier-microphone-permission-required', showHelp);
     return () => window.removeEventListener('mctier-microphone-permission-required', showHelp);
   }, []);
-
-  useEffect(() => {
-    const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const handleSystemTheme = (event: MediaQueryListEvent) => setSystemDark(event.matches);
-    const handlePreference = (event: Event) => {
-      const preference = (event as CustomEvent<unknown>).detail;
-      if (isThemePreference(preference)) setThemePreference(preference);
-    };
-    media.addEventListener('change', handleSystemTheme);
-    window.addEventListener(THEME_CHANGED_EVENT, handlePreference);
-    return () => {
-      media.removeEventListener('change', handleSystemTheme);
-      window.removeEventListener(THEME_CHANGED_EVENT, handlePreference);
-    };
-  }, []);
-
-  useEffect(() => {
-    document.documentElement.dataset.theme = effectiveTheme;
-    document.documentElement.style.colorScheme = effectiveTheme;
-  }, [effectiveTheme]);
-
-  // 检测是否是屏幕查看窗口
-  const isScreenViewerWindow = window.location.search.includes('screen-viewer=true');
-
-  // 弹幕覆盖窗口：只渲染弹幕层（透明、置顶、穿透）
-  const isDanmakuWindow = window.location.search.includes('danmaku=true');
-  if (isDanmakuWindow) {
-    return <DanmakuOverlay />;
-  }
-
-  // 游戏 HUD 浮层窗口：只渲染 HUD（透明、置顶、穿透）
-  const isGameHudWindow = window.location.search.includes('gamehud=true');
-  if (isGameHudWindow) {
-    return <GameHudOverlay />;
-  }
-
-  // 如果是屏幕查看窗口，直接渲染ScreenViewer组件
-  if (isScreenViewerWindow) {
-    // 从URL参数中获取shareId和playerName
-    const urlParams = new URLSearchParams(window.location.search);
-    const rawShareId = urlParams.get('shareId');
-    const shareId = isSafeResourceId(rawShareId) ? rawShareId : '';
-    const playerName =
-      sanitizeUntrustedText(urlParams.get('playerName'), 64).trim() ||
-      tl('未知玩家', 'Unknown Player');
-
-    return (
-      <ErrorBoundary>
-        <ConfigProvider
-          locale={getLanguage() === 'en' ? enUS : zhCN}
-          theme={{
-            algorithm: effectiveTheme === 'dark' ? theme.darkAlgorithm : theme.defaultAlgorithm,
-            token: {
-              colorPrimary: '#52c41a',
-              colorSuccess: '#52c41a',
-              colorWarning: '#f59e0b',
-              colorError: '#ef4444',
-              borderRadius: 8,
-              colorBgContainer: effectiveTheme === 'dark' ? 'rgba(30, 30, 45, 0.95)' : '#ffffff',
-              colorBorder:
-                effectiveTheme === 'dark' ? 'rgba(255, 255, 255, 0.1)' : 'rgba(24, 32, 43, 0.16)',
-              colorText: effectiveTheme === 'dark' ? 'rgba(255, 255, 255, 0.9)' : '#18202b',
-              colorTextSecondary:
-                effectiveTheme === 'dark' ? 'rgba(255, 255, 255, 0.6)' : '#596574',
-              fontFamily:
-                '-apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif',
-            },
-          }}
-        >
-          <AntdApp>
-            <ScreenViewer shareId={shareId} playerName={playerName} />
-          </AntdApp>
-        </ConfigProvider>
-      </ErrorBoundary>
-    );
-  }
 
   // 同步系统托盘菜单文本到当前界面语言（启动时 + 语言切换时）
   useEffect(() => {
@@ -208,71 +226,6 @@ function App() {
     const timer = setTimeout(() => {
       showWindow();
     }, 100);
-
-    return () => clearTimeout(timer);
-  }, []);
-
-  // 检查版本更新（仅在首次打开时）
-  useEffect(() => {
-    const checkVersion = async () => {
-      try {
-        // 检查是否需要显示更新提示
-        if (!versionCheckService.shouldShowUpdatePrompt()) {
-          console.log('⏭️ [VersionCheck] 已显示过更新提示，跳过检查');
-          return;
-        }
-
-        console.log('🔍 [VersionCheck] 开始检查版本更新...');
-
-        // 获取最新版本信息
-        const info = await versionCheckService.fetchLatestVersion();
-
-        if (!info) {
-          console.warn('⚠️ [VersionCheck] 获取版本信息失败');
-          return;
-        }
-
-        if (info.hasUpdate) {
-          console.log('🎉 [VersionCheck] 发现新版本:', info.latestVersion);
-
-          // 格式化更新日志
-          const formattedMessage = info.updateMessage
-            ? versionCheckService.formatUpdateMessage(info.updateMessage)
-            : [];
-          const updateMessage =
-            formattedMessage.length > 0
-              ? formattedMessage
-              : [
-                  tl(
-                    '该版本未提供更新日志，请前往官网查看详情。',
-                    'No release notes were provided for this version. Visit the website for details.'
-                  ),
-                ];
-
-          // 设置版本信息并显示弹窗
-          setVersionInfo({
-            latestVersion: info.latestVersion,
-            currentVersion: info.currentVersion,
-            updateMessage,
-          });
-          setShowVersionModal(true);
-
-          // 标记已显示更新提示
-          versionCheckService.markUpdatePromptShown();
-        } else {
-          console.log('✅ [VersionCheck] 当前已是最新版本');
-          // 即使是最新版本，也标记已检查过，避免每次启动都检查
-          versionCheckService.markUpdatePromptShown();
-        }
-      } catch (error) {
-        console.error('❌ [VersionCheck] 版本检查失败:', error);
-      }
-    };
-
-    // 延迟3秒后检查版本，避免影响应用启动速度
-    const timer = setTimeout(() => {
-      checkVersion();
-    }, 3000);
 
     return () => clearTimeout(timer);
   }, []);
@@ -342,6 +295,12 @@ function App() {
   // 开发调试用快捷键：Shift+F1 打开日志文件（内部使用，不对外暴露、不提供自定义）
   useEffect(() => {
     const handleKeyDown = async (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        e.stopPropagation();
+        window.dispatchEvent(new Event('mctier-open-chat-search'));
+        return;
+      }
       if (!(e.shiftKey && e.key === 'F1')) return;
       e.preventDefault();
       try {
@@ -351,9 +310,9 @@ function App() {
       }
     };
 
-    document.addEventListener('keydown', handleKeyDown);
+    document.addEventListener('keydown', handleKeyDown, true);
     return () => {
-      document.removeEventListener('keydown', handleKeyDown);
+      document.removeEventListener('keydown', handleKeyDown, true);
     };
   }, []);
 
@@ -494,14 +453,63 @@ function App() {
   useEffect(() => {
     if (appState === 'in-lobby' && lobby) {
       const initWebRTC = async () => {
+        const sessionTicket =
+          lobbySessionCoordinator.current() ?? lobbySessionCoordinator.begin();
+        let handlingFailure = false;
+        let recoveryLobby = lobby;
+        const handleRegistrationFailure = async (error: unknown) => {
+          if (handlingFailure || !lobbySessionCoordinator.isCurrent(sessionTicket)) return;
+          handlingFailure = true;
+          console.error('❌ WebRTC 初始化失败:', error);
+          if (lobbySessionCoordinator.isCurrent(sessionTicket) && !useAppStore.getState().versionError) {
+            let detail = error instanceof Error ? error.message : String(error);
+            let stopped = false;
+            // EasyTier starts before WebSocket registration. A failed registration
+            // must release that session, not just the browser's WebRTC resources.
+            try {
+              await webrtcClient.cleanup();
+              if (!lobbySessionCoordinator.isCurrent(sessionTicket)) return;
+              await invoke('leave_lobby');
+              stopped = true;
+            } catch (cleanupError) {
+              console.error('注册失败后清理组网会话失败:', cleanupError);
+              detail += tl('；组网会话清理失败，请退出大厅后重试', '; Network cleanup failed; leave the lobby and retry');
+            }
+            if (!lobbySessionCoordinator.isCurrent(sessionTicket)) return;
+            if (stopped && lobby.automaticVirtualIp && lobby.serverNode) {
+              try {
+                const store = useAppStore.getState();
+                const replacement = await recoverVirtualAddress(recoveryLobby, detail, (addressAttempt) =>
+                  invoke('join_lobby', {
+                    name: lobby.name, password: lobby.password || '',
+                    playerName: store.config.playerName, playerId: store.currentPlayerId,
+                    serverNode: lobby.serverNode,
+                    signalingServer: lobby.signalingServer || 'wss://mctier.pmhs.top/signaling',
+                    useDomain: lobby.useDomain === true, addressAttempt,
+                  }), () => lobbySessionCoordinator.isCurrent(sessionTicket));
+                if (!lobbySessionCoordinator.isCurrent(sessionTicket)) return;
+                if (replacement) {
+                  store.setSignalingStatus('connecting');
+                  store.setLobby(replacement);
+                  return;
+                }
+              } catch (retryError) {
+                detail = retryError instanceof Error ? retryError.message : String(retryError);
+              }
+            } else if (lobby.automaticVirtualIp === false && isVirtualIpConflict(detail)) {
+              detail += tl('；请清空高级设置中的手动 IPv4 后重试', '; Clear the manual IPv4 in advanced settings and retry');
+            }
+            if (!lobbySessionCoordinator.isCurrent(sessionTicket)) return;
+            useAppStore.getState().setSignalingStatus('failed', sanitizeUntrustedText(
+              detail, 1024
+            ));
+          }
+        };
         try {
-          const sessionTicket =
-            lobbySessionCoordinator.current() ?? lobbySessionCoordinator.begin();
           const { currentPlayerId: playerId } = useAppStore.getState();
 
           if (!playerId) {
-            console.error('玩家ID不存在，无法初始化WebRTC');
-            return;
+            throw new Error(tl('玩家身份未就绪，无法注册大厅', 'Player identity is not ready'));
           }
 
           console.log('使用已存在的玩家ID初始化WebRTC:', playerId);
@@ -552,31 +560,15 @@ function App() {
             })();
           });
 
-          // 初始化WebRTC客户端
-          // 从 lobby 对象中获取信令服务器地址，如果没有则使用默认值
-          const signalingServer = lobby.signalingServer || 'wss://test.pmhs.top';
-          console.log('已准备 WebRTC 连接参数');
-
-          await webrtcClient.initialize(
-            playerId,
-            playerName,
-            lobby.name,
-            lobby.password || '',
-            undefined,
-            lobby.useDomain,
-            signalingServer,
-            sessionTicket
-          );
-          lobbySessionCoordinator.assertCurrent(sessionTicket);
-
-          // 初始化屏幕共享服务
-          const ws = (webrtcClient as any).websocket; // 获取WebSocket实例
-          if (ws) {
-            screenShareService.initialize(playerId, playerName, ws);
-            console.log('✅ 屏幕共享服务已初始化');
-          }
-
-          // 设置事件回调
+          // Register observers before initialize(): it consumes register-success
+          // and the first roster before resolving.
+          webrtcClient.onSignalingStatus((status, error) => {
+            if (lobbySessionCoordinator.isCurrent(sessionTicket)) {
+              if (status === 'connected') recoveryLobby = { ...recoveryLobby, addressRecoveryStartedAt: undefined };
+              useAppStore.getState().setSignalingStatus(status, error);
+              if (status === 'failed' && error) void handleRegistrationFailure(new Error(error));
+            }
+          });
           webrtcClient.onPlayerJoined(
             (playerId, playerName, virtualIp, virtualDomain, useDomain) => {
               console.log(
@@ -693,7 +685,9 @@ function App() {
           });
 
           webrtcClient.onMuteChanged((playerId, muted) => {
-            useAppStore.getState().setHostMuted(playerId, muted);
+            const store = useAppStore.getState();
+            store.setHostMuted(playerId, muted);
+            if (muted && playerId === store.currentPlayerId) store.setMicEnabled(false);
           });
 
           webrtcClient.onLobbyOptionsChanged((maxPlayers, isPublic) => {
@@ -711,6 +705,13 @@ function App() {
             }
           });
 
+          const signalingServer = lobby.signalingServer || 'wss://mctier.pmhs.top/signaling';
+          await webrtcClient.initialize(
+            playerId, playerName, lobby.name, lobby.password || '',
+            undefined, lobby.useDomain, signalingServer, sessionTicket
+          );
+          lobbySessionCoordinator.assertCurrent(sessionTicket);
+
           console.log('✅ WebRTC 初始化完成，玩家ID:', playerId);
 
           // 启动HTTP文件服务器
@@ -724,7 +725,7 @@ function App() {
             // 不阻止加入大厅，只是文件共享功能不可用
           }
         } catch (error) {
-          console.error('❌ WebRTC 初始化失败:', error);
+          await handleRegistrationFailure(error);
         }
       };
 
@@ -811,36 +812,40 @@ function App() {
         }}
       >
         <AntdApp>
+          <FeedbackHost />
+          <NativeCapturePicker />
+          <ScreenRecordingExitHandler />
           <GlobalTooltip />
           <GlobalButtonTheme />
           <div className="app-container">
             {/* 根据应用状态显示不同的界面 */}
-            {appState === 'in-lobby' && lobby ? <MiniWindow /> : <MainWindow />}
+            {appState === 'in-lobby' && lobby ? <MiniWindow /> : <MainWindow startupReady={!quarkBlocking && versionStage === 'ready'} />}
           </div>
 
           {/* 版本更新提示弹窗 */}
+          <QuarkStartupPrompt blocked={versionStage !== 'ready'} onBlockingChange={setQuarkBlocking} />
           {versionInfo && (
             <VersionUpdateModal
-              visible={showVersionModal}
+              visible={versionStage === 'optional'}
               latestVersion={versionInfo.latestVersion}
               currentVersion={versionInfo.currentVersion}
               updateMessage={versionInfo.updateMessage}
-              onClose={() => setShowVersionModal(false)}
+              onClose={dismissUpdate}
             />
           )}
 
           <Modal
             className="microphone-permission-modal"
             open={showMicrophonePermissionHelp}
-            title={tl('麦克风权限未授予', 'Microphone permission is not granted')}
+            title={tl('无法使用麦克风', 'Microphone unavailable')}
             onCancel={() => setShowMicrophonePermissionHelp(false)}
             footer={
               <div className="microphone-permission-actions">
                 <Button onClick={() => void invoke('open_microphone_privacy_settings')}>
                   {tl('打开 Windows 麦克风设置', 'Open Windows microphone settings')}
                 </Button>
-                <Button type="primary" onClick={() => void invoke('reset_microphone_permission')}>
-                  {tl('一键重置并重启', 'Reset and restart')}
+                <Button type="primary" onClick={() => setShowMicrophonePermissionHelp(false)}>
+                  {tl('知道了', 'Got it')}
                 </Button>
               </div>
             }
@@ -849,14 +854,8 @@ function App() {
           >
             <p>
               {tl(
-                '如果首次申请时选择了拒绝，WebView2 可能不会再次弹出授权窗口。可先检查 Windows 麦克风隐私设置；仍无法授权时，点击“一键重置并重启”，MCTier 会清理自身的 EBWebView 权限缓存并重新申请。',
-                'If access was denied the first time, WebView2 may not show the prompt again. Check Windows microphone privacy settings first. If that does not help, reset and restart MCTier to clear its EBWebView permission cache and request access again.'
-              )}
-            </p>
-            <p style={{ opacity: 0.68, marginBottom: 0 }}>
-              {tl(
-                '重置只会清理 MCTier 的 WebView2 浏览数据，不会删除大厅配置。',
-                'The reset only clears MCTier WebView2 browsing data. Lobby settings are preserved.'
+                '请检查麦克风是否连接、是否被其它程序独占，以及 Windows 是否允许桌面应用访问麦克风。修复后重新点击开麦或录音即可，无需重置软件。',
+                'Check that your microphone is connected, is not exclusively used by another app, and Windows allows desktop apps to access it. Then try the microphone or recording again; no app reset is needed.'
               )}
             </p>
           </Modal>

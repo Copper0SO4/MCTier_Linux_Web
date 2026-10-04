@@ -444,11 +444,9 @@ impl ResourceManager {
     /// # 返回
     /// * `Ok(PathBuf)` - 配置目录路径
     /// * `Err(AppError)` - 获取路径失败
-    pub fn get_config_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, AppError> {
-        let config_dir = app_handle
-            .path()
-            .app_config_dir()
-            .map_err(|e| AppError::ConfigError(format!("无法获取配置目录: {}", e)))?;
+    pub fn get_config_dir(_app_handle: &tauri::AppHandle) -> Result<PathBuf, AppError> {
+        let config_dir = super::app_paths::data_root()
+            .map_err(|e| AppError::ConfigError(e.to_string()))?;
 
         // 确保配置目录存在
         if !config_dir.exists() {
@@ -467,11 +465,9 @@ impl ResourceManager {
     /// # 返回
     /// * `Ok(PathBuf)` - 日志目录路径
     /// * `Err(AppError)` - 获取路径失败
-    pub fn get_log_dir(app_handle: &tauri::AppHandle) -> Result<PathBuf, AppError> {
-        let log_dir = app_handle
-            .path()
-            .app_log_dir()
-            .map_err(|e| AppError::ConfigError(format!("无法获取日志目录: {}", e)))?;
+    pub fn get_log_dir(_app_handle: &tauri::AppHandle) -> Result<PathBuf, AppError> {
+        let log_dir = super::app_paths::data_root()
+            .map_err(|e| AppError::ConfigError(e.to_string()))?;
 
         // 确保日志目录存在
         if !log_dir.exists() {

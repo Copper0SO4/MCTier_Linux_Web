@@ -15,6 +15,11 @@ import type {
   ChatMessage,
 } from '../types';
 import { applyMessageRecall } from '../services/chat/recallPolicy';
+import { compareChatMessages } from '../services/chat/messageOrder';
+import { recordUnread, readConversation, type ChatUnread } from '../services/chat/unread';
+import { loadPeerPreferences, savePeerPreferences, updatePeerPreference, type PeerPreference, type PeerPreferences } from '../services/chat/peerPreferences';
+import { showFeedback } from '../services/ui/feedback';
+import type { SignalingConnectionStatus } from '../services/signaling/registeredSocket';
 
 /** 共享待办项（双端字段名一致） */
 export interface TodoItem {
@@ -30,6 +35,8 @@ export interface TodoItem {
  * 应用程序 Store 接口定义
  */
 interface AppStore {
+  peerPreferences: PeerPreferences;
+  setPeerPreference: (id: string, patch: Partial<PeerPreference>) => boolean;
   // ==================== 应用状态 ====================
   /** 当前应用状态 */
   appState: AppState;
@@ -49,6 +56,9 @@ interface AppStore {
   // ==================== 大厅信息 ====================
   /** 当前大厅信息 */
   lobby: Lobby | null;
+  signalingStatus: SignalingConnectionStatus;
+  signalingError: string | null;
+  setSignalingStatus: (status: SignalingConnectionStatus, error?: string) => void;
   /** 设置大厅信息 */
   setLobby: (lobby: Lobby | null) => void;
   /** 清除大厅信息 */
@@ -158,6 +168,9 @@ interface AppStore {
   // ==================== 聊天室管理 ====================
   /** 聊天消息列表 */
   chatMessages: ChatMessage[];
+  unreadChatMessages: ChatUnread;
+  activeChatConversation: string | null;
+  setActiveChatConversation: (conversation: string | null) => void;
   /** 添加聊天消息 */
   addChatMessage: (message: ChatMessage) => void;
   deleteChatMessage: (messageId: string) => void;
@@ -252,6 +265,8 @@ const initialState = {
 
   // 大厅信息
   lobby: null,
+  signalingStatus: 'disconnected' as SignalingConnectionStatus,
+  signalingError: null,
 
   // 玩家列表
   currentPlayerId: null,
@@ -278,6 +293,9 @@ const initialState = {
 
   // 聊天室
   chatMessages: [],
+  unreadChatMessages: {} as ChatUnread,
+  peerPreferences: loadPeerPreferences(),
+  activeChatConversation: null as string | null,
 
   // 大厅公告 / 语音小队
   announcement: '',
@@ -317,13 +335,18 @@ export const useAppStore = create<AppStore>()(
 
       // ==================== 大厅信息操作 ====================
       setLobby: (lobby: Lobby | null) => {
-        set({ lobby }, false, 'setLobby');
+        set({ lobby, signalingStatus: lobby ? 'connecting' : 'disconnected', signalingError: null }, false, 'setLobby');
         if (lobby) {
           set({ appState: 'in-lobby' }, false, 'setAppState/in-lobby');
         }
       },
 
+      setSignalingStatus: (signalingStatus, error) => {
+        set({ signalingStatus, signalingError: error ?? null }, false, 'setSignalingStatus');
+      },
+
       clearLobby: () => {
+        get().setSignalingStatus('disconnected');
         set({ lobby: null }, false, 'clearLobby');
         // 清除大厅时也清除玩家列表
         get().clearPlayers();
@@ -373,6 +396,7 @@ export const useAppStore = create<AppStore>()(
         set(
           (state) => ({
             players: state.players.filter((p) => p.id !== playerId),
+            unreadChatMessages: readConversation(state.unreadChatMessages, `private:${playerId}`),
           }),
           false,
           'removePlayer'
@@ -553,14 +577,18 @@ export const useAppStore = create<AppStore>()(
       },
 
       // ==================== 房主/大厅管理操作 ====================
-      setHostId: (id: string | null) => set({ hostId: id }, false, 'setHostId'),
+      setHostId: (id: string | null) => set(state => {
+        const hostMutedPlayers = new Set(state.hostMutedPlayers);
+        if (id) hostMutedPlayers.delete(id);
+        return { hostId: id, hostMutedPlayers };
+      }, false, 'setHostId'),
       setMaxPlayers: (max: number | null) => set({ maxPlayers: max }, false, 'setMaxPlayers'),
       setIsPublicLobby: (pub: boolean) => set({ isPublicLobby: pub }, false, 'setIsPublicLobby'),
       setHostMuted: (playerId: string, muted: boolean) => {
         set(
           (state) => {
             const next = new Set(state.hostMutedPlayers);
-            if (muted) next.add(playerId);
+            if (muted && playerId !== state.hostId) next.add(playerId);
             else next.delete(playerId);
             return { hostMutedPlayers: next };
           },
@@ -569,7 +597,7 @@ export const useAppStore = create<AppStore>()(
         );
       },
       setHostMutedPlayers: (ids: string[]) =>
-        set({ hostMutedPlayers: new Set(ids) }, false, 'setHostMutedPlayers'),
+        set(state => ({ hostMutedPlayers: new Set(ids.filter(id => id !== state.hostId)) }), false, 'setHostMutedPlayers'),
 
       // ==================== 玩家音量操作 ====================
       setPlayerVolume: (playerId: string, volume: number) => {
@@ -642,10 +670,32 @@ export const useAppStore = create<AppStore>()(
       },
 
       // ==================== 聊天室操作 ====================
+      setActiveChatConversation: (conversation) => {
+        if (conversation?.startsWith('private:')) {
+          const id = conversation.slice(8);
+          if (get().peerPreferences[id]?.markedUnread) get().setPeerPreference(id, { markedUnread: false });
+        }
+        set((state) => ({
+          activeChatConversation: conversation,
+          unreadChatMessages: readConversation(state.unreadChatMessages, conversation),
+        }), false, 'setActiveChatConversation');
+      },
+      setPeerPreference: (id, patch) => {
+        try {
+          const peerPreferences = updatePeerPreference(get().peerPreferences, id, patch);
+          savePeerPreferences(peerPreferences);
+          set({ peerPreferences }, false, 'setPeerPreference');
+          return true;
+        } catch {
+          showFeedback('error', '无法保存私信设置，请检查本地存储');
+          return false;
+        }
+      },
       addChatMessage: (message: ChatMessage) => {
         set(
-          (state) => ({
-            chatMessages: [...state.chatMessages, message],
+          (state) => state.chatMessages.some(item => item.id === message.id) ? state : ({
+            chatMessages: [...state.chatMessages, message].sort(compareChatMessages),
+            unreadChatMessages: recordUnread(state.unreadChatMessages, message, state.currentPlayerId, state.activeChatConversation),
           }),
           false,
           'addChatMessage'
@@ -654,7 +704,10 @@ export const useAppStore = create<AppStore>()(
 
       deleteChatMessage: (messageId: string) => {
         set(
-          (state) => ({ chatMessages: state.chatMessages.filter((message) => message.id !== messageId) }),
+          (state) => ({
+            chatMessages: state.chatMessages.filter((message) => message.id !== messageId),
+            unreadChatMessages: Object.fromEntries(Object.entries(state.unreadChatMessages).filter(([id]) => id !== messageId)),
+          }),
           false,
           'deleteChatMessage'
         );
@@ -664,7 +717,7 @@ export const useAppStore = create<AppStore>()(
         const result = applyMessageRecall(get().chatMessages, messageId, requesterId);
         if (!result.changed) return false;
         set(
-          { chatMessages: [...result.messages] },
+          { chatMessages: [...result.messages], unreadChatMessages: Object.fromEntries(Object.entries(get().unreadChatMessages).filter(([id]) => id !== messageId)) },
           false,
           'recallChatMessage'
         );
@@ -672,7 +725,7 @@ export const useAppStore = create<AppStore>()(
       },
 
       clearChatMessages: () => {
-        set({ chatMessages: [] }, false, 'clearChatMessages');
+        set({ chatMessages: [], unreadChatMessages: {}, activeChatConversation: null }, false, 'clearChatMessages');
       },
 
       getRecentMessages: (count: number) => {
@@ -745,6 +798,7 @@ export const useAppStore = create<AppStore>()(
         set(
           {
             ...initialState,
+            peerPreferences: get().peerPreferences,
             // 重新创建 Set 对象，避免引用问题
             mutedPlayers: new Set<string>(),
             playerVolumes: new Map<string, number>(),

@@ -46,6 +46,7 @@ class ScreenShareController(
     private val factory: PeerConnectionFactory
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    private var captureQuality = ScreenShareQuality()
     private var currentShareId: String? = null
     private var currentOwnerId: String? = null
     private var currentPlayerName: String = ""
@@ -69,6 +70,7 @@ class ScreenShareController(
     private var upstreamHealthLimited: Boolean = false
     private val inboundConnections = linkedMapOf<String, PeerConnection>()
     private val outboundConnections = linkedMapOf<String, PeerConnection>()
+    private val outboundRouteVersions = linkedMapOf<String, Int?>()
     private val outboundSenders = linkedMapOf<String, RtpSender>()
     private val pendingIce = BoundedIceCache<String, IceCandidate>(
         maxEntries = MAX_PENDING_ICE_ENTRIES,
@@ -87,6 +89,8 @@ class ScreenShareController(
     private val expectedDownstreams = linkedMapOf<String, Int>()
     private val pendingOffers = linkedMapOf<String, SignalingEnvelope>()
     private var directFallback: Runnable? = null
+    private var viewingStartTimeout: Runnable? = null
+    var onViewingError: ((String, String) -> Unit)? = null
 
     var onRemoteVideoTrack: ((VideoTrack?) -> Unit)? = null
         set(value) {
@@ -134,6 +138,40 @@ class ScreenShareController(
     private val outboundHealthChecks = linkedMapOf<String, Runnable>()
     private var relayRecoveryCheck: Runnable? = null
     private var routeVersion = 0
+    private val videoStatsProbe = object : Runnable {
+        override fun run() {
+            val connections = (inboundConnections.values + outboundConnections.values).distinct()
+            connections.forEach { pc ->
+                runCatching {
+                    pc.getStats { report ->
+                        var inboundBytes = 0L
+                        var inboundPackets = 0L
+                        var inboundFrames = 0L
+                        var outboundBytes = 0L
+                        var outboundPackets = 0L
+                        var outboundFrames = 0L
+                        report.statsMap.values.forEach { stat ->
+                            when (stat.type) {
+                                "inbound-rtp" -> {
+                                    (stat.members["bytesReceived"] as? Number)?.let { inboundBytes = maxOf(inboundBytes, it.toLong()) }
+                                    (stat.members["packetsReceived"] as? Number)?.let { inboundPackets = maxOf(inboundPackets, it.toLong()) }
+                                    (stat.members["framesDecoded"] as? Number)?.let { inboundFrames = maxOf(inboundFrames, it.toLong()) }
+                                    (stat.members["framesReceived"] as? Number)?.let { inboundFrames = maxOf(inboundFrames, it.toLong()) }
+                                }
+                                "outbound-rtp" -> {
+                                    (stat.members["bytesSent"] as? Number)?.let { outboundBytes = maxOf(outboundBytes, it.toLong()) }
+                                    (stat.members["packetsSent"] as? Number)?.let { outboundPackets = maxOf(outboundPackets, it.toLong()) }
+                                    (stat.members["framesSent"] as? Number)?.let { outboundFrames = maxOf(outboundFrames, it.toLong()) }
+                                }
+                            }
+                        }
+                        Log.i(TAG, "RTP video stats: inboundBytes=$inboundBytes inboundPackets=$inboundPackets inboundFrames=$inboundFrames outboundBytes=$outboundBytes outboundPackets=$outboundPackets outboundFrames=$outboundFrames")
+                    }
+                }
+            }
+            mainHandler.postDelayed(this, 2_000L)
+        }
+    }
 
     val isSharing: Boolean get() = localVideoTrack != null
 
@@ -150,6 +188,7 @@ class ScreenShareController(
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase.eglBaseContext))
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true))
             .createPeerConnectionFactory()
+        mainHandler.postDelayed(videoStatsProbe, 2_000L)
     }
 
     fun startViewing(shareId: String, sharerPlayerId: String, playerName: String, password: String?) {
@@ -158,6 +197,12 @@ class ScreenShareController(
         currentOwnerId = sharerPlayerId
         currentPlayerName = playerName
         currentPassword = password?.takeIf { it.isNotBlank() }
+        viewingStartTimeout = Runnable {
+            if (currentShareId == shareId && remoteVideoTrack == null) {
+                stopViewing()
+                onViewingError?.invoke(shareId, top.pmh13.mctier.ui.L("屏幕连接超时，请重试", "Screen connection timed out. Please retry"))
+            }
+        }.also { mainHandler.postDelayed(it, 30_000L) }
         sendSignal(
             SignalingEnvelope(
                 type = "screen-share-relay", action = "join", from = localPlayerId, to = sharerPlayerId,
@@ -167,7 +212,7 @@ class ScreenShareController(
 
         // Compatibility with an older owner that does not understand relay control.
         directFallback = Runnable {
-            if (currentShareId == shareId && remoteVideoTrack == null) {
+            if (currentShareId == shareId && currentUpstreamId == null && remoteVideoTrack == null) {
                 fallbackReadyVersion = currentRouteVersion
                 connectUpstream(shareId, sharerPlayerId, null)
             }
@@ -197,7 +242,10 @@ class ScreenShareController(
         }
 
         val previousUpstream = currentUpstreamId
-        val pc = createPeerConnection(observerForInbound(shareId, upstreamId, requestedVersion, previousUpstream)) ?: return
+        var expectedPc: PeerConnection? = null
+        val isCurrent = { expectedPc != null && inboundConnections[connectionKey] === expectedPc }
+        val pc = createPeerConnection(observerForInbound(shareId, upstreamId, requestedVersion, previousUpstream, isCurrent)) ?: return
+        expectedPc = pc
         inboundConnections.remove(connectionKey)?.close()
         inboundConnections[connectionKey] = pc
         currentUpstreamId = upstreamId
@@ -215,15 +263,17 @@ class ScreenShareController(
                     )
                 }
             }
-        }.also { mainHandler.postDelayed(it, 6_000L) }
+        }.also { mainHandler.postDelayed(it, 15_000L) }
         pc.addTransceiver(
             MediaStreamTrack.MediaType.MEDIA_TYPE_VIDEO,
             RtpTransceiver.RtpTransceiverInit(RtpTransceiver.RtpTransceiverDirection.RECV_ONLY),
         )
         pc.createOffer(object : SimpleSdpObserver() {
             override fun onCreateSuccess(desc: SessionDescription) {
+                if (!isCurrent()) return
                 pc.setLocalDescription(object : SimpleSdpObserver() {
                     override fun onSetSuccess() {
+                        if (!isCurrent()) return
                         sendSignal(
                             SignalingEnvelope(
                                 type = "screen-share-offer", from = localPlayerId, to = upstreamId, shareId = shareId,
@@ -242,8 +292,10 @@ class ScreenShareController(
         upstreamId: String,
         requestedVersion: Int?,
         previousUpstream: String?,
+        isCurrent: () -> Boolean,
     ) = baseObserver(
         onIce = { candidate ->
+            if (!isCurrent()) return@baseObserver
             sendSignal(
                 SignalingEnvelope(
                     type = "screen-share-ice-candidate", from = localPlayerId, to = upstreamId, shareId = shareId,
@@ -252,9 +304,10 @@ class ScreenShareController(
             )
         },
         onIceState = { state ->
+            if (!isCurrent()) return@baseObserver
             if (state == PeerConnection.IceConnectionState.FAILED || state == PeerConnection.IceConnectionState.DISCONNECTED) {
                 mainHandler.postDelayed({
-                    if (currentShareId == shareId && currentUpstreamId == upstreamId && currentRouteVersion == requestedVersion) {
+                    if (isCurrent() && currentShareId == shareId && currentUpstreamId == upstreamId && currentRouteVersion == requestedVersion) {
                         currentOwnerId?.let { ownerId ->
                             sendSignal(
                                 SignalingEnvelope(
@@ -269,14 +322,16 @@ class ScreenShareController(
             }
         },
         onTrack = { track ->
+            if (!isCurrent()) return@baseObserver
             if (track !is VideoTrack || currentShareId != shareId || currentUpstreamId != upstreamId || currentRouteVersion != requestedVersion) return@baseObserver
+            if (pendingVideoTrack === track) return@baseObserver
             clearRemoteFrameProbe()
             pendingVideoTrack = track
             var activated = false
             lateinit var probe: VideoSink
             probe = VideoSink {
                 mainHandler.post {
-                    if (pendingVideoTrack !== track || currentShareId != shareId || currentUpstreamId != upstreamId || currentRouteVersion != requestedVersion) return@post
+                    if (!isCurrent() || pendingVideoTrack !== track || currentShareId != shareId || currentUpstreamId != upstreamId || currentRouteVersion != requestedVersion) return@post
                     remoteFrameLastAt = android.os.SystemClock.elapsedRealtime()
                     sourceFrameSequences.computeIfAbsent(shareId) { AtomicLong(0L) }.incrementAndGet()
                     if (!activated) {
@@ -284,6 +339,8 @@ class ScreenShareController(
                         directFallback?.let(mainHandler::removeCallbacks)
                         directFallback = null
                         remoteVideoTrack = track
+                        viewingStartTimeout?.let(mainHandler::removeCallbacks)
+                        viewingStartTimeout = null
                         val effectiveReadyVersion = requestedVersion ?: fallbackReadyVersion
                         readyRouteVersion = effectiveReadyVersion
                         pendingRouteTimeout?.let(mainHandler::removeCallbacks)
@@ -367,15 +424,27 @@ class ScreenShareController(
         stopOutboundHealthHeartbeat(connectionKey)
         val heartbeat = object : Runnable {
             override fun run() {
-                if (outboundConnections[connectionKey] == null) return
-                sendSignal(
-                    SignalingEnvelope(
-                        type = "screen-share-relay", action = "health", from = localPlayerId, to = downstreamId,
-                        shareId = shareId, routeVersion = routeVersion,
-                        sequence = sourceFrameSequences[shareId]?.get() ?: 0L,
-                        sourceSequence = sourceFrameSequences[shareId]?.get() ?: 0L,
-                    ),
-                )
+                val pc = outboundConnections[connectionKey] ?: return
+                pc.getStats { report ->
+                    var sentFrames = 0L
+                    var limited = false
+                    report.statsMap.values.filter { it.type == "outbound-rtp" }.forEach { stat ->
+                        sentFrames = maxOf(sentFrames, (stat.members["framesSent"] as? Number)?.toLong() ?: 0L)
+                        limited = limited || stat.members["qualityLimitationReason"] == "bandwidth"
+                    }
+                    mainHandler.post {
+                        if (outboundConnections[connectionKey] !== pc) return@post
+                        sendSignal(
+                            SignalingEnvelope(
+                                type = "screen-share-relay", action = "health", from = localPlayerId, to = downstreamId,
+                                shareId = shareId, routeVersion = routeVersion,
+                                sequence = sourceFrameSequences[shareId]?.get() ?: 0L,
+                                sourceSequence = sourceFrameSequences[shareId]?.get() ?: 0L,
+                                sentSequence = sentFrames, limited = limited,
+                            ),
+                        )
+                    }
+                }
                 mainHandler.postDelayed(this, 2_000L)
             }
         }
@@ -399,6 +468,8 @@ class ScreenShareController(
     }
 
     fun stopViewing(notify: Boolean = true) {
+        viewingStartTimeout?.let(mainHandler::removeCallbacks)
+        viewingStartTimeout = null
         val shareId = currentShareId
         directFallback?.let(mainHandler::removeCallbacks)
         directFallback = null
@@ -434,8 +505,9 @@ class ScreenShareController(
         currentPassword = null
     }
 
-    fun startSharing(shareId: String, permissionData: Intent, password: String? = null): Boolean {
+    fun startSharing(shareId: String, permissionData: Intent, password: String? = null, quality: ScreenShareQuality = ScreenShareQuality()): Boolean {
         stopSharing()
+        captureQuality = quality.normalized()
         sharePassword = password?.takeIf { it.isNotBlank() }
         viewerOrder.clear()
         viewerNames.clear()
@@ -456,10 +528,12 @@ class ScreenShareController(
             (context.getSystemService(Context.WINDOW_SERVICE) as WindowManager).defaultDisplay.getMetrics(metrics)
             // 等比缩放而不是两个维度各自截断，避免画面被拉伸。
             // “单个应用”采集的真实尺寸由 onCapturedContentResize 再纠正一次。
-            val (width, height) = captureDimensions(metrics.widthPixels, metrics.heightPixels)
+            val (width, height) = captureQuality.dimensions(metrics.widthPixels, metrics.heightPixels)
             val helper = SurfaceTextureHelper.create("MCTierScreenCapture", eglBase.eglBaseContext)
             surfaceHelper = helper
             val source = factory.createVideoSource(true)
+            // MediaProjection follows display updates; also limit frames before encoding.
+            source.adaptOutputFormat(width, height, captureQuality.frameRate)
             videoSource = source
             val capturer = ScreenCapturerAndroid(permissionData, object : MediaProjection.Callback() {
                 override fun onStop() {
@@ -487,16 +561,19 @@ class ScreenShareController(
                 override fun onCapturedContentResize(contentWidth: Int, contentHeight: Int) {
                     mainHandler.post {
                         if (sharingShareId != shareId) return@post
-                        val (targetWidth, targetHeight) = captureDimensions(contentWidth, contentHeight)
+                        val (targetWidth, targetHeight) = captureQuality.dimensions(contentWidth, contentHeight)
                         Log.i(TAG, "Captured content resized: ${contentWidth}x$contentHeight -> ${targetWidth}x$targetHeight")
-                        runCatching { screenCapturer?.changeCaptureFormat(targetWidth, targetHeight, CAPTURE_FPS) }
+                        runCatching {
+                            videoSource?.adaptOutputFormat(targetWidth, targetHeight, captureQuality.frameRate)
+                            screenCapturer?.changeCaptureFormat(targetWidth, targetHeight, captureQuality.frameRate)
+                        }
                             .onFailure { Log.w(TAG, "changeCaptureFormat failed: ${it.message}") }
                     }
                 }
             })
             screenCapturer = capturer
             capturer.initialize(helper, context, source.capturerObserver)
-            capturer.startCapture(width, height, CAPTURE_FPS)
+            capturer.startCapture(width, height, captureQuality.frameRate)
             localVideoTrack = factory.createVideoTrack("screen-$localPlayerId", source)
             localFrameProbe?.let { probe -> localVideoTrack?.removeSink(probe) }
             sourceFrameSequences[shareId] = AtomicLong(0L)
@@ -536,9 +613,11 @@ class ScreenShareController(
             return
         }
 
+        var expectedPc: PeerConnection? = null
         val pc = createPeerConnection(
             baseObserver(
                 onIce = { candidate ->
+                    if (expectedPc == null || outboundConnections[connectionKey] !== expectedPc) return@baseObserver
                     sendSignal(
                         SignalingEnvelope(
                             type = "screen-share-ice-candidate", from = localPlayerId, to = from, shareId = shareId,
@@ -548,19 +627,39 @@ class ScreenShareController(
                 },
             ),
         ) ?: return
+        expectedPc = pc
         stopOutboundHealthHeartbeat(connectionKey)
         outboundConnections.remove(connectionKey)?.close()
         outboundSenders.remove(connectionKey)
         outboundConnections[connectionKey] = pc
+        outboundRouteVersions[connectionKey] = message.routeVersion
         outboundSenders[connectionKey] = pc.addTrack(sourceTrack, listOf("screen-stream-$localPlayerId"))
         startOutboundHealthHeartbeat(shareId, from, message.routeVersion, connectionKey)
         pc.setRemoteDescription(object : SimpleSdpObserver() {
             override fun onSetSuccess() {
+                if (outboundConnections[connectionKey] !== pc) return
                 flushPendingIce(iceKey(shareId, "out", from, message.routeVersion), pc)
                 pc.createAnswer(object : SimpleSdpObserver() {
                     override fun onCreateSuccess(desc: SessionDescription) {
+                        if (outboundConnections[connectionKey] !== pc) return
                         pc.setLocalDescription(object : SimpleSdpObserver() {
                             override fun onSetSuccess() {
+                                if (outboundConnections[connectionKey] !== pc) return
+                                // Apply after negotiation; keep relay streams independent of local capture preferences.
+                                if (isOwner) {
+                                    runCatching {
+                                        outboundSenders[connectionKey]?.let { sender ->
+                                            val params = sender.parameters
+                                            params.degradationPreference = org.webrtc.RtpParameters.DegradationPreference.BALANCED
+                                            params.encodings.forEach { encoding ->
+                                                encoding.maxBitrateBps = captureQuality.maxBitrate()
+                                                encoding.maxFramerate = captureQuality.frameRate
+                                                encoding.scaleResolutionDownBy = 1.0
+                                            }
+                                            if (!sender.setParameters(params)) Log.w(TAG, "Screen quality parameters rejected by encoder")
+                                        }
+                                    }.onFailure { Log.w(TAG, "Screen quality configuration failed", it) }
+                                }
                                 sendSignal(
                                     SignalingEnvelope(
                                         type = "screen-share-answer", from = localPlayerId, to = from, shareId = shareId,
@@ -771,6 +870,8 @@ class ScreenShareController(
                 val viewerId = message.from ?: return
                 if (viewerId == localPlayerId || message.routeVersion != null || message.upstreamId != null || message.downstreamId != null) return
                 if (!acceptViewerPassword(shareId, viewerId, message.password)) return
+                val previousUpstream = assignedUpstreams[viewerId]
+                val previousVersion = assignedRouteVersions[viewerId]
                 if (viewerId !in viewerOrder) viewerOrder += viewerId
                 viewerNames[viewerId] = message.playerName ?: top.pmh13.mctier.ui.L("玩家", "Player")
                 sendSignal(
@@ -779,6 +880,10 @@ class ScreenShareController(
                     ),
                 )
                 rebuildRelayRoutes()
+                if (previousUpstream != null && previousVersion != null && assignedRouteVersions[viewerId] == previousVersion) {
+                    sendSignal(SignalingEnvelope(type = "screen-share-relay", action = "route", from = localPlayerId,
+                        to = viewerId, shareId = shareId, upstreamId = previousUpstream, routeVersion = previousVersion))
+                }
             }
             "ready" -> if (localPlayerId == ownerId && sharingShareId == shareId) {
                 val viewerId = message.from ?: return
@@ -793,6 +898,7 @@ class ScreenShareController(
                         expectedDownstreams.remove(peerKey(shareId, viewerId))
                         stopOutboundHealthHeartbeat(peerKey(shareId, viewerId))
                         outboundConnections.remove(peerKey(shareId, viewerId))?.close()
+                        outboundRouteVersions.remove(peerKey(shareId, viewerId))
                         outboundSenders.remove(peerKey(shareId, viewerId))
                     } else {
                         sendSignal(SignalingEnvelope(type = "screen-share-relay", action = "detach", from = localPlayerId, to = oldUpstream, shareId = shareId, downstreamId = viewerId, routeVersion = message.routeVersion))
@@ -821,6 +927,7 @@ class ScreenShareController(
                     stopOutboundHealthHeartbeat(key)
                     expectedDownstreams.remove(key)
                     outboundConnections.remove(key)?.close()
+                    outboundRouteVersions.remove(key)
                     outboundSenders.remove(key)
                 } else if (assignedUpstream != null) {
                     sendSignal(SignalingEnvelope(type = "screen-share-relay", action = "detach", from = localPlayerId, to = assignedUpstream, shareId = shareId, downstreamId = viewerId, routeVersion = assignedVersion))
@@ -853,7 +960,7 @@ class ScreenShareController(
                         expectedDownstreams[key] = version
                         pendingOffers.remove(relayOfferKey(shareId, downstreamId, version))?.let(::handleViewerOffer)
                         outboundConnections[key]?.let { pc ->
-                            if (pc.remoteDescription != null) flushPendingIce(iceKey(shareId, "out", downstreamId, version), pc)
+                            if (pc.remoteDescription != null && outboundRouteVersions[key] == version) flushPendingIce(iceKey(shareId, "out", downstreamId, version), pc)
                         }
                     }
                     "detach" -> {
@@ -864,6 +971,7 @@ class ScreenShareController(
                         expectedDownstreams.remove(key)
                         stopOutboundHealthHeartbeat(key)
                         outboundConnections.remove(key)?.close()
+                        outboundRouteVersions.remove(key)
                         outboundSenders.remove(key)
                     }
                 }
@@ -894,7 +1002,7 @@ class ScreenShareController(
             "out" -> {
                 if (routeVersion == null && !ownerMode) return
                 val expectedVersion = expectedDownstreams[connectionKey]
-                if (expectedVersion != null && routeVersion != expectedVersion) return
+                if (routeVersion != null && expectedVersion != routeVersion) return
                 false
             }
             null -> when {
@@ -905,8 +1013,7 @@ class ScreenShareController(
                 }
                 ownerMode -> {
                     val expectedVersion = expectedDownstreams[connectionKey]
-                    if (expectedVersion != null && routeVersion != expectedVersion) return
-                    if (routeVersion == null && expectedVersion != null) return
+                    if (routeVersion != null && routeVersion != expectedVersion) return
                     false
                 }
                 else -> return
@@ -916,8 +1023,9 @@ class ScreenShareController(
         val key = iceKey(shareId, if (targetsInbound) "in" else "out", from, routeVersion)
         val pc = if (targetsInbound) inboundConnections[peerKey(shareId, from)] else outboundConnections[peerKey(shareId, from)]
         val expectedVersion = if (targetsInbound) currentRouteVersion else expectedDownstreams[connectionKey]
-        if (expectedVersion != null && routeVersion != expectedVersion) return
-        if (pc?.remoteDescription != null) {
+        if (routeVersion != null && expectedVersion != null && routeVersion != expectedVersion) return
+        val activeVersion = if (targetsInbound) currentRouteVersion else outboundRouteVersions[connectionKey]
+        if (pc?.remoteDescription != null && routeVersion == activeVersion) {
             runCatching { pc.addIceCandidate(ice) }
                 .onFailure { if (!pendingIce.add(key, ice)) Log.w(TAG, "丢弃超出限制的待处理屏幕共享 ICE") }
         } else if (!pendingIce.add(key, ice)) {
@@ -939,6 +1047,7 @@ class ScreenShareController(
 
         stopOutboundHealthHeartbeat(key)
         outboundConnections.remove(key)?.close()
+        outboundRouteVersions.remove(key)
         outboundSenders.remove(key)
         expectedDownstreams.remove(key)
         pendingOffers.keys.filter { it.startsWith("$shareId|$viewerId|") }.forEach(pendingOffers::remove)
@@ -968,6 +1077,7 @@ class ScreenShareController(
     }
 
     fun release() {
+        mainHandler.removeCallbacks(videoStatsProbe)
         stopViewing(notify = false)
         stopSharing()
         runCatching { eglBase.release() }
@@ -975,7 +1085,15 @@ class ScreenShareController(
 
     private fun createPeerConnection(observer: PeerConnection.Observer): PeerConnection? =
         factory.createPeerConnection(
-            PeerConnection.RTCConfiguration(emptyList()).apply { sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN },
+            PeerConnection.RTCConfiguration(listOf(
+                PeerConnection.IceServer.builder("stun:stun.qq.com:3478").createIceServer(),
+                PeerConnection.IceServer.builder("stun:stun.miwifi.com:3478").createIceServer(),
+            )).apply {
+                sdpSemantics = PeerConnection.SdpSemantics.UNIFIED_PLAN
+                continualGatheringPolicy = PeerConnection.ContinualGatheringPolicy.GATHER_CONTINUALLY
+                bundlePolicy = PeerConnection.BundlePolicy.MAXBUNDLE
+                rtcpMuxPolicy = PeerConnection.RtcpMuxPolicy.REQUIRE
+            },
             observer,
         )
 
@@ -987,6 +1105,9 @@ class ScreenShareController(
         override fun onIceCandidate(candidate: IceCandidate) = onIce(candidate)
         override fun onIceConnectionChange(state: PeerConnection.IceConnectionState) = onIceState(state)
         override fun onAddTrack(receiver: RtpReceiver, streams: Array<out MediaStream>) = onTrack(receiver.track())
+        // Unified Plan receivers in current WebRTC releases are delivered here;
+        // onAddTrack is retained for older engines and Plan B compatibility.
+        override fun onTrack(transceiver: RtpTransceiver) = onTrack(transceiver.receiver.track())
         override fun onSignalingChange(state: PeerConnection.SignalingState) = Unit
         override fun onIceConnectionReceivingChange(receiving: Boolean) = Unit
         override fun onIceGatheringChange(state: PeerConnection.IceGatheringState) = Unit
@@ -1043,6 +1164,7 @@ class ScreenShareController(
     private fun closeConnectionsForShare(connections: MutableMap<String, PeerConnection>, shareId: String) {
         connections.keys.filter { it.startsWith("$shareId|") }.forEach { key ->
             connections.remove(key)?.close()
+            if (connections === outboundConnections) outboundRouteVersions.remove(key)
         }
     }
 
@@ -1058,40 +1180,9 @@ class ScreenShareController(
         private const val PASSWORD_BACKOFF_MAX_MILLIS = 60_000L
         private const val PASSWORD_BACKOFF_TTL_MILLIS = 15 * 60_000L
 
-        /** 采集帧率。startCapture 与 changeCaptureFormat 必须用同一个值，否则重设格式会顺带改帧率。 */
-        private const val CAPTURE_FPS = 15
-
-        /** 编码分辨率上限。按长短边约束而不是按宽高分别约束，见 captureDimensions 的说明。 */
-        private const val CAPTURE_MAX_SHORT_EDGE = 1280
-        private const val CAPTURE_MAX_LONG_EDGE = 2280
-
         private fun iceCandidateBytes(candidate: IceCandidate): Int =
             candidate.sdp.toByteArray(Charsets.UTF_8).size +
                 (candidate.sdpMid?.toByteArray(Charsets.UTF_8)?.size ?: 0) + 16
 
-        /**
-         * 把内容尺寸压到编码上限内，并保持宽高比。
-         *
-         * 原实现用 `width.coerceAtMost(1280)` / `height.coerceAtMost(2280)` 分别裁剪，
-         * 两个维度独立设限会改变宽高比（横屏设备、以及“单个应用”采集的窄窗口尤其明显），
-         * 观看端看到的画面会被拉伸。这里改为按长短边等比缩放。
-         *
-         * 结果强制为偶数：多数硬件 H.264 编码器要求宽高为偶数，奇数会导致初始化失败或画面错位。
-         */
-        fun captureDimensions(contentWidth: Int, contentHeight: Int): Pair<Int, Int> {
-            // 兜底：拿不到有效尺寸时退回竖屏上限，不能返回 0（VirtualDisplay 会直接抛异常）
-            if (contentWidth <= 0 || contentHeight <= 0) {
-                return CAPTURE_MAX_SHORT_EDGE to CAPTURE_MAX_LONG_EDGE
-            }
-            val shortEdge = minOf(contentWidth, contentHeight)
-            val longEdge = maxOf(contentWidth, contentHeight)
-            val scale = minOf(
-                1.0,
-                CAPTURE_MAX_SHORT_EDGE.toDouble() / shortEdge,
-                CAPTURE_MAX_LONG_EDGE.toDouble() / longEdge,
-            )
-            fun even(value: Double): Int = (value.toInt() / 2 * 2).coerceAtLeast(2)
-            return even(contentWidth * scale) to even(contentHeight * scale)
-        }
     }
 }

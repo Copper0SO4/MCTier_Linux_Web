@@ -10,10 +10,10 @@ import { mountDevtools } from './devtools';
  * 初始化应用 Store
  * 应该在应用启动时调用一次
  */
-export const initializeStore = (): void => {
+export const initializeStore = async (): Promise<void> => {
   try {
     // 初始化持久化功能
-    initializeStorePersistence();
+    await initializeStorePersistence();
     console.log('✅ Store 持久化已初始化');
 
     // 在开发环境下挂载调试工具

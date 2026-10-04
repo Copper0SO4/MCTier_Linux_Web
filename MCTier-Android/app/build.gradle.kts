@@ -1,4 +1,9 @@
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import org.gradle.api.tasks.testing.Test
+import org.gradle.api.tasks.JavaExec
+import java.security.MessageDigest
+import java.net.URI
+import java.util.zip.GZIPOutputStream
 
 plugins {
     id("com.android.application")
@@ -13,10 +18,11 @@ android {
 
     defaultConfig {
         applicationId = "top.pmh13.mctier"
+        testInstrumentationRunner = "top.pmh13.mctier.PeerUiInstrumentation"
         minSdk = 26
         targetSdk = 36
-        versionCode = 33
-        versionName = "3.0.0-android"
+        versionCode = 117
+        versionName = "3.9.5-android"
         ndk {
             // The bundled LocalVQE engine is currently built for the primary
             // Android ABI; unsupported ABIs retain the WebRTC hardware AEC/NS path.
@@ -24,13 +30,37 @@ android {
         }
     }
 
+    val signingFile = providers.environmentVariable("MCTIER_ANDROID_STORE_FILE").orNull
+    if (!signingFile.isNullOrBlank()) {
+        signingConfigs.create("distribution") {
+            storeFile = file(signingFile)
+            storePassword = providers.environmentVariable("MCTIER_ANDROID_STORE_PASSWORD").get()
+            keyAlias = providers.environmentVariable("MCTIER_ANDROID_KEY_ALIAS").get()
+            keyPassword = providers.environmentVariable("MCTIER_ANDROID_KEY_PASSWORD").get()
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+        }
+    }
     buildTypes {
         release {
+            isDebuggable = false
+            if (!signingFile.isNullOrBlank()) signingConfig = signingConfigs.getByName("distribution")
             // 开启 R8：剥离未使用代码并混淆，缩小包体并提高逆向成本（见 issue #17 第 6 条）。
             // JNI 入口、kotlinx.serialization 的线协议字段等需要保名的部分见 proguard-rules.pro。
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        // Distribution keeps the established non-shrinking pipeline: the optional POI/AWT
+        // dependencies currently fail R8. Signing must not silently change runtime behavior.
+        create("signedRelease") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            isMinifyEnabled = false
+            isShrinkResources = false
+            matchingFallbacks += "release"
+            signingConfig = if (!signingFile.isNullOrBlank()) signingConfigs.getByName("distribution") else null
         }
     }
 
@@ -63,19 +93,135 @@ val syncLicenseAssets by tasks.registering(Sync::class) {
     from(repoRoot.file("LICENSE-LGPL-3.0.txt"))
     from(repoRoot.file("LICENSE-GPL-3.0.txt"))
     from(repoRoot.file("THIRD_PARTY_NOTICES.md"))
+    from(repoRoot.file("licenses/image-optimizer.txt"))
+    from(repoRoot.file("shared/speech-model.json"))
+    from(repoRoot.file("shared/compliance.json"))
     from(repoRoot.file("patches/easytier-2.6.0-mctier-android.patch"))
     into(licenseAssetDir)
 }
 
 android.sourceSets.getByName("main").assets.srcDir(licenseAssetDir)
+val builtinEmojiPack = rootProject.projectDir.parentFile.resolve("shared/builtin-emoji/builtin-v3.pack.gz")
+val builtinEmojiAssetDir = layout.buildDirectory.dir("generated/builtinEmojiAssets")
+val prepareBuiltinEmojiAsset by tasks.registering {
+    description = "Wrap the builtin emoji gzip once so Android preserves the .pack.gz asset name and bytes."
+    inputs.file(builtinEmojiPack)
+    outputs.file(builtinEmojiAssetDir.map { it.file("builtin-v3.pack.gz.gz") })
+    doLast {
+        val destination = builtinEmojiAssetDir.get().file("builtin-v3.pack.gz.gz").asFile
+        destination.parentFile.mkdirs()
+        GZIPOutputStream(destination.outputStream().buffered()).use { output ->
+            builtinEmojiPack.inputStream().buffered().use { input -> input.copyTo(output) }
+        }
+    }
+}
+android.sourceSets.getByName("main").assets.srcDir(builtinEmojiAssetDir)
+val prepareSpeechModel by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir.parentFile)
+    commandLine("node", "scripts/prepare-speech-model.mjs")
+    inputs.file(rootProject.projectDir.parentFile.resolve("scripts/prepare-speech-model.mjs"))
+    inputs.file(rootProject.projectDir.parentFile.resolve("shared/speech-model.json"))
+    outputs.dir(rootProject.projectDir.parentFile.resolve("shared/generated/speech-model"))
+}
+android.sourceSets.getByName("main").assets.srcDir(rootProject.projectDir.parentFile.resolve("shared/generated"))
 
 // 仅把目录登记为 assets 源不够：AGP 的资产合并任务不会因此依赖上面的复制任务，
 // 结果是根目录文本更新后 APK 里仍是旧副本（实测 mergeReleaseAssets 直接 UP-TO-DATE）。
 // 这里显式建立依赖，确保每次构建都先同步再合并。
 tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
     dependsOn(syncLicenseAssets)
+    dependsOn(prepareSpeechModel)
+    dependsOn(prepareBuiltinEmojiAsset)
 }
-tasks.named("preBuild") { dependsOn(syncLicenseAssets) }
+
+tasks.matching { it.name == "preSignedReleaseBuild" }.configureEach {
+    doFirst {
+        check(!providers.environmentVariable("MCTIER_ANDROID_STORE_FILE").orNull.isNullOrBlank()) {
+            "Use the signed packaging script: the persistent Android signing identity is required."
+        }
+    }
+}
+// Lint reads generated assets too; release builds must declare the same producers.
+tasks.matching { it.name.contains("LintVital") || it.name.startsWith("lintVital") }.configureEach {
+    dependsOn(syncLicenseAssets, prepareSpeechModel, prepareBuiltinEmojiAsset)
+}
+val buildFilePreview by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir.parentFile)
+    commandLine("node", "scripts/build-file-preview.mjs")
+    inputs.dir(rootProject.projectDir.parentFile.resolve("shared/file-preview"))
+    inputs.file(rootProject.projectDir.parentFile.resolve("scripts/build-file-preview.mjs"))
+    inputs.file(rootProject.projectDir.parentFile.resolve("package-lock.json"))
+    outputs.file(projectDir.resolve("src/main/assets/file-preview/index.html"))
+}
+
+val imageOptimizerJni = layout.buildDirectory.dir("generated/imageOptimizerJni")
+val prepareImageOptimizer by tasks.registering(Exec::class) {
+    workingDir(rootProject.projectDir.parentFile)
+    environment("ANDROID_HOME", android.sdkDirectory.absolutePath)
+    commandLine("node", "scripts/build-image-optimizer.mjs", imageOptimizerJni.get().asFile.absolutePath)
+    inputs.dir(rootProject.projectDir.parentFile.resolve("shared/image-optimizer/src"))
+    inputs.file(rootProject.projectDir.parentFile.resolve("shared/image-optimizer/Cargo.toml"))
+    inputs.file(rootProject.projectDir.parentFile.resolve("shared/image-optimizer/Cargo.lock"))
+    inputs.file(rootProject.projectDir.parentFile.resolve("scripts/build-image-optimizer.mjs"))
+    outputs.file(imageOptimizerJni.map { it.file("arm64-v8a/libmctier_image_optimizer.so") })
+}
+android.sourceSets.getByName("main").jniLibs.srcDir(imageOptimizerJni)
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("JniLibFolders") }.configureEach {
+    dependsOn(prepareImageOptimizer)
+}
+tasks.named("preBuild") { dependsOn(syncLicenseAssets, buildFilePreview) }
+
+// Kotlin 2.4 writes JVM test classes to its own tmp directory, while AGP's
+// AndroidUnitTest task discovers classes from the javac output directory.
+// Synchronize the compiled output into AGP's exact Java task directory before
+// the test task; no custom Test wiring is needed.
+val syncDebugUnitTestKotlinClasses by tasks.registering(Sync::class) {
+    dependsOn("compileDebugUnitTestKotlin")
+    from(layout.buildDirectory.dir("tmp/kotlin-classes/debugUnitTest"))
+    into(layout.buildDirectory.dir("intermediates/javac/debugUnitTest/compileDebugUnitTestJavaWithJavac/classes"))
+}
+// AGP 8.13's AndroidUnitTest worker does not load Kotlin 2.4 test classes on
+// this project, even though they are present in its reported classpath. Keep a
+// normal Gradle/JUnit runner as the authoritative JVM test task.
+val jvmSecurityHardeningTest by tasks.registering(JavaExec::class) {
+    dependsOn("compileDebugUnitTestKotlin", "bundleDebugClassesToRuntimeJar")
+    classpath = files(
+        layout.buildDirectory.dir("tmp/kotlin-classes/debugUnitTest"),
+        layout.buildDirectory.dir("tmp/kotlin-classes/debug"),
+        (configurations.findByName("debugUnitTestRuntimeClasspath")
+            ?: configurations.findByName("testDebugRuntimeClasspath")
+            ?: configurations.findByName("testRuntimeClasspath")
+            ?: configurations.getByName("debugRuntimeClasspath"))
+            .files.filter { it.extension.equals("jar", ignoreCase = true) },
+        fileTree("${gradle.gradleUserHomeDir}/caches/modules-2/files-2.1/junit/junit/4.13.2") { include("**/*.jar") },
+        fileTree("${gradle.gradleUserHomeDir}/caches/modules-2/files-2.1/org.hamcrest/hamcrest-core") { include("**/*.jar") },
+    )
+    mainClass.set("org.junit.runner.JUnitCore")
+    args("top.pmh13.mctier.network.LobbyAddressTest")
+    args("top.pmh13.mctier.network.EasyTierConfigTest")
+    args("top.pmh13.mctier.network.ScreenShareQualityTest")
+    args("top.pmh13.mctier.network.QuarkDailyAttemptTest")
+    args("top.pmh13.mctier.network.QuarkMobileLoginTest")
+    args("top.pmh13.mctier.network.QuarkContributionLedgerTest")
+    args("top.pmh13.mctier.network.SignalingRegistrationTest")
+    args("top.pmh13.mctier.ui.ChatMediaLayoutTest")
+    args("top.pmh13.mctier.ui.ThemeContrastTest")
+    args("top.pmh13.mctier.ui.StartupVersionStageTest")
+    args("top.pmh13.mctier.network.PeerPreferencesTest")
+    args("top.pmh13.mctier.network.VoiceHealthTest")
+    args("top.pmh13.mctier.data.LobbyModerationTest")
+    args("top.pmh13.mctier.network.MessagePreviewTest")
+    args("top.pmh13.mctier.network.BuiltinEmojiMessageTest")
+    args("top.pmh13.mctier.audio.VoiceRecordingPcmTest")
+    args("top.pmh13.mctier.recording.RecordingOptionsTest")
+    args("top.pmh13.mctier.recording.RecordingMicrophoneTest")
+    args("top.pmh13.mctier.ui.SpeechModelTest")
+    args("top.pmh13.mctier.network.SecurityHardeningTest", "top.pmh13.mctier.network.ChatOrderTest", "top.pmh13.mctier.network.ChatUnreadTest", "top.pmh13.mctier.network.EncryptedChatTest", "top.pmh13.mctier.network.ImageFormatTest", "top.pmh13.mctier.network.BuiltinEmojiCacheTest", "top.pmh13.mctier.network.EmojiManagementTest", "top.pmh13.mctier.network.ChatAttachmentTest", "top.pmh13.mctier.ui.ChatLinkTest")
+}
+tasks.withType<Test>().matching { it.name == "testDebugUnitTest" }.configureEach {
+    dependsOn(syncDebugUnitTestKotlinClasses, jvmSecurityHardeningTest)
+    enabled = false
+}
 
 // Kotlin 2.2+ 起 android.kotlinOptions 已废弃（2.4 起为错误），改用 compilerOptions DSL。
 kotlin {
@@ -87,8 +233,39 @@ kotlin {
     }
 }
 
+val sherpaAar = File(gradle.gradleUserHomeDir, "mctier-libs/sherpa-onnx-1.13.8.aar")
+val prepareSherpa by tasks.registering {
+    val expected = "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96"
+    outputs.file(sherpaAar)
+    fun valid(file: File): Boolean = file.isFile && file.inputStream().use { input ->
+        val digest = MessageDigest.getInstance("SHA-256")
+        val buffer = ByteArray(65536)
+        while (true) { val count = input.read(buffer); if (count < 0) break; digest.update(buffer, 0, count) }
+        digest.digest().joinToString("") { "%02x".format(it) } == expected
+    }
+    outputs.upToDateWhen { valid(sherpaAar) }
+    doLast {
+        if (!valid(sherpaAar)) {
+            sherpaAar.parentFile.mkdirs()
+            val pending = File(sherpaAar.parentFile, "${sherpaAar.name}.partial")
+            try {
+                val connection = URI("https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/${sherpaAar.name}").toURL().openConnection()
+                connection.connectTimeout = 30000
+                connection.readTimeout = 120000
+                connection.getInputStream().use { input -> pending.outputStream().use { output -> input.copyTo(output) } }
+                check(valid(pending)) { "sherpa-onnx AAR checksum mismatch" }
+                pending.copyTo(sherpaAar, overwrite = true)
+            } finally { pending.delete() }
+        }
+    }
+}
+
 dependencies {
+    implementation("androidx.work:work-runtime-ktx:2.10.1")
+    androidTestImplementation("androidx.work:work-testing:2.10.1")
+    implementation(files(sherpaAar).builtBy(prepareSherpa))
     testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
     implementation(platform("androidx.compose:compose-bom:2025.05.01"))
     implementation("androidx.activity:activity-compose:1.10.1")
     // 保持 1.16.0：1.19.0 要求 AGP 9.1+ / compileSdk 37（Dependabot 误判为 minor 升级）
@@ -97,9 +274,13 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.9.1")
     implementation("androidx.compose.foundation:foundation")
     implementation("androidx.compose.material3:material3")
+    // Match the Material 3 runtime selected by miuix for the actual app.
+    androidTestImplementation("androidx.compose.material3:material3:1.4.0")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
+    implementation("io.coil-kt.coil3:coil-compose:3.3.0")
+    implementation("io.coil-kt.coil3:coil-gif:3.3.0")
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     implementation("top.yukonga.miuix.kmp:miuix:0.8.8")
@@ -108,6 +289,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.11.0")
     implementation("org.nanohttpd:nanohttpd:2.3.1")
+    implementation("org.apache.poi:poi:5.4.1")
+    implementation("org.apache.poi:poi-scratchpad:5.4.1")
     implementation("io.github.webrtc-sdk:android:144.7559.14")
     // 二维码：生成(core) + 扫码(zxing-android-embedded)
     implementation("com.google.zxing:core:3.5.4")

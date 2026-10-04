@@ -4,6 +4,7 @@ import { useTranslation } from 'react-i18next';
 import { tl } from '../../i18n';
 import { remoteControlService } from '../../services/remoteControl/RemoteControlService';
 import { codeToVk } from '../../services/remoteControl/keymap';
+import { RelativePointer } from '../../services/remoteControl/relativePointer';
 import './RemoteControl.css';
 
 /**
@@ -25,6 +26,55 @@ export const RemoteControl: React.FC = () => {
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const surfaceRef = useRef<HTMLDivElement>(null);
+  const [gameMouse, setGameMouse] = useState(false);
+  const [pointerLocked, setPointerLocked] = useState(false);
+  const gameMouseRef = useRef(false);
+  const relativePointer = useRef(new RelativePointer(event => remoteControlService.sendInput(event)));
+  const pressedKeys = useRef(new Map<string, { code: number; extended: boolean }>());
+  const releaseInputs = useCallback(() => {
+    relativePointer.current.release();
+    for (const key of pressedKeys.current.values()) remoteControlService.sendInput({ kind: 'keyup', ...key });
+    pressedKeys.current.clear();
+  }, []);
+
+  useEffect(() => {
+    const surface = surfaceRef.current;
+    const onLock = () => {
+      const locked = !!surface && document.pointerLockElement === surface;
+      if (locked && (!controllerStream || !gameMouseRef.current)) {
+        document.exitPointerLock();
+        return;
+      }
+      setPointerLocked(locked);
+      if (!locked) releaseInputs();
+    };
+    const onBlur = () => {
+      releaseInputs();
+      if (surface && document.pointerLockElement === surface) document.exitPointerLock();
+    };
+    const onError = () => message.warning(tl('无法锁定鼠标，请再次点击远程画面重试', 'Could not lock the mouse. Click the remote screen to retry.'));
+    document.addEventListener('pointerlockchange', onLock);
+    document.addEventListener('pointerlockerror', onError);
+    window.addEventListener('blur', onBlur);
+    if (!controllerStream) {
+      gameMouseRef.current = false;
+      setGameMouse(false);
+      setPointerLocked(false);
+    }
+    return () => {
+      onBlur();
+      document.removeEventListener('pointerlockchange', onLock);
+      document.removeEventListener('pointerlockerror', onError);
+      window.removeEventListener('blur', onBlur);
+    };
+  }, [controllerStream, message, releaseInputs]);
+
+  const toggleGameMouse = () => {
+    releaseInputs();
+    gameMouseRef.current = !gameMouseRef.current;
+    setGameMouse(gameMouseRef.current);
+    if (document.pointerLockElement === surfaceRef.current) document.exitPointerLock();
+  };
 
   // ===== 计算指针在远程屏幕中的归一化坐标（object-fit: contain 信箱映射） =====
   const toNormalized = useCallback((clientX: number, clientY: number): { x: number; y: number } | null => {
@@ -74,9 +124,9 @@ export const RemoteControl: React.FC = () => {
         onOk: async () => {
           try {
             await remoteControlService.acceptControl(sessionId, from, fromName);
-          } catch (err) {
+          } catch {
             message.error(tl('屏幕采集被取消或失败', 'Screen capture was cancelled or failed'));
-            remoteControlService.stopControl();
+            if (remoteControlService.isSessionForPeer(sessionId, from)) remoteControlService.stopControl();
           }
         },
         onCancel: () => {
@@ -133,19 +183,47 @@ export const RemoteControl: React.FC = () => {
   // 绑定视频流
   useEffect(() => {
     if (controllerStream && videoRef.current) {
-      videoRef.current.srcObject = controllerStream;
-      videoRef.current.play().catch(() => {});
+      const video = videoRef.current;
+      let receivedFrame = false;
+      let frameRequest: number | null = null;
+      const timeout = window.setTimeout(() => {
+        if (!receivedFrame) {
+          message.error(tl('远程画面连接超时，请重试', 'Remote video timed out. Please retry.'));
+          remoteControlService.stopControl();
+        }
+      }, 30000);
+      const onFrame = () => {
+        receivedFrame = true;
+        clearTimeout(timeout);
+      };
+      if (video.requestVideoFrameCallback) {
+        frameRequest = video.requestVideoFrameCallback(onFrame);
+      } else {
+        video.addEventListener('playing', onFrame, { once: true });
+      }
+      video.srcObject = controllerStream;
+      video.play().catch((error) => console.warn('远程画面播放失败', error));
+      return () => {
+        clearTimeout(timeout);
+        video.removeEventListener('playing', onFrame);
+        if (frameRequest !== null) video.cancelVideoFrameCallback(frameRequest);
+        video.srcObject = null;
+      };
     }
-  }, [controllerStream]);
+  }, [controllerStream, message]);
 
   // 控制端键盘捕获
   useEffect(() => {
     if (!controllerStream) return;
     const onKey = (e: KeyboardEvent) => {
+      // Escape belongs to the local pointer lock, never the remote game.
+      if (gameMouseRef.current && (e.code === 'Escape' || document.pointerLockElement !== surfaceRef.current)) return;
       const vk = codeToVk(e.code);
       if (!vk) return;
       e.preventDefault();
       e.stopPropagation();
+      if (e.type === 'keydown') pressedKeys.current.set(e.code, vk);
+      else pressedKeys.current.delete(e.code);
       remoteControlService.sendInput({
         kind: e.type === 'keydown' ? 'keydown' : 'keyup',
         code: vk.code,
@@ -162,18 +240,37 @@ export const RemoteControl: React.FC = () => {
 
   // ===== 控制端鼠标事件 =====
   const onMouseMove = (e: React.MouseEvent) => {
+    if (gameMouseRef.current) {
+      if (document.pointerLockElement === surfaceRef.current) relativePointer.current.move(e.movementX, e.movementY);
+      return;
+    }
     const n = toNormalized(e.clientX, e.clientY);
     if (n) remoteControlService.sendInput({ kind: 'move', x: n.x, y: n.y });
   };
   const onMouseDown = (e: React.MouseEvent) => {
+    if (gameMouseRef.current) {
+      e.preventDefault();
+      if (document.pointerLockElement === surfaceRef.current) relativePointer.current.button(e.button, true);
+      else {
+        // Consume the click used to acquire the lock; it must not fire in-game.
+        try { void surfaceRef.current?.requestPointerLock()?.catch(() => {}); }
+        catch { message.warning(tl('当前环境不支持鼠标锁定', 'Mouse lock is unavailable in this environment')); }
+      }
+      return;
+    }
     const n = toNormalized(e.clientX, e.clientY);
     if (n) remoteControlService.sendInput({ kind: 'down', button: e.button, x: n.x, y: n.y });
   };
   const onMouseUp = (e: React.MouseEvent) => {
+    if (gameMouseRef.current) {
+      if (document.pointerLockElement === surfaceRef.current) relativePointer.current.button(e.button, false);
+      return;
+    }
     const n = toNormalized(e.clientX, e.clientY);
     if (n) remoteControlService.sendInput({ kind: 'up', button: e.button, x: n.x, y: n.y });
   };
   const onWheel = (e: React.WheelEvent) => {
+    if (gameMouseRef.current && document.pointerLockElement !== surfaceRef.current) return;
     remoteControlService.sendInput({ kind: 'wheel', dx: -e.deltaX / 100, dy: -e.deltaY / 100 });
   };
 
@@ -207,8 +304,11 @@ export const RemoteControl: React.FC = () => {
               {tl(`正在控制 ${controllerPeer} 的设备`, `Controlling ${controllerPeer}'s device`)}
             </span>
             <span className="rc-viewer-hint">
-              {tl('鼠标键盘将直接操作对方设备', 'Your mouse & keyboard control the remote device')}
+              {gameMouse ? (pointerLocked ? tl('游戏鼠标已锁定 · Esc 释放鼠标', 'Game mouse locked · Esc to release') : tl('点击画面锁定鼠标 · 适用于 Minecraft 等 3D 游戏（双方需 3.8.0）', 'Click video to lock · For 3D games (both peers need 3.8.0)')) : tl('鼠标键盘将直接操作对方设备', 'Your mouse & keyboard control the remote device')}
             </span>
+            <button className="rc-game-mouse" aria-pressed={gameMouse} onClick={toggleGameMouse}>
+              {gameMouse ? tl('切回桌面鼠标', 'Desktop mouse') : tl('游戏鼠标', 'Game mouse')}
+            </button>
             <button className="rc-viewer-stop" onClick={stop}>{tl('结束', 'End')}</button>
           </div>
           <div

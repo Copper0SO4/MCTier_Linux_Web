@@ -4,6 +4,7 @@
 // 各玩家虚拟 IP 上是否开放了 Minecraft 服务器（默认端口 25565），
 // 并解析出 MOTD、版本、在线人数等信息，供前端展示"可加入的世界"。
 
+use super::virtual_network::virtual_host;
 use serde::Serialize;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -100,10 +101,14 @@ fn collect_text(v: &serde_json::Value, out: &mut String) {
 
 /// 查询单个 Minecraft 服务器（SLP），成功返回状态信息
 async fn query_server(ip: &str, port: u16) -> Option<DiscoveredServer> {
+    let address = virtual_host(ip)?;
+    if port == 0 {
+        return None;
+    }
     let start = std::time::Instant::now();
 
     // 连接（带超时）
-    let connect = TcpStream::connect((ip, port));
+    let connect = TcpStream::connect((address, port));
     let mut stream = match tokio::time::timeout(Duration::from_millis(1500), connect).await {
         Ok(Ok(s)) => s,
         _ => return None,
@@ -199,6 +204,11 @@ async fn query_server(ip: &str, port: u16) -> Option<DiscoveredServer> {
     })
 }
 
+/// Accept only literal overlay hosts; a DNS suffix does not constrain the resolved IP.
+pub fn is_allowed_mc_target(target: &str) -> bool {
+    virtual_host(target).is_some()
+}
+
 /// 扫描多个虚拟 IP 上的 Minecraft 服务器
 ///
 /// # 参数
@@ -210,14 +220,21 @@ pub async fn scan_minecraft_servers(
     port: Option<u16>,
 ) -> Vec<DiscoveredServer> {
     let port = port.unwrap_or(25565);
+    if port == 0 {
+        return Vec::new();
+    }
+    let valid_targets: std::collections::BTreeSet<String> = peer_ips
+        .into_iter()
+        .filter(|ip| is_allowed_mc_target(ip))
+        .collect();
     log::info!(
-        "🔍 扫描 Minecraft 局域网世界: {} 个IP, 端口 {}",
-        peer_ips.len(),
+        "🔍 扫描 Minecraft 局域网世界: {} 个合规IP, 端口 {}",
+        valid_targets.len(),
         port
     );
 
     let mut tasks = Vec::new();
-    for ip in peer_ips {
+    for ip in valid_targets {
         let ip_clone = ip.clone();
         tasks.push(tokio::spawn(
             async move { query_server(&ip_clone, port).await },
@@ -238,7 +255,11 @@ pub async fn scan_minecraft_servers(
 /// 查询单个虚拟 IP 上的 Minecraft 服务器（用于精确探测某个玩家）
 #[tauri::command]
 pub async fn query_minecraft_server(ip: String, port: Option<u16>) -> Option<DiscoveredServer> {
-    query_server(&ip, port.unwrap_or(25565)).await
+    let port = port.unwrap_or(25565);
+    if port == 0 || !is_allowed_mc_target(&ip) {
+        return None;
+    }
+    query_server(&ip, port).await
 }
 
 /// 单个对等节点的连接质量
@@ -255,8 +276,9 @@ pub struct PeerLatency {
 
 /// 测量到某个虚拟 IP 的延迟（通过 TCP 连接其聊天端口 14540 估算 RTT）
 async fn measure_one(ip: &str) -> Option<u64> {
+    let address = virtual_host(ip)?;
     let start = std::time::Instant::now();
-    let connect = TcpStream::connect((ip, 14540u16));
+    let connect = TcpStream::connect((address, 14540u16));
     match tokio::time::timeout(Duration::from_millis(800), connect).await {
         Ok(Ok(_stream)) => Some(start.elapsed().as_millis() as u64),
         // 连接被拒绝也说明主机可达（端口可能未开），仍记录 RTT
@@ -272,7 +294,11 @@ async fn measure_one(ip: &str) -> Option<u64> {
 #[tauri::command]
 pub async fn measure_peers_latency(peer_ips: Vec<String>) -> Vec<PeerLatency> {
     let mut tasks = Vec::new();
-    for ip in peer_ips {
+    for ip in peer_ips
+        .into_iter()
+        .filter(|ip| virtual_host(ip).is_some())
+        .collect::<std::collections::BTreeSet<_>>()
+    {
         let ip_clone = ip.clone();
         tasks.push(tokio::spawn(async move {
             let probes = 2u32;
@@ -302,4 +328,30 @@ pub async fn measure_peers_latency(peer_ips: Vec<String>) -> Vec<PeerLatency> {
         }
     }
     results
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_allowed_mc_target() {
+        assert!(is_allowed_mc_target("10.126.126.1"));
+        assert!(is_allowed_mc_target("10.126.126.100"));
+        assert!(is_allowed_mc_target("10.126.126.254"));
+        assert!(!is_allowed_mc_target("player.mct.net"));
+        assert!(!is_allowed_mc_target("abc-123.mct.net"));
+
+        // Reject physical LAN, loopback, broadcast, and external IPs
+        assert!(!is_allowed_mc_target("10.126.126.0"));
+        assert!(!is_allowed_mc_target("10.126.126.255"));
+        assert!(!is_allowed_mc_target("127.0.0.1"));
+        assert!(!is_allowed_mc_target("192.168.1.1"));
+        assert!(!is_allowed_mc_target("10.0.0.1"));
+        assert!(!is_allowed_mc_target("169.254.169.254"));
+        assert!(!is_allowed_mc_target("mct.net"));
+        assert!(!is_allowed_mc_target(".mct.net"));
+        assert!(!is_allowed_mc_target("attacker.com"));
+        assert!(!is_allowed_mc_target("evil.mct.net/path"));
+    }
 }

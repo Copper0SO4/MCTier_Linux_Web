@@ -3,17 +3,18 @@ package top.pmh13.mctier.data
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-const val DefaultEasyTierNode = "udp://us01.225284.xyz:11010"
+const val DefaultEasyTierNode = "tcp://easytier.weiai.org.cn:11010"
 const val RemovedQingyunNode = "wss://mctiers.pmhs.top"
-const val DefaultSignalingServer = "wss://test.pmhs.top"
+const val DefaultSignalingServer = "wss://mctier.pmhs.top/signaling"
 const val FileSharePort = 14539
 const val ChatServerPort = 14540
 const val ChatTokenHeader = "x-mctier-chat-token"
 const val ChatTokenHexLength = 64
 const val ChatMaxHistoryMessages = 1000
-const val ChatMaxHistoryBytes = 4 * 1024 * 1024
-const val ChatMaxHttpBodyBytes = 2 * 1024 * 1024
-const val AppClientVersion = "3.0.0"
+const val ChatMaxHistoryBytes = 12 * 1024 * 1024
+const val ChatMaxHttpBodyBytes = 12 * 1024 * 1024
+const val ChatMaxAttachmentBytes = 64 * 1024 * 1024
+const val AppClientVersion = "3.9.5"
 
 enum class AppConnectionState { Idle, Connecting, InLobby, Error }
 
@@ -41,6 +42,7 @@ data class Lobby(
     val useDomain: Boolean = false,
     val signalingServer: String = DefaultSignalingServer,
     val serverNode: String = DefaultEasyTierNode,
+    val addressAttempt: Int = 0,
 )
 
 @Serializable
@@ -72,6 +74,35 @@ data class ChatMessage(
     val type: String = "text", // "text" | "image"
     val imageBase64: String? = null, // data:image/jpeg;base64,... 用于显示
     val recalled: Boolean = false,
+    val recipientId: String? = null,
+    val attachment: ChatAttachmentMeta? = null,
+    val attachmentPath: String? = null,
+    val delivery: String? = null, // Local-only sending/failed status.
+)
+
+@Serializable
+data class ChatAttachmentMeta(
+    val id: String,
+    val name: String,
+    val mime: String,
+    val size: Long,
+)
+
+@Serializable
+data class EmojiCategory(
+    val id: String,
+    val name: String,
+    val builtin: Boolean = false,
+)
+
+@Serializable
+data class CustomEmojiItem(
+    val id: String,
+    val categoryId: String,
+    val name: String,
+    val mime: String,
+    val fileName: String,
+    val createdAt: Long,
 )
 
 @Serializable
@@ -106,6 +137,7 @@ data class UserSettings(
     val fileShareDownloadTreeUri: String = "",
     val preferredServer: String = DefaultEasyTierNode,
     val signalingServer: String = DefaultSignalingServer,
+    val preferredVirtualIpHost: Int? = null,
     val useDomain: Boolean = false,
     val virtualDomain: String = "",
     val autoLobbyEnabled: Boolean = false,
@@ -204,6 +236,7 @@ data class SignalingEnvelope(
     val hasPassword: Boolean? = null,
     val password: String? = null,
     val error: String? = null,
+    val message: String? = null,
     val reason: String? = null,
     val offer: SdpPayload? = null,
     val answer: SdpPayload? = null,
@@ -262,6 +295,7 @@ data class ChatWireMessage(
     @SerialName("message_type") val messageType: String = "text", // "text" | "image"
     val timestamp: Long, // 秒
     @SerialName("image_data") val imageData: List<Int>? = null, // 图片字节(0~255)
+    @SerialName("recipient_id") val recipientId: String? = null,
 )
 
 /**
@@ -288,6 +322,7 @@ data class ChatSendRequest(
     val content: String,
     @SerialName("message_type") val messageType: String = "text",
     @SerialName("image_data") val imageData: List<Int>? = null,
+    @SerialName("recipient_id") val recipientId: String? = null,
 )
 
 /** 文件共享列表项（信令 file-share-list-response 内，与桌面端字段一致） */
@@ -458,9 +493,9 @@ data class LocalStats(
 )
 
 val BuiltinNodes: List<BuiltinNode> = listOf(
-    BuiltinNode("海波美国节点", "udp://us01.225284.xyz:11010"),
+    BuiltinNode("唯爱厦门节点", DefaultEasyTierNode),
     BuiltinNode("海波中国大陆节点", "tcp://225284.xyz:11010"),
-    BuiltinNode("唯爱厦门节点", "tcp://easytier.weiai.org.cn:11010"),
+    BuiltinNode("海波美国节点", "udp://us01.225284.xyz:11010"),
 )
 
 @Serializable

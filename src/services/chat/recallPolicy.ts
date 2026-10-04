@@ -4,8 +4,9 @@ export interface RecallableMessage {
   timestamp: number;
   recalled?: boolean;
   content: string;
-  type?: 'text' | 'image';
+  type?: 'text' | 'image' | 'voice' | 'file';
   imageData?: string;
+  attachment?: unknown;
 }
 export const RECALL_WINDOW_MS = 2 * 60 * 1000;
 
@@ -32,7 +33,7 @@ export function applyMessageRecall<T extends RecallableMessage>(
     changed: true,
     messages: messages.map((message) =>
       message.id === messageId
-        ? ({ ...message, content: '', imageData: undefined, type: 'text', recalled: true } as T)
+        ? ({ ...message, content: '', imageData: undefined, ...('attachment' in message ? { attachment: undefined } : {}), type: 'text', recalled: true } as T)
         : message
     ),
   };

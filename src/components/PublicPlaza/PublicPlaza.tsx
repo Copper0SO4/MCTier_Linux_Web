@@ -85,8 +85,12 @@ export const PublicPlaza: React.FC<PublicPlazaProps> = ({ visible, onClose, onJo
                   </div>
                   <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', marginTop: 2 }}>
                     {tl('房主', 'Host')}：{l.hostName}
-                    {l.description ? ` · ${l.description}` : ''}
                   </div>
+                  {l.description?.trim() && (
+                    <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', marginTop: 4, overflowWrap: 'anywhere', whiteSpace: 'pre-wrap' }}>
+                      {l.description.trim()}
+                    </div>
+                  )}
                 </div>
                 <Button
                   type="primary"

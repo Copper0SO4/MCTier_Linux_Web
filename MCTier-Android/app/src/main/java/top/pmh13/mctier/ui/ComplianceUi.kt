@@ -10,6 +10,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -29,6 +31,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 
 /**
  * 高风险功能门控：在任意触发点调用 FeatureGate.run(...)，若用户尚未同意该功能则弹出一次性同意框，
@@ -77,14 +81,14 @@ fun ConsentScreen(onAgree: () -> Unit, onDisagree: () -> Unit) {
         contentAlignment = Alignment.Center,
     ) {
         Column(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(Panel).padding(20.dp),
+            Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).clip(RoundedCornerShape(16.dp)).background(Panel).padding(20.dp),
         ) {
             Text(L("欢迎使用 MCTier", "Welcome to MCTier"), color = TextPrimary, fontSize = 19.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(12.dp))
             Text(
                 L(
-                    "为保护你的权益，请阅读并同意以下条款。我们仅在实现对应功能时申请相应权限，通信内容采用成员间点对点直传。点击下方链接可查看完整内容。",
-                    "To protect your rights, please read and agree to the following. We request permissions only for the related features, and communication is transmitted peer-to-peer between members. Tap the links below to read the full text.",
+                    "为保护你的权益，请阅读并同意以下条款。我们仅在实现对应功能时申请相应权限，通信可经点对点连接或中继传输。点击下方链接可查看完整内容。",
+                    "To protect your rights, please read and agree to the following. We request permissions only for the related features, and communication may use peer-to-peer connections or relays. Tap the links below to read the full text.",
                 ),
                 color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp, lineHeight = 20.sp,
             )
@@ -125,24 +129,23 @@ private fun LinkRow(label: String, onClick: () -> Unit) {
 /** 可滚动的合规文档查看弹窗 */
 @Composable
 fun ComplianceDocDialog(title: String, body: String, onClose: () -> Unit) {
-    Box(
-        Modifier.fillMaxSize().background(Color(0xCC000000)).clickable(onClick = onClose),
-        contentAlignment = Alignment.Center,
-    ) {
+    Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(
-            Modifier.fillMaxWidth().padding(18.dp).clip(RoundedCornerShape(16.dp)).background(Panel).padding(18.dp),
+            Modifier.padding(18.dp).widthIn(max = 720.dp).fillMaxWidth().fillMaxHeight(0.85f)
+                .clip(RoundedCornerShape(16.dp)).background(Panel).padding(18.dp),
         ) {
             Text(title, color = TextPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(12.dp))
-            Box(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) {
+            Box(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
                 Text(body, color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp, lineHeight = 20.sp)
             }
             Spacer(Modifier.height(14.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                Box(
-                    Modifier.clip(RoundedCornerShape(10.dp)).background(GrassGreen)
-                        .clickable { onClose() }.padding(horizontal = 22.dp, vertical = 9.dp),
-                ) { Text(L("我已阅读", "I have read"), color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold) }
+                androidx.compose.material3.Button(
+                    onClick = onClose,
+                    shape = RoundedCornerShape(10.dp),
+                    colors = androidx.compose.material3.ButtonDefaults.buttonColors(containerColor = GrassGreen, contentColor = Color.White),
+                ) { Text(L("我已阅读", "I have read"), fontSize = 14.sp, fontWeight = FontWeight.Bold) }
             }
         }
     }
@@ -166,15 +169,18 @@ fun ComplianceLinksSection() {
         3 -> ComplianceDocDialog(L("权限用途说明", "Permission Usage"), ComplianceTexts.permissionUsage()) { doc = 0 }
         4 -> ComplianceDocDialog(L("免责声明", "Disclaimer"), ComplianceTexts.disclaimer()) { doc = 0 }
     }
+
 }
 
 @Composable
 private fun ComplianceEntryRow(label: String, onClick: () -> Unit) {
-    Box(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).background(PanelHigh)
-            .clickable { onClick() }.padding(horizontal = 14.dp, vertical = 12.dp),
+    Row(
+        Modifier.fillMaxWidth().padding(bottom = 8.dp).clip(RoundedCornerShape(10.dp)).background(PanelHigh)
+            .clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(label, color = TextPrimary.copy(alpha = 0.9f), fontSize = 14.sp)
+        Text("›", color = AccentText, fontSize = 18.sp)
     }
 }
 

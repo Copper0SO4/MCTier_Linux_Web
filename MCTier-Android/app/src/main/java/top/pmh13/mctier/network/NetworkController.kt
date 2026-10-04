@@ -43,13 +43,16 @@ class NetworkController(private val context: Context) {
         compressionZstd: Boolean = false,
         privateMode: Boolean = false,
         useDomain: Boolean = false,
+        identityId: String,
+        addressAttempt: Int = 0,
+        preferredVirtualIpHost: Int? = null,
     ): NetworkSession {
         val networkName = "MCTier-$lobbyName"
         val instanceName = "mctier_${lobbyName.hashCode().absoluteValue}_${playerName.hashCode().absoluteValue}"
         val normalizedNode = normalizeNode(node)
         // 只连接用户当前选择的节点，确保节点选择和实际网络连接保持一致。
         val peerList = listOf(normalizedNode)
-        val virtualIp = allocateVirtualIp(lobbyName, playerName)
+        val virtualIp = LobbyAddress.candidate(lobbyName, identityId, addressAttempt, preferredVirtualIpHost)
         Log.i(TAG, "Starting EasyTier instance=$instanceName ip=$virtualIp peers=$peerList lobby=$lobbyName")
         if (!EasyTierJNI.available) {
             error("EasyTier native load failed: ${EasyTierJNI.loadErrorMessage ?: "unknown error"}")
@@ -96,6 +99,10 @@ class NetworkController(private val context: Context) {
             stopEasyTier()
             error("EasyTier did not report a virtual IP")
         }
+        if (reportedIp.substringBefore('/') != virtualIp) {
+            stopEasyTier()
+            error("EasyTier virtual IP does not match the VPN address")
+        }
         return NetworkSession(networkName, password, normalizedNode, virtualIp)
     }
 
@@ -114,85 +121,6 @@ class NetworkController(private val context: Context) {
         }
         runCatching { context.stopService(Intent(context, EasyTierVpnService::class.java)) }
         delay(200)
-    }
-
-    private fun buildEasyTierConfig(
-        instanceName: String,
-        networkName: String,
-        networkSecret: String,
-        hostname: String,
-        peers: List<String>,
-        virtualIp: String,
-        mtu: Int = 1420,
-        latencyFirst: Boolean = true,
-        proxyCidrs: List<String> = emptyList(),
-        exitNodes: List<String> = emptyList(),
-        asExitNode: Boolean = false,
-        multiThread: Boolean = true,
-        useSmoltcp: Boolean = false,
-        enableKcpProxy: Boolean = false,
-        enableQuicProxy: Boolean = false,
-        disableP2p: Boolean = false,
-        disableUdpHolePunching: Boolean = false,
-        relayAllPeerRpc: Boolean = false,
-        compressionZstd: Boolean = false,
-        privateMode: Boolean = false,
-        acceptDns: Boolean = false,
-    ): String {
-        // 【总根源修复】此前使用了错误的 TOML 字段名（inst_name / network / network_secret 顶层 /
-        // peers=[字符串]），EasyTier(TomlConfigLoader) 会静默忽略这些未知字段，导致手机端
-        // 网络标识为空、且没有任何 peer —— EasyTier 实际从未加入正确网络、也没连任何中继，
-        // 因此与电脑端完全不通（语音/聊天/屏幕全废）。
-        // 这里严格按 EasyTier Config 结构体的字段名生成：instance_name、[network_identity]、
-        // [[peer]] uri、[flags] 等，确保手机端真正加入 "MCTier-xxx" 网络并连接全部冗余中继。
-        fun esc(s: String): String = s.replace("\\", "\\\\").replace("\"", "\\\"")
-
-        val sb = StringBuilder()
-        // —— 顶层标量字段（必须位于所有 [table] 之前，否则会被解析成上一个表的字段）——
-        sb.append("instance_name = \"").append(esc(instanceName)).append("\"\n")
-        sb.append("hostname = \"").append(esc(hostname)).append("\"\n")
-        sb.append("ipv4 = \"").append(virtualIp).append("\"\n")
-        sb.append("dhcp = false\n")
-        if (exitNodes.isNotEmpty()) {
-            sb.append("exit_nodes = [")
-            sb.append(exitNodes.joinToString(", ") { "\"$it\"" })
-            sb.append("]\n")
-        }
-        // —— 网络标识（决定加入哪个网络，必须与桌面端完全一致）——
-        sb.append("\n[network_identity]\n")
-        sb.append("network_name = \"").append(esc(networkName)).append("\"\n")
-        sb.append("network_secret = \"").append(esc(networkSecret)).append("\"\n")
-        // —— 用户选择的对端中继节点 ——
-        peers.forEach { p ->
-            sb.append("\n[[peer]]\nuri = \"").append(p).append("\"\n")
-        }
-        // —— 代理网段（可选）——
-        if (proxyCidrs.isNotEmpty()) {
-            proxyCidrs.forEach { cidr ->
-                sb.append("\n[[proxy_network]]\ncidr = \"").append(cidr).append("\"\n")
-            }
-        }
-        // —— flags：性能与出口节点开关 ——
-        sb.append("\n[flags]\n")
-        sb.append("latency_first = ").append(latencyFirst).append("\n")
-        sb.append("mtu = ").append(mtu).append("\n")
-        sb.append("multi_thread = ").append(multiThread).append("\n")
-        sb.append("enable_kcp_proxy = ").append(enableKcpProxy).append("\n")
-        sb.append("enable_quic_proxy = ").append(enableQuicProxy).append("\n")
-        sb.append("disable_p2p = ").append(disableP2p).append("\n")
-        sb.append("disable_udp_hole_punching = ").append(disableUdpHolePunching).append("\n")
-        sb.append("relay_all_peer_rpc = ").append(relayAllPeerRpc).append("\n")
-        sb.append("private_mode = ").append(privateMode).append("\n")
-        if (useSmoltcp) sb.append("use_smoltcp = true\n")
-        if (acceptDns) {
-            // 启用 EasyTier Magic DNS，并把域设为 mct.net.（与桌面端虚拟域名 <玩家名>.mct.net 一致）
-            sb.append("accept_dns = true\n")
-            sb.append("tld_dns_zone = \"mct.net.\"\n")
-        }
-        if (asExitNode) {
-            sb.append("enable_exit_node = true\n")
-        }
-        return sb.toString()
     }
 
     private suspend fun waitForVirtualIp(instanceName: String): String? {
@@ -219,44 +147,8 @@ class NetworkController(private val context: Context) {
         }
     }
 
-    // 【互通关键修复】固定使用 EasyTier 默认 DHCP 网段 10.126.126.0/24。
-    // 桌面端使用 DHCP，创建者会拿到 10.126.126.1，其余桌面节点依次 .2/.3...
-    // 安卓端的 TUN 地址必须由 VpnService 在建立前写死，无法走 DHCP，
-    // 因此这里固定落到同一网段，确保手机与电脑虚拟 IP 互相可达（语音/聊天/屏幕共享/文件均依赖此点）。
-    // 不同大厅由 EasyTier 的 network-name/secret 隔离，复用同一网段不会串台。
-    private val FIXED_SUBNET_OCTET = 126
-
-    /**
-     * 每台设备稳定且唯一的标识：用户同意隐私政策后优先用 ANDROID_ID（不同手机不同值，重连后稳定），
-     * 未同意或取不到时回退到一次性持久化的随机 UUID（可通过卸载重置）。
-     * 用它派生虚拟 IP 主机位，避免"相同玩家名 → 相同虚拟 IP"导致手机↔手机互相不可达。
-     * 合规：ANDROID_ID 属设备标识符（个人信息），仅在用户已同意隐私政策后才采集。
-     */
-    private fun deviceKey(): String {
-        if (top.pmh13.mctier.ui.ConsentStore.isAgreed(context)) {
-            runCatching {
-                @Suppress("HardwareIds")
-                val aid = android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID)
-                if (!aid.isNullOrBlank() && aid != "9774d56d682e549c") return aid
-            }
-        }
-        val prefs = context.getSharedPreferences("mctier_device", Context.MODE_PRIVATE)
-        prefs.getString("device_key", null)?.let { return it }
-        val gen = java.util.UUID.randomUUID().toString()
-        prefs.edit().putString("device_key", gen).apply()
-        return gen
-    }
-
-    // 主机位：用每台设备唯一的 deviceKey 派生，取范围 [10, 249]（共 240 个），
-    // 避开桌面 DHCP 创建者占用的 .1 与低位顺序分配区，最大程度降低冲突概率。
-    private fun hostOctet(key: String): Int =
-        10 + (key.hashCode().absoluteValue % 240)
-
-    private fun allocateVirtualIp(lobbyName: String, playerName: String): String =
-        "10.126.$FIXED_SUBNET_OCTET.${hostOctet(deviceKey() + "|" + lobbyName)}"
-
-    private fun lobbyRoute(lobbyName: String): String =
-        "10.126.$FIXED_SUBNET_OCTET.0/24"
+    // All platforms use the same /24. The VPN and native instance must agree.
+    private fun lobbyRoute(lobbyName: String): String = "10.126.126.0/24"
 
     private fun extractVirtualIpv4(json: String, instanceName: String): String? {
         val instanceIndex = json.indexOf(instanceName)
@@ -282,7 +174,7 @@ class NetworkController(private val context: Context) {
             "tcp://mctier.pmhs.top:11010",
             "udp://mctier.pmhs.top:11010",
             "ws://test.pmhs.top",
-            "wss://test.pmhs.top",
+            "wss://mctier.pmhs.top/signaling",
             -> DefaultEasyTierNode
             "tcp://mctiers.pmhs.top" -> "tcp://mctiers.pmhs.top:11010"
             "udp://mctiers.pmhs.top" -> "udp://mctiers.pmhs.top:11010"

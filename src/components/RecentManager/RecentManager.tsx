@@ -38,7 +38,7 @@ export const RecentManager: React.FC<RecentManagerProps> = ({ visible, onClose, 
   const [activeTab, setActiveTab] = useState<string>('lobbies');
 
   const refresh = () => {
-    setLobbies(recentService.getRecentLobbies());
+    void recentService.getRecentLobbies().then(setLobbies).catch(() => message.error(tl('无法读取加密大厅记录', 'Cannot read encrypted lobby records')));
     setPlayers(recentService.getRecentPlayers());
   };
 
@@ -59,8 +59,8 @@ export const RecentManager: React.FC<RecentManagerProps> = ({ visible, onClose, 
       cancelText: tl('取消', 'Cancel'),
       okButtonProps: { danger: true },
       centered: true,
-      onOk: () => {
-        recentService.removeLobby(l.name, l.lastJoined);
+      onOk: async () => {
+        await recentService.removeLobby(l.name, l.lastJoined);
         refresh();
         message.success(tl('已移除', 'Removed'));
       },
@@ -143,9 +143,9 @@ export const RecentManager: React.FC<RecentManagerProps> = ({ visible, onClose, 
       cancelText: tl('取消', 'Cancel'),
       okButtonProps: { danger: true },
       centered: true,
-      onOk: () => {
+      onOk: async () => {
         if (activeTab === 'lobbies') {
-          recentService.clearLobbies();
+          await recentService.clearLobbies();
           message.success(tl('已清空最近大厅', 'Recent lobbies cleared'));
         } else {
           recentService.clearPlayers();

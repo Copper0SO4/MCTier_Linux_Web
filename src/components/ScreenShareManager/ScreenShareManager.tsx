@@ -1,8 +1,9 @@
+import { loadScreenQuality, saveScreenQuality, SCREEN_RESOLUTIONS, SCREEN_FRAME_RATES, SCREEN_BITRATES, screenBitrate } from '../../services/screenShare/quality';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Modal, Switch, message, Tooltip } from 'antd';
+import { Button, Modal, Select, Switch, message, Tooltip } from 'antd';
+import { ReloadOutlined } from '@ant-design/icons';
 import { PasswordInput } from '../PasswordInput/PasswordInput';
-import { getCurrentWindow, PhysicalSize } from '@tauri-apps/api/window';
 import { useAppStore } from '../../stores';
 import { screenShareService } from '../../services/screenShare/ScreenShareService';
 import { ScreenShareIcon, InfoIcon } from '../icons';
@@ -10,6 +11,9 @@ import { useTranslation } from 'react-i18next';
 import { tl } from '../../i18n';
 import type { ScreenShare } from '../../types';
 import './ScreenShareManager.css';
+
+// Keep dropdowns in the modal's stacking context, above its high-z-index mask.
+const qualityPopupContainer = (trigger: HTMLElement) => trigger.parentElement || document.body;
 
 /**
  * 屏幕共享管理器组件
@@ -21,6 +25,8 @@ export const ScreenShareManager: React.FC = () => {
   const [activeShares, setActiveShares] = useState<ScreenShare[]>([]);
   const [myShareId, setMyShareId] = useState<string | null>(null);
   const [showStartModal, setShowStartModal] = useState(false);
+  const [starting, setStarting] = useState(false);
+  const [quality, setQuality] = useState(loadScreenQuality);
   const [requirePassword, setRequirePassword] = useState(false);
   const [password, setPassword] = useState('');
   const [viewingShareId, setViewingShareId] = useState<string | null>(null);
@@ -28,8 +34,28 @@ export const ScreenShareManager: React.FC = () => {
   const [showPasswordModal, setShowPasswordModal] = useState(false);
   const [selectedShare, setSelectedShare] = useState<ScreenShare | null>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const [originalWindowSize, setOriginalWindowSize] = useState<{ width: number; height: number } | null>(null);
+  const viewRequestGeneration = useRef(0);
+  const activeView = useRef<string | null>(null);
+  const [viewStatus, setViewStatus] = useState<'connecting' | 'playing' | 'error'>('connecting');
+  const [viewError, setViewError] = useState('');
+  useEffect(() => () => {
+    ++viewRequestGeneration.current;
+    if (activeView.current) screenShareService.stopViewingScreen(activeView.current);
+  }, []);
   const [pendingStream, setPendingStream] = useState<MediaStream | null>(null);
+
+  // ESC 关闭全屏观看时也必须通知共享服务释放 viewer 路由，否则共享者会
+  // 一直认为该用户仍在观看，下一次打开可能被旧连接状态卡住。
+  useEffect(() => {
+    if (!viewingShareId) return;
+    const handleEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      void handleStopViewing();
+    };
+    window.addEventListener('keydown', handleEscape, true);
+    return () => window.removeEventListener('keydown', handleEscape, true);
+  }, [viewingShareId]);
 
   // 组件挂载时检查是否有活跃的共享
   useEffect(() => {
@@ -139,24 +165,29 @@ export const ScreenShareManager: React.FC = () => {
         // 从信令服务器获取共享列表
         const shares = screenShareService.getActiveShares();
         setActiveShares(shares);
+        setMyShareId(shares.find(share => share.playerId === currentPlayerId)?.id ?? null);
       } catch (error) {
         console.error('获取共享列表失败:', error);
       }
     }, 1000); // 【修复】改为1秒轮询，避免过高频率导致时序抖动
 
     return () => clearInterval(interval);
-  }, []);
+  }, [currentPlayerId]);
 
   // 开始共享 - 内部处理
   const handleStartSharingInternal = async () => {
+    if (starting) return;
+    setStarting(true);
     try {
       console.log('🖥️ 开始屏幕共享...');
 
       const shareId = await screenShareService.startSharing(
         requirePassword,
-        requirePassword ? password : undefined
+        requirePassword ? password : undefined,
+        quality
       );
 
+      saveScreenQuality(quality);
       setMyShareId(shareId);
       setShowStartModal(false);
       setPassword('');
@@ -166,14 +197,16 @@ export const ScreenShareManager: React.FC = () => {
     } catch (error: any) {
       console.error('❌ 启动屏幕共享失败:', error);
       
-      if (error.name === 'NotAllowedError') {
+      if (error.name === 'AbortError') {
+        return;
+      } else if (error.name === 'NotAllowedError') {
         message.error(tl('用户拒绝了屏幕共享权限', 'Screen share permission denied'));
       } else if (error.name === 'NotFoundError') {
         message.error(tl('未找到可共享的屏幕', 'No screen available to share'));
       } else {
-        message.error(tl('启动屏幕共享失败', 'Failed to start screen sharing'));
+        message.error(`${tl('启动屏幕共享失败', 'Failed to start screen sharing')}: ${String(error.message || error)}`);
       }
-    }
+    } finally { setStarting(false); }
   };
 
   // 停止共享 - 内部处理
@@ -187,160 +220,51 @@ export const ScreenShareManager: React.FC = () => {
     }
   };
 
-  // 查看屏幕 - 在当前窗口全屏显示
-  const handleViewScreen = async (share: ScreenShare) => {
+  const openViewer = async (share: ScreenShare, viewingPassword?: string) => {
+    const generation = ++viewRequestGeneration.current;
+    activeView.current = share.id;
+    setViewingShareId(share.id);
+    setViewStatus('connecting');
+    setViewError('');
+    setPendingStream(null);
     try {
-      // 自己查看自己直接使用本地采集流，不需要再次验证观看密码。
-      if (share.requirePassword && share.playerId !== currentPlayerId) {
-        setSelectedShare(share);
-        setShowPasswordModal(true);
-        return;
-      }
-
-      console.log('👀 [ScreenShareManager] 开始查看屏幕:', share.id);
-      console.log('👀 [ScreenShareManager] 共享者:', share.playerName);
-      console.log('👀 [ScreenShareManager] 共享者ID:', share.playerId);
-      console.log('👀 [ScreenShareManager] 是否是自己的共享:', share.playerId === currentPlayerId);
-      console.log('👀 [ScreenShareManager] 共享信息:', {
-        requirePassword: share.requirePassword,
-        hasPassword: !!share.password,
-        password: share.password ? '***' : undefined
-      });
-
-      // 【修复】先保存当前窗口大小，再请求查看屏幕
-      try {
-        const appWindow = getCurrentWindow();
-        const currentSize = await appWindow.innerSize();
-        setOriginalWindowSize({ width: currentSize.width, height: currentSize.height });
-        console.log('💾 [ScreenShareManager] 已保存原始窗口大小:', { width: currentSize.width, height: currentSize.height });
-        
-        // 放大窗口到适合观看屏幕共享的尺寸
-        await appWindow.setSize(new PhysicalSize(1280, 800));
-        await appWindow.setResizable(true);
-        console.log('✅ [ScreenShareManager] 窗口已放大并允许调整大小');
-      } catch (error) {
-        console.error('❌ [ScreenShareManager] 调整窗口大小失败:', error);
-      }
-
       const stream = share.playerId === currentPlayerId
         ? screenShareService.getLocalStream(share.id)
-        : await screenShareService.requestViewScreen(share.id);
-      if (!stream) throw new Error(tl('本地屏幕采集尚未就绪，请稍后重试', 'Local screen capture is not ready yet'));
-      
-      console.log('✅ [ScreenShareManager] 已获取屏幕流');
-      console.log('📺 [ScreenShareManager] 流信息:', {
-        id: stream.id,
-        active: stream.active,
-        tracks: stream.getTracks().map(t => ({
-          kind: t.kind,
-          enabled: t.enabled,
-          readyState: t.readyState,
-          label: t.label
-        }))
-      });
-      
-      // 【关键修复】先设置pendingStream，再设置viewingShareId
-      // 这样useEffect会在video元素渲染后自动播放
+        : await screenShareService.requestViewScreen(share.id, viewingPassword);
+      if (generation !== viewRequestGeneration.current) return;
+      if (!stream) throw new Error(tl('屏幕采集尚未就绪', 'Screen capture is not ready'));
       setPendingStream(stream);
-      setViewingShareId(share.id);
-      
-      message.success(tl(`正在查看 ${share.playerName} 的屏幕`, `Viewing ${share.playerName}'s screen`));
-      console.log('✅ [ScreenShareManager] 已设置viewingShareId和pendingStream，等待useEffect播放视频');
+      setViewStatus('playing');
     } catch (error) {
-      console.error('❌ [ScreenShareManager] 查看屏幕失败:', error);
-      message.error(tl('查看屏幕失败', 'Failed to view screen'));
+      if (generation !== viewRequestGeneration.current) return;
+      screenShareService.stopViewingScreen(share.id);
+      setViewStatus('error');
+      setViewError(error instanceof Error ? error.message : tl('连接失败，请重试', 'Connection failed, please retry'));
     }
   };
 
-  // 验证密码并查看 - 在当前窗口全屏显示
-  const handlePasswordSubmit = async () => {
-    if (!selectedShare) return;
-
-    if (!passwordInput.trim()) {
-      message.warning(tl('请输入密码', 'Please enter the password'));
+  const handleViewScreen = (share: ScreenShare) => {
+    if (share.requirePassword && share.playerId !== currentPlayerId) {
+      setSelectedShare(share);
+      setShowPasswordModal(true);
       return;
     }
+    void openViewer(share);
+  };
 
-    try {
-      console.log('👀 [ScreenShareManager] 验证密码后开始查看屏幕:', selectedShare.id);
-      console.log('🔐 [ScreenShareManager] 发送的密码:', passwordInput ? '***' : 'undefined');
-
-      // 【关键修复】添加超时机制，如果30秒内没有响应，认为密码错误或服务器未响应
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        setTimeout(() => {
-          reject(new Error('等待响应超时，请检查密码是否正确或信令服务器是否正常'));
-        }, 30000);
-      });
-
-      const stream = selectedShare.playerId === currentPlayerId
-        ? screenShareService.getLocalStream(selectedShare.id)
-        : await Promise.race([
-            screenShareService.requestViewScreen(selectedShare.id, passwordInput),
-            timeoutPromise,
-          ]);
-      if (!stream) throw new Error(tl('本地屏幕采集尚未就绪，请稍后重试', 'Local screen capture is not ready yet'));
-      
-      console.log('✅ [ScreenShareManager] 密码验证成功，已获取屏幕流');
-      console.log('📺 [ScreenShareManager] 流信息:', {
-        id: stream.id,
-        active: stream.active,
-        tracks: stream.getTracks().map(t => ({
-          kind: t.kind,
-          enabled: t.enabled,
-          readyState: t.readyState,
-          label: t.label
-        }))
-      });
-
-      // 密码验证成功后，关闭密码弹窗
-      setShowPasswordModal(false);
-      setPasswordInput('');
-      
-      // 保存selectedShare的引用，因为后面会清空它
-      const shareToView = selectedShare;
-      setSelectedShare(null);
-
-      // 保存当前窗口大小
-      try {
-        const appWindow = getCurrentWindow();
-        const currentSize = await appWindow.innerSize();
-        setOriginalWindowSize({ width: currentSize.width, height: currentSize.height });
-        console.log('💾 [ScreenShareManager] 已保存原始窗口大小:', { width: currentSize.width, height: currentSize.height });
-        
-        // 放大窗口到适合观看屏幕共享的尺寸
-        await appWindow.setSize(new PhysicalSize(1280, 800));
-        await appWindow.setResizable(true);
-        console.log('✅ [ScreenShareManager] 窗口已放大并允许调整大小');
-      } catch (error) {
-        console.error('❌ [ScreenShareManager] 调整窗口大小失败:', error);
-      }
-
-      // 【关键修复】先设置pendingStream，再设置viewingShareId
-      // 这样useEffect会在video元素渲染后自动播放
-      setPendingStream(stream);
-      setViewingShareId(shareToView.id);
-      
-      message.success(tl(`正在查看 ${shareToView.playerName} 的屏幕`, `Viewing ${shareToView.playerName}'s screen`));
-      console.log('✅ [ScreenShareManager] 已设置viewingShareId和pendingStream，等待useEffect播放视频');
-    } catch (error: any) {
-      console.error('❌ [ScreenShareManager] 查看屏幕失败:', error);
-      
-      // 【修复】显示具体的错误信息
-      const errorMessage = error?.message || '查看屏幕失败';
-      message.error(errorMessage);
-      
-      // 密码错误或其他错误，保持在密码输入界面
-      console.log('⚠️ [ScreenShareManager] 保持在密码输入界面，等待用户重新输入');
-      
-      // 【重要】不要关闭密码输入框，让用户可以重新输入
-      // setShowPasswordModal(false);
-      // setPasswordInput('');
-      // setSelectedShare(null);
-    }
+  const handlePasswordSubmit = () => {
+    if (!selectedShare || !passwordInput.trim()) return;
+    const share = selectedShare;
+    const viewingPassword = passwordInput;
+    setShowPasswordModal(false);
+    setSelectedShare(null);
+    setPasswordInput('');
+    void openViewer(share, viewingPassword);
   };
 
   // 停止查看屏幕
   const handleStopViewing = async () => {
+    ++viewRequestGeneration.current;
     if (videoRef.current) {
       videoRef.current.srcObject = null;
     }
@@ -351,21 +275,8 @@ export const ScreenShareManager: React.FC = () => {
     }
     
     setViewingShareId(null);
+    activeView.current = null;
     setPendingStream(null);
-    
-    // 恢复原窗口大小，但保持允许调整大小
-    if (originalWindowSize) {
-      try {
-        const appWindow = getCurrentWindow();
-        await appWindow.setSize(new PhysicalSize(originalWindowSize.width, originalWindowSize.height));
-        // 【修复】保持窗口可调整大小，不要禁止
-        await appWindow.setResizable(true);
-        console.log('✅ [ScreenShareManager] 窗口已恢复原大小，保持可调整');
-      } catch (error) {
-        console.error('❌ [ScreenShareManager] 恢复窗口大小失败:', error);
-      }
-      setOriginalWindowSize(null);
-    }
     
     message.info(tl('已停止查看屏幕', 'Stopped viewing screen'));
   };
@@ -416,7 +327,17 @@ export const ScreenShareManager: React.FC = () => {
               className="fullscreen-video"
               autoPlay
               playsInline
+              muted
             />
+            {viewStatus !== 'playing' && (
+              <div className="viewer-status" role="status">
+                {viewStatus === 'connecting' ? tl('正在连接屏幕…', 'Connecting to screen...') : viewError}
+                {viewStatus === 'error' && <Button icon={<ReloadOutlined />} onClick={() => {
+                  const share = activeShares.find(s => s.id === viewingShareId);
+                  if (share) handleViewScreen(share);
+                }}>{tl('重试', 'Retry')}</Button>}
+              </div>
+            )}
           </motion.div>
         )}
       </AnimatePresence>
@@ -555,8 +476,10 @@ export const ScreenShareManager: React.FC = () => {
       <Modal
         title={tl('开始屏幕共享', 'Start Screen Sharing')}
         open={showStartModal}
+        confirmLoading={starting}
         onOk={handleStartSharingInternal}
         onCancel={() => {
+          screenShareService.cancelPendingStart();
           setShowStartModal(false);
           setPassword('');
           setRequirePassword(false);
@@ -566,6 +489,31 @@ export const ScreenShareManager: React.FC = () => {
         centered
       >
         <div className="start-share-modal-content">
+          <div className="modal-option">
+            <span>{tl('分辨率上限', 'Resolution limit')}</span>
+            <Select aria-label={tl('分辨率上限', 'Resolution limit')} value={quality.resolution} style={{ width: 155 }}
+              getPopupContainer={qualityPopupContainer}
+              options={SCREEN_RESOLUTIONS.map(value => ({ value, label: value === 1440 ? '2K (1440p)' : value === 2160 ? '4K (2160p)' : `${value}p` }))}
+              onChange={resolution => setQuality(q => ({ ...q, resolution }))} />
+          </div>
+          <div className="modal-option">
+            <span>{tl('帧率上限', 'Frame rate limit')}</span>
+            <Select aria-label={tl('帧率上限', 'Frame rate limit')} value={quality.frameRate} style={{ width: 155 }}
+              getPopupContainer={qualityPopupContainer}
+              options={SCREEN_FRAME_RATES.map(value => ({ value, label: `${value} FPS` }))}
+              onChange={frameRate => setQuality(q => ({ ...q, frameRate }))} />
+          </div>
+          <div className="modal-option">
+            <span>{tl('码率上限', 'Bitrate limit')}</span>
+            <Select aria-label={tl('码率上限', 'Bitrate limit')} value={quality.bitrateMbps} style={{ width: 155 }}
+              getPopupContainer={qualityPopupContainer}
+              options={SCREEN_BITRATES.map(value => ({ value, label: value ? `${value} Mbps` : tl('自动推荐', 'Recommended') }))}
+              onChange={bitrateMbps => setQuality(q => ({ ...q, bitrateMbps }))} />
+          </div>
+          <p style={{ fontSize: 12, margin: '8px 0 16px', opacity: 0.8 }}>
+            {tl(`当前码率上限 ${screenBitrate(quality) / 1_000_000} Mbps。低配或低带宽建议 720p/30 FPS；高帧率和 4K 需要更强的设备与上行带宽。实际画质和帧率受屏幕、编码器与网络限制，不会放大原画面。`,
+              `Bitrate limit: ${screenBitrate(quality) / 1_000_000} Mbps. Use 720p/30 FPS on slower devices or networks. High frame rates and 4K need more processing power and upload bandwidth. Actual quality depends on the display, encoder and network; the source is never upscaled.`)}
+          </p>
           <div className="modal-option">
             <span>{tl('需要密码才能查看', 'Require a password to view')}</span>
             <Switch

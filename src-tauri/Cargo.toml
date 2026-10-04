@@ -1,6 +1,6 @@
 [package]
 name = "mctier"
-version = "3.0.0"
+version = "3.9.5"
 description = "MCTier - Minecraft 虚拟局域网联机工具"
 authors = ["MCTier Team"]
 edition = "2021"
@@ -16,9 +16,10 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
+embed-resource = "3"
 
 [dependencies]
-tauri = { version = "2", features = ["tray-icon"] }
+tauri = { version = "2", features = ["tray-icon", "protocol-asset"] }
 tauri-plugin-shell = "2"
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-clipboard-manager = "2"
@@ -38,7 +39,8 @@ chrono = { version = "0.4", features = ["serde"] }
 regex = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
 rand = "0.8"
-reqwest = { version = "0.12", features = ["blocking", "stream", "json"] }
+reqwest = { version = "0.12", features = ["blocking", "stream", "json", "cookies"] }
+cookie_store = "0.22"
 rfd = "0.15"
 urlencoding = "2.1"
 base64 = "0.22"
@@ -46,8 +48,11 @@ base64 = "0.22"
 # 公钥验签。选 P-256 而非 Ed25519 是为了与 Android 端互通——Android 的
 # `KeyPairGenerator("Ed25519")` 要 API 33+，而本项目 minSdk 为 26，
 # secp256r1 + SHA256withECDSA 则在所有支持的系统版本上都可用。
-p256 = "0.13"
+p256 = { version = "0.13", features = ["ecdh"] }
+hkdf = "0.12"
 sha2 = "0.10"
+aes-gcm = "0.10"
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust"] }
 # 高性能文件传输
 bytes = "1"
 dashmap = "6"
@@ -59,6 +64,11 @@ tower-http = { version = "0.5", features = ["fs", "cors", "trace"] }
 async-stream = "0.3"
 # ZIP 压缩
 zip = "2"
+calamine = "0.31"
+sherpa-onnx = "=1.13.8"
+flate2 = "1"
+hound = "3.5"
+mctier-image-optimizer = { path = "../shared/image-optimizer" }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -73,8 +83,23 @@ libc = "0.2"
 webkit2gtk = { version = "2.0", features = ["v2_40"] }
 
 [target.'cfg(windows)'.dependencies]
+webview2-com = "0.38.2"
+windows-core-webview = { package = "windows-core", version = "0.61" }
 wasapi = "0.23"
 windows = { version = "0.58", features = [
+    "Win32_Media_Audio",
+    "Foundation",
+    "Graphics_Capture",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Direct3D_Fxc",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_Com",
+    "Win32_System_TaskScheduler",
+    "Win32_Security_Authorization",
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
     "Win32_UI_WindowsAndMessaging",
@@ -86,6 +111,9 @@ windows = { version = "0.58", features = [
     "Win32_System_Performance",
     "Win32_System_SystemInformation",
     "Win32_System_Registry",
+    "Win32_System_LibraryLoader",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
 ] }
 
 # 发布构建：剥离符号，避免二进制中残留调试信息与开发机绝对路径（见 issue #17 第 11 条）

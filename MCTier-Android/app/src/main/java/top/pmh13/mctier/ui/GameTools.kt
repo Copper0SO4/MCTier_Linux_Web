@@ -190,7 +190,7 @@ fun ConnectionDiagnosticDialog(state: MctierUiState, onDismiss: () -> Unit) {
         if (rows.isNotEmpty()) {
             if (avg != null && avg > 150) add(L("平均延迟偏高，可尝试更换更近的节点或开启「延迟优先」。", "High average latency. Try a closer node or enable Latency First."))
             if (maxLoss >= 50) add(L("存在明显丢包，建议检查 WiFi 信号或改用更稳定的网络。", "Noticeable packet loss. Check Wi-Fi or use a more stable network."))
-            if (offline > 0) add(L("$offline 位成员暂时不可达，可能对方未就绪或网络受限。", "$offline member(s) unreachable; they may not be ready or restricted."))
+            if (offline > 0) add(L("$offline 位成员的虚拟 IP 探测暂时不可达；这不代表对方已离开大厅，也不能单独据此判断语音状态。", "$offline member(s)' virtual-IP probes are currently unreachable. This does not mean they left the lobby or determine voice status."))
             if (isEmpty()) add(L("连接质量良好，无需调整。", "Connection quality is good."))
         }
     }
@@ -213,7 +213,7 @@ fun ConnectionDiagnosticDialog(state: MctierUiState, onDismiss: () -> Unit) {
                         Spacer(Modifier.width(12.dp))
                         Column {
                             Text(L("连接评分", "Score"), color = TextPrimary.copy(alpha = 0.6f), fontSize = 12.sp)
-                            Text(L("平均延迟 ", "Avg ") + (avg?.let { "${it}ms" } ?: "—") + L("　不可达 ", "  offline ") + offline, color = TextPrimary.copy(alpha = 0.8f), fontSize = 12.sp)
+                            Text(L("平均延迟 ", "Avg ") + (avg?.let { "${it}ms" } ?: "—") + L("　探测不可达 ", "  unreachable ") + offline, color = TextPrimary.copy(alpha = 0.8f), fontSize = 12.sp)
                         }
                     }
                     Spacer(Modifier.height(10.dp))
@@ -226,7 +226,7 @@ fun ConnectionDiagnosticDialog(state: MctierUiState, onDismiss: () -> Unit) {
                                 ) {
                                     Text(r.name, color = TextPrimary, modifier = Modifier.weight(1f), maxLines = 1)
                                     val c = if (r.latency == null) DangerRed else if (r.latency < 80) GrassGreen else if (r.latency < 200) Color(0xFFF59E0B) else Color(0xFFFF8A3D)
-                                    Text(if (r.latency == null) L("不可达", "Offline") else "${r.latency}ms", color = c, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
+                                    Text(if (r.latency == null) L("不可达", "Unreachable") else "${r.latency}ms", color = c, fontWeight = FontWeight.SemiBold, fontSize = 13.sp)
                                 }
                             }
                         }

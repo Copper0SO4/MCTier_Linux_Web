@@ -1,7 +1,14 @@
 package top.pmh13.mctier.ui
+import androidx.compose.material.icons.rounded.Videocam
 
+import top.pmh13.mctier.network.ScreenShareQuality
+import top.pmh13.mctier.data.BuiltinEmojiMessage
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import android.content.Intent
 import android.net.Uri
+import android.media.MediaPlayer
+import android.graphics.pdf.PdfRenderer
+import android.os.ParcelFileDescriptor
 import java.security.SecureRandom
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.BackHandler
@@ -21,6 +28,11 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.Image
 import androidx.compose.ui.res.painterResource
 import top.pmh13.mctier.R
+import top.pmh13.mctier.data.PeerPreference
+import top.pmh13.mctier.data.sortPrivatePeers
+import top.pmh13.mctier.data.notificationUnreadCount
+import androidx.compose.material.icons.rounded.PushPin
+import androidx.compose.material.icons.rounded.NotificationsOff
 import top.pmh13.mctier.network.LobbyInviteCodec
 import top.pmh13.mctier.network.LobbyInviteData
 import androidx.compose.foundation.background
@@ -40,6 +52,7 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Arrangement
@@ -50,6 +63,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
@@ -67,6 +81,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.GenericShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Login
@@ -74,7 +89,7 @@ import androidx.compose.material.icons.automirrored.rounded.Logout
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.BarChart
-import androidx.compose.material.icons.rounded.Build
+import androidx.compose.material.icons.rounded.HomeRepairService
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Casino
 import androidx.compose.material.icons.rounded.Chat
@@ -82,11 +97,14 @@ import androidx.compose.material.icons.rounded.Checklist
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.AttachFile
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.EmojiEmotions
 import androidx.compose.material.icons.rounded.Folder
@@ -103,7 +121,6 @@ import androidx.compose.material.icons.rounded.Mouse
 import androidx.compose.material.icons.rounded.MilitaryTech
 import androidx.compose.material.icons.rounded.Mic
 import androidx.compose.material.icons.rounded.MicOff
-import androidx.compose.material.icons.rounded.Photo
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.Campaign
 import androidx.compose.material.icons.rounded.Edit
@@ -111,6 +128,7 @@ import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.QrCode2
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.ScreenShare
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SettingsRemote
 import androidx.compose.material.icons.rounded.SportsEsports
@@ -132,6 +150,8 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -171,6 +191,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
@@ -178,6 +200,10 @@ import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
@@ -210,6 +236,15 @@ import top.pmh13.mctier.data.AppClientVersion
 import top.pmh13.mctier.data.AvailableUpdate
 import top.pmh13.mctier.data.BuiltinNodes
 import top.pmh13.mctier.data.ChatMessage
+import top.pmh13.mctier.data.ChatAttachmentMeta
+import top.pmh13.mctier.data.ChatMaxAttachmentBytes
+import top.pmh13.mctier.data.chatAttachmentKind
+import top.pmh13.mctier.data.CustomEmojiItem
+import top.pmh13.mctier.data.EmojiCategory
+import coil3.ImageLoader
+import coil3.compose.AsyncImage
+import coil3.gif.AnimatedImageDecoder
+import coil3.gif.GifDecoder
 import top.pmh13.mctier.data.CommunityNodeMaxOfflineSecs
 import top.pmh13.mctier.data.RemoteFileInfo
 import top.pmh13.mctier.data.RemoteShareEntry
@@ -221,6 +256,9 @@ import top.pmh13.mctier.network.UpdateChecker
 // —— 主题调色板：用 mutableStateOf 支持的顶层 var，组合内读取后随主题切换实时重组 ——
 internal var GrassGreen by mutableStateOf(Color(0xFF52C41A))
 internal var GrassGreenDark by mutableStateOf(Color(0xFF3C9A12))
+internal var OnAccent by mutableStateOf(Color.Black)
+internal var ChatSendFill by mutableStateOf(Color(0xFF327D1C))
+internal var AccentText by mutableStateOf(Color(0xFF86DD5F))
 internal var DirtBrown by mutableStateOf(Color(0xFFB07C46))
 internal var DirtBrownDeep by mutableStateOf(Color(0xFF8C5A2B))
 internal val DangerRed = Color(0xFFE5484D)
@@ -232,10 +270,34 @@ internal var Hairline by mutableStateOf(Color(0x1FFFFFFF))
 /** 主文本/图标颜色：深色主题=白，浅色主题=近黑（取代原先硬编码的 Color.White） */
 internal var TextPrimary by mutableStateOf(Color(0xFFFFFFFF))
 
+private fun foregroundOn(fill: Color) = Color(foregroundArgb(fill.toArgb()))
+private fun readableAccent(accent: Color, surfaces: List<Color>) =
+    Color(readableAccentArgb(accent.toArgb(), surfaces.map { it.toArgb() }))
+
 // —— 界面语言：顶层 var，切换后所有读取 L(...) 的组合实时重组 ——
 internal var appLang by mutableStateOf("zh")
 
 private const val ChatRecallWindowMs = 2 * 60 * 1000L
+
+private fun fuzzyChatMatch(value: String, query: String): Boolean {
+    val haystack = value.lowercase()
+    val needle = query.trim().lowercase()
+    if (needle.isEmpty()) return false
+    if (haystack.contains(needle)) return true
+    var index = 0
+    haystack.forEach { if (index < needle.length && it == needle[index]) index += 1 }
+    return index == needle.length
+}
+
+@Composable
+private fun rememberAnimatedImageLoader(): ImageLoader {
+    val context = LocalContext.current
+    return remember(context) {
+        ImageLoader.Builder(context).components {
+            if (android.os.Build.VERSION.SDK_INT >= 28) add(AnimatedImageDecoder.Factory()) else add(GifDecoder.Factory())
+        }.build()
+    }
+}
 
 /** 双语取词：根据当前语言返回中文或英文 */
 internal fun L(zh: String, en: String): String = if (appLang == "en") en else zh
@@ -264,7 +326,7 @@ private fun darken(c: Color, f: Float = 0.78f): Color =
  * @param primaryHex 自定义主色十六进制（空=默认绿）
  */
 fun applyAppTheme(mode: String, primaryHex: String) {
-    val accent = parseAccent(primaryHex)
+    val accent = parseAccent(primaryHex).copy(alpha = 1f)
     GrassGreen = accent
     GrassGreenDark = darken(accent)
     if (mode == "light") {
@@ -286,6 +348,10 @@ fun applyAppTheme(mode: String, primaryHex: String) {
         DirtBrown = Color(0xFFB07C46)
         DirtBrownDeep = Color(0xFF8C5A2B)
     }
+    OnAccent = foregroundOn(accent)
+    // Send keeps a white icon; darken bright custom accents instead of tinting the icon black.
+    ChatSendFill = readableAccent(accent, listOf(Color.White))
+    AccentText = readableAccent(accent, listOf(Panel, PanelHigh, PageBg, PageBgTop))
 }
 
 @Composable
@@ -293,10 +359,13 @@ fun MctierApp(repository: MctierRepository, onConsentGranted: () -> Unit = {}) {
     val state by repository.state.collectAsState()
     val consentCtx = androidx.compose.ui.platform.LocalContext.current
     var agreed by remember { mutableStateOf(ConsentStore.isAgreed(consentCtx)) }
+    val versionStage = startupVersionStage(state.versionError != null, state.startupUpdateChecked, state.updateAvailable != null)
+    var quarkBlocking by remember { mutableStateOf(true) }
+    var showQuarkSupport by androidx.compose.runtime.saveable.rememberSaveable { mutableStateOf(false) }
     // An external invite launches the activity and leaves a pending join form. Do not
     // connect to the separately saved auto-join lobby in the same startup pass.
-    LaunchedEffect(Unit) {
-        if (state.pendingJoin == null) repository.maybeAutoJoin()
+    LaunchedEffect(agreed) {
+        if (agreed && state.pendingJoin == null) repository.maybeAutoJoin()
     }
     // 主题：根据设置实时应用（深/浅色 + 自定义主色），切换即重组整个界面
     LaunchedEffect(state.settings.themeMode, state.settings.themePrimary) {
@@ -308,15 +377,27 @@ fun MctierApp(repository: MctierRepository, onConsentGranted: () -> Unit = {}) {
     }
     var booting by remember { mutableStateOf(true) }
     LaunchedEffect(Unit) { kotlinx.coroutines.delay(1300); booting = false }
-    val accent = GrassGreen
+    val accent = AccentText
     val isLight = state.settings.themeMode == "light"
     val scheme = if (isLight) lightColorScheme(
-        primary = accent, onPrimary = Color(0xFFFFFFFF), secondary = DirtBrown,
+        primary = accent, onPrimary = foregroundOn(accent), secondary = DirtBrown,
+        primaryContainer = PanelHigh, onPrimaryContainer = TextPrimary,
+        secondaryContainer = PanelHigh, onSecondaryContainer = TextPrimary,
+        surfaceContainer = Panel, surfaceContainerHigh = PanelHigh,
+        surfaceContainerLow = Panel, surfaceContainerLowest = PageBg, surfaceContainerHighest = PanelHigh,
+        surfaceDim = PageBg, surfaceBright = Panel, surfaceTint = accent,
+        onSecondary = foregroundOn(DirtBrown),
         background = PageBg, surface = Panel, surfaceVariant = PanelHigh,
         onBackground = TextPrimary, onSurface = TextPrimary,
         onSurfaceVariant = TextPrimary.copy(alpha = 0.7f), error = DangerRed,
     ) else darkColorScheme(
-        primary = accent, onPrimary = Color(0xFFFFFFFF), secondary = DirtBrown,
+        primary = accent, onPrimary = foregroundOn(accent), secondary = DirtBrown,
+        primaryContainer = PanelHigh, onPrimaryContainer = TextPrimary,
+        secondaryContainer = PanelHigh, onSecondaryContainer = TextPrimary,
+        surfaceContainer = Panel, surfaceContainerHigh = PanelHigh,
+        surfaceContainerLow = Panel, surfaceContainerLowest = PageBg, surfaceContainerHighest = PanelHigh,
+        surfaceDim = PageBg, surfaceBright = Panel, surfaceTint = accent,
+        onSecondary = foregroundOn(DirtBrown),
         background = PageBg, surface = Panel, surfaceVariant = PanelHigh,
         onBackground = TextPrimary, onSurface = TextPrimary,
         onSurfaceVariant = TextPrimary.copy(alpha = 0.7f), error = DangerRed,
@@ -354,26 +435,50 @@ fun MctierApp(repository: MctierRepository, onConsentGranted: () -> Unit = {}) {
                 },
                 label = "mctier-root",
             ) { inLobby ->
-                if (inLobby) LobbyScreen(state, repository) else HomeScreen(state, repository)
+                if (inLobby) LobbyScreen(state, repository) else HomeScreen(state, repository, onQuarkSupport = { showQuarkSupport = true })
             }
-            if (state.showOnboarding) OnboardingDialog { repository.dismissOnboarding() }
+            if (state.showOnboarding && !booting && !quarkBlocking && !showQuarkSupport && versionStage == StartupVersionStage.Ready) OnboardingDialog { repository.dismissOnboarding() }
             // 启动加载动画（淡出）
             androidx.compose.animation.AnimatedVisibility(
                 visible = booting,
                 enter = fadeIn(),
                 exit = fadeOut(),
             ) { SplashScreen() }
-            // 版本过低（信令服务器要求）：强制更新，阻断使用
-            state.versionError?.let { VersionErrorDialog(it, repository) }
-            // Gitee 检测到新版本：可选更新提示（无强制更新弹窗时才显示）
-            if (state.versionError == null) {
-                state.updateAvailable?.let { UpdateAvailableDialog(it, repository) }
-            }
+            StartupPrompts(
+                state, repository, booting, showQuarkSupport,
+                onSupportChange = { showQuarkSupport = it },
+                onBlockingChange = { quarkBlocking = it },
+            )
             // 远程控制（电脑控制本机手机）：请求弹窗 + 被控横幅
             RemoteControlGate(state, repository)
             // 高风险功能一次性同意门控宿主
             FeatureGateHost()
         }
+    }
+}
+
+/** One host for startup prompts, also preempting an already-open sponsor panel on server rejection. */
+@Composable
+internal fun StartupPrompts(
+    state: MctierUiState,
+    repository: MctierRepository,
+    booting: Boolean,
+    showQuarkSupport: Boolean,
+    onSupportChange: (Boolean) -> Unit,
+    onBlockingChange: (Boolean) -> Unit,
+) {
+    val versionStage = startupVersionStage(state.versionError != null, state.startupUpdateChecked, state.updateAvailable != null)
+    QuarkStartupPrompt(
+        blocked = showQuarkSupport || booting || versionStage != StartupVersionStage.Ready,
+        onBlockingChange = onBlockingChange,
+        onSupport = { onSupportChange(true) },
+    )
+    if (showQuarkSupport && versionStage == StartupVersionStage.Ready) QuarkSupportDialog { onSupportChange(false) }
+    // 版本过低（信令服务器要求）：强制更新，阻断使用
+    state.versionError?.let { VersionErrorDialog(it, repository) }
+    // Gitee 检测到新版本：可选更新提示（无强制更新弹窗时才显示）
+    if (versionStage == StartupVersionStage.Optional) {
+        state.updateAvailable?.let { UpdateAvailableDialog(it, repository) }
     }
 }
 
@@ -399,6 +504,10 @@ private fun RemoteControlGate(state: MctierUiState, repository: MctierRepository
             onDismissRequest = { repository.rejectRemoteControl() },
             confirmButton = {
                 androidx.compose.material3.TextButton(onClick = {
+                    if (top.pmh13.mctier.service.ScreenRecordingService.state.value.phase != "idle") {
+                        android.widget.Toast.makeText(ctx, L("请先停止屏幕录制，再接受远程控制", "Stop recording before accepting remote control"), android.widget.Toast.LENGTH_LONG).show()
+                        return@TextButton
+                    }
                     // 需先开启无障碍服务才能注入触摸
                     if (!top.pmh13.mctier.service.MctierAccessibilityService.isEnabledInSettings(ctx)) {
                         android.widget.Toast.makeText(ctx, L("请先开启 MCTier 无障碍服务以允许远程操作", "Please enable MCTier accessibility service first"), android.widget.Toast.LENGTH_LONG).show()
@@ -475,10 +584,12 @@ private fun RcToolBtn(icon: ImageVector, desc: String, active: Boolean = false, 
 
 @OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
-private fun RemoteControlControllerView(repository: MctierRepository, peerName: String) {
+internal fun RemoteControlControllerView(repository: MctierRepository, peerName: String) {
     val controller = repository.remoteControl
     val ctx = LocalContext.current
     var track by remember { mutableStateOf<VideoTrack?>(null) }
+    val boundTrack = remember(controller) { arrayOfNulls<VideoTrack>(1) }
+    var frameRendered by remember(controller) { mutableStateOf(false) }
     var frameW by remember { mutableStateOf(0) }
     var frameH by remember { mutableStateOf(0) }
     var viewW by remember { mutableStateOf(1) }
@@ -551,7 +662,6 @@ private fun RemoteControlControllerView(repository: MctierRepository, peerName: 
                 // 工具栏：键盘 / 右键 / 返回 / 主页 / 最近
                 RcToolBtn(Icons.Rounded.Edit, L("键盘", "Keyboard"), active = showKeyboard) { showKeyboard = !showKeyboard }
                 RcToolBtn(Icons.Rounded.Mouse, L("右键", "Right-click"), active = rightClick) { rightClick = !rightClick }
-                RcToolBtn(Icons.AutoMirrored.Rounded.ArrowBack, L("返回/ESC", "Back/ESC")) { sendRaw("[{\"kind\":\"keyup\",\"code\":27}]") }
                 RcToolBtn(Icons.Rounded.Home, L("主页", "Home")) { sendRaw("[{\"kind\":\"key\",\"key\":\"home\"}]") }
                 RcToolBtn(Icons.Rounded.Apps, L("最近", "Recents")) { sendRaw("[{\"kind\":\"key\",\"key\":\"recents\"}]") }
                 Spacer(Modifier.width(6.dp))
@@ -585,7 +695,10 @@ private fun RemoteControlControllerView(repository: MctierRepository, peerName: 
                         colors = fieldColors(),
                     )
                     Spacer(Modifier.width(6.dp))
-                    RcToolBtn(Icons.AutoMirrored.Rounded.Send, L("回车", "Enter")) { sendRaw("[{\"kind\":\"keyup\",\"code\":13}]") }
+                    // 退格按钮：向被控端发送 Backspace，而不是提交/回车。
+                    RcToolBtn(Icons.AutoMirrored.Rounded.ArrowBack, L("退格", "Backspace")) {
+                        sendRaw("[{\"kind\":\"key\",\"key\":\"backspace\"}]")
+                    }
                 }
             }
             Box(
@@ -606,7 +719,7 @@ private fun RemoteControlControllerView(repository: MctierRepository, peerName: 
                         factory = { c ->
                             SurfaceViewRenderer(c).apply {
                                 init(controller.eglBase.eglBaseContext, object : RendererCommon.RendererEvents {
-                                    override fun onFirstFrameRendered() {}
+                                    override fun onFirstFrameRendered() { mainHandler.post { frameRendered = true } }
                                     override fun onFrameResolutionChanged(w: Int, h: Int, rotation: Int) {
                                         mainHandler.post {
                                             if (rotation % 180 == 0) { frameW = w; frameH = h } else { frameW = h; frameH = w }
@@ -615,14 +728,27 @@ private fun RemoteControlControllerView(repository: MctierRepository, peerName: 
                                 })
                                 setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FIT)
                                 setEnableHardwareScaler(true)
-                                track?.let { runCatching { it.addSink(this) } }
                             }
                         },
-                        update = { view -> track?.let { runCatching { it.addSink(view) } } },
+                        update = { view ->
+                            if (boundTrack[0] !== track) {
+                                boundTrack[0]?.let { it.removeSink(view) }
+                                boundTrack[0] = track
+                                track?.addSink(view)
+                            }
+                        },
+                        // The AndroidView owns the EGL renderer. A DisposableEffect
+                        // keyed by mutable renderer state can release the newly
+                        // created renderer during its first recomposition.
+                        onRelease = { view ->
+                            boundTrack[0]?.let { it.removeSink(view) }
+                            boundTrack[0] = null
+                            view.release()
+                        },
                         modifier = Modifier.fillMaxSize(),
                     )
                 }
-                if (track == null) {
+                if (!frameRendered) {
                     Text(L("等待对方接受并共享屏幕…", "Waiting for the other side to accept and share..."), color = TextPrimary.copy(alpha = 0.5f))
                 }
             }
@@ -788,9 +914,10 @@ private fun OnboardStep(num: String, text: String) {
 
 // ============================ 首页 ============================
 @Composable
-private fun HomeScreen(state: MctierUiState, repository: MctierRepository) {
+private fun HomeScreen(state: MctierUiState, repository: MctierRepository, onQuarkSupport: () -> Unit) {
     var lobbyName by remember { mutableStateOf(state.settings.autoLobbyName) }
     var password by remember { mutableStateOf(state.settings.autoLobbyPassword) }
+    var manualPassword by remember { mutableStateOf(false) }
     // 从公开广场选择大厅时同步到的房主节点（手动改大厅名会清空，避免误用）
     var joinNodeOverride by remember { mutableStateOf<String?>(null) }
     var joinSignalingOverride by remember { mutableStateOf<String?>(null) }
@@ -807,6 +934,7 @@ private fun HomeScreen(state: MctierUiState, repository: MctierRepository) {
         state.pendingJoin?.let { pj ->
             lobbyName = pj.name
             password = pj.pwd
+            manualPassword = false
             joinNodeOverride = pj.serverNode
             joinSignalingOverride = pj.signalingServer
             mode = "join"
@@ -846,6 +974,7 @@ private fun HomeScreen(state: MctierUiState, repository: MctierRepository) {
                     if (invite.name.length >= 4) {
                         lobbyName = invite.name
                         password = invite.password
+                        manualPassword = false
                         joinNodeOverride = invite.serverNode
                         joinSignalingOverride = invite.signalingServer
                     }
@@ -861,6 +990,7 @@ private fun HomeScreen(state: MctierUiState, repository: MctierRepository) {
             LobbyInviteCodec.parse(text)?.let { invite ->
                 lobbyName = invite.name
                 password = invite.password
+                manualPassword = false
                 joinNodeOverride = invite.serverNode
                 joinSignalingOverride = invite.signalingServer
             }
@@ -868,8 +998,8 @@ private fun HomeScreen(state: MctierUiState, repository: MctierRepository) {
     }
 
     if (showPlaza) PublicPlazaDialog(state, repository, onFill = { n, p, node -> lobbyName = n; password = p; joinNodeOverride = node.ifBlank { null }; joinSignalingOverride = null }, onDismiss = { showPlaza = false })
-    if (showFavorites) FavoritesDialog(state, repository, lobbyName, password, joinNodeOverride ?: state.settings.preferredServer, joinSignalingOverride ?: state.settings.signalingServer, onFill = { n, p, node, signal -> lobbyName = n; password = p; joinNodeOverride = node; joinSignalingOverride = signal }, onDismiss = { showFavorites = false })
-    if (showRecent) RecentDialog(state, repository, onFill = { n, p, node, signal -> lobbyName = n; password = p; joinNodeOverride = node; joinSignalingOverride = signal }, onDismiss = { showRecent = false })
+    if (showFavorites) FavoritesDialog(state, repository, lobbyName, password, joinNodeOverride ?: state.settings.preferredServer, joinSignalingOverride ?: state.settings.signalingServer, onFill = { n, p, node, signal -> lobbyName = n; password = p; manualPassword = false; joinNodeOverride = node; joinSignalingOverride = signal }, onDismiss = { showFavorites = false })
+    if (showRecent) RecentDialog(state, repository, onFill = { n, p, node, signal -> lobbyName = n; password = p; manualPassword = false; joinNodeOverride = node; joinSignalingOverride = signal }, onDismiss = { showRecent = false })
 
     if (showSettings) {
         BackHandler { showSettings = false }
@@ -913,8 +1043,9 @@ private fun HomeScreen(state: MctierUiState, repository: MctierRepository) {
                     Spacer(Modifier.height(12.dp))
                     // 创建 / 加入 模式切换
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        ToggleChip(L("创建大厅", "Create"), mode == "create", Icons.Rounded.Add, Modifier.weight(1f)) { mode = "create"; joinNodeOverride = null; joinSignalingOverride = null }
-                        ToggleChip(L("加入大厅", "Join"), mode == "join", Icons.AutoMirrored.Rounded.Login, Modifier.weight(1f)) { mode = "join" }
+                        HomeLobbyModeButton(L("创建大厅", "Create"), mode == "create", Icons.Rounded.Add, Modifier.weight(1f)) { mode = "create"; joinNodeOverride = null; joinSignalingOverride = null }
+                        QuarkSupportEntry(onQuarkSupport)
+                        HomeLobbyModeButton(L("加入大厅", "Join"), mode == "join", Icons.AutoMirrored.Rounded.Login, Modifier.weight(1f)) { mode = "join" }
                     }
                     Spacer(Modifier.height(14.dp))
                     // 操作按钮行：常用 / 最近 / 广场 / 随机或识别（对齐桌面端 lobby-action-bar）
@@ -926,6 +1057,7 @@ private fun HomeScreen(state: MctierUiState, repository: MctierRepository) {
                             HomeActionButton(L("随机", "Random"), Icons.Rounded.Casino, Modifier.weight(1f)) {
                                 lobbyName = randomLobbyName()
                                 password = randomPassword()
+                                manualPassword = false
                                 joinNodeOverride = null
                                 joinSignalingOverride = null
                                 android.widget.Toast.makeText(ctx, L("已随机生成大厅名称和密码", "Random lobby name and password generated"), android.widget.Toast.LENGTH_SHORT).show()
@@ -937,6 +1069,7 @@ private fun HomeScreen(state: MctierUiState, repository: MctierRepository) {
                                 if (invite != null) {
                                     lobbyName = invite.name
                                     password = invite.password
+                                    manualPassword = false
                                     joinNodeOverride = invite.serverNode
                                     joinSignalingOverride = invite.signalingServer
                                     android.widget.Toast.makeText(ctx, L("\u5df2\u8bc6\u522b\u526a\u8d34\u677f\u5927\u5385\u4fe1\u606f", "Lobby info detected from clipboard"), android.widget.Toast.LENGTH_SHORT).show()
@@ -949,7 +1082,7 @@ private fun HomeScreen(state: MctierUiState, repository: MctierRepository) {
                     Spacer(Modifier.height(16.dp))
                     MctierField(lobbyName, { lobbyName = it; joinNodeOverride = null; joinSignalingOverride = null }, L("大厅名称（4-32位）", "Lobby Name (4-32 chars)"), enabled = !connecting)
                     Spacer(Modifier.height(12.dp))
-                    MctierField(password, { password = it }, L("留空为无密码大厅，或输入8-32位密码", "Leave blank for no password, or enter 8-32 characters"), enabled = !connecting, isPassword = true)
+                    MctierField(password, { password = it; manualPassword = true }, L("留空为无密码大厅，或输入8-32位密码", "Leave blank for no password, or enter 8-32 characters"), enabled = !connecting, isPassword = true, protectedPassword = !manualPassword)
                     Spacer(Modifier.height(12.dp))
                     MctierField(state.settings.playerName, {
                         val name = it.replace(Regex("\\s+"), "")
@@ -1034,16 +1167,9 @@ private fun PublicPlazaDialog(state: MctierUiState, repository: MctierRepository
                     state.publicLobbies.isEmpty() -> Text(L("暂无公开大厅", "No public lobbies"), color = TextPrimary.copy(alpha = 0.5f))
                     else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(state.publicLobbies, key = { it.lobbyName + it.hostName }) { lobby ->
-                            Row(
-                                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(PanelHigh)
-                                    .clickable { onFill(lobby.lobbyName, "", lobby.serverNode); onDismiss() }.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(lobby.lobbyName, color = TextPrimary, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text(L("房主 ", "Host ") + "${lobby.hostName} · ${lobby.playerCount}${lobby.maxPlayers?.let { "/$it" } ?: ""} " + L("人", "players"), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.5f))
-                                }
-                                Text(L("填入", "Fill"), color = GrassGreen, fontSize = 13.sp)
+                            PublicLobbyCard(lobby) {
+                                onFill(lobby.lobbyName, "", lobby.serverNode)
+                                onDismiss()
                             }
                         }
                     }
@@ -1052,6 +1178,26 @@ private fun PublicPlazaDialog(state: MctierUiState, repository: MctierRepository
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text(L("关闭", "Close"), color = GrassGreen) } },
     )
+}
+
+@Composable
+internal fun PublicLobbyCard(lobby: top.pmh13.mctier.data.PublicLobbyWire, onSelect: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(PanelHigh)
+            .clickable(onClick = onSelect).padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(lobby.lobbyName, color = TextPrimary, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(L("房主 ", "Host ") + "${lobby.hostName} · ${lobby.playerCount}${lobby.maxPlayers?.let { "/$it" } ?: ""} " + L("人", "players"), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.5f))
+            if (lobby.description.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(lobby.description.trim(), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.75f))
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(L("填入", "Fill"), color = GrassGreen, fontSize = 13.sp)
+    }
 }
 
 @Composable
@@ -1344,12 +1490,7 @@ private fun LobbyScreen(state: MctierUiState, repository: MctierRepository) {
     // 返回键：在子视图时返回大厅（对齐桌面端 ESC 返回上一页）
     BackHandler(enabled = currentView != "lobby") { currentView = "lobby" }
     // 未读消息标记：不在聊天界面时收到新消息则标红
-    var lastSeenChat by remember { mutableIntStateOf(state.chatMessages.size) }
-    var hasUnread by remember { mutableStateOf(false) }
-    LaunchedEffect(state.chatMessages.size, currentView) {
-        if (currentView == "chat") { hasUnread = false; lastSeenChat = state.chatMessages.size }
-        else if (state.chatMessages.size > lastSeenChat) hasUnread = true
-    }
+    val hasUnread = notificationUnreadCount(state.unreadChatMessages, state.peerPreferences, state.players.map { it.id }) > 0
 
     Box(Modifier.fillMaxSize().statusBarsPadding().navigationBarsPadding().padding(horizontal = 16.dp)) {
         AnimatedContent(
@@ -1442,7 +1583,7 @@ private fun LobbyMainView(
             Image(painterResource(R.drawable.mctier_logo), "MCTier", modifier = Modifier.size(32.dp))
             Spacer(Modifier.width(10.dp))
             Text("MCTier", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = TextPrimary, modifier = Modifier.weight(1f))
-            CircleIconButton(Icons.Rounded.Build, L("房间工具", "Room Tools")) { onTools() }
+            CircleIconButton(Icons.Rounded.HomeRepairService, L("房间工具", "Room Tools")) { onTools() }
             Spacer(Modifier.width(8.dp))
             CircleIconButton(Icons.Rounded.Settings, L("设置", "Settings")) { onSettings() }
             Spacer(Modifier.width(8.dp))
@@ -1469,7 +1610,7 @@ private fun LobbyCard(state: MctierUiState, repository: MctierRepository) {
     LaunchedEffect(lobby?.name, lobby?.password) {
         showQr = false
     }
-    val ipText = (if (lobby?.useDomain == true) lobby.virtualDomain else lobby?.virtualIp).orEmpty().ifBlank { L("获取中...", "Loading...") }
+    val ipText = lobby?.virtualIp.orEmpty().ifBlank { L("获取中...", "Loading...") }
 
     SectionCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -1489,7 +1630,7 @@ private fun LobbyCard(state: MctierUiState, repository: MctierRepository) {
         }
         Spacer(Modifier.height(10.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(if (lobby?.useDomain == true) L("您的虚拟域名:", "Your domain:") else L("您的虚拟IP:", "Your IP:"), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.55f))
+            Text(L("您的虚拟IP:", "Your IP:"), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.55f))
             Spacer(Modifier.width(8.dp))
             Box(
                 Modifier.clip(RoundedCornerShape(8.dp)).background(GrassGreen.copy(alpha = 0.16f))
@@ -1570,11 +1711,17 @@ private fun LobbyCard(state: MctierUiState, repository: MctierRepository) {
             title = { Text(L("无法联机？", "Cannot connect?"), color = TextPrimary) },
             text = {
                 Column {
-                    Text(L("1. 确认手机与电脑用了相同的大厅名称和密码", "1. Make sure phone and PC use the same lobby name and password"), color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp)
+                    Text(L("联机方式说明：", "How to connect:"), color = GrassGreen, fontWeight = FontWeight.Bold, fontSize = 13.sp)
                     Spacer(Modifier.height(8.dp))
-                    Text(L("2. Minecraft 中对局域网开放后，用「您的虚拟IP + 端口」连接", "2. After Open to LAN in Minecraft, connect with your virtual IP + port"), color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp)
+                    Text(L("1. 双方都是正版：房主对局域网开放后，其他玩家在多人游戏中使用「房主虚拟IP:端口号」加入", "1. Both have a licensed copy: after the host opens to LAN, others join Multiplayer with Host Virtual IP:Port"), color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp)
                     Spacer(Modifier.height(8.dp))
-                    Text(L("3. 若语音/聊天不通，退出大厅重进一次", "3. If voice/chat fails, leave and rejoin the lobby"), color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp)
+                    Text(L("2. 房主离线模式，加入者正版：加入者在多人游戏中使用「房主虚拟IP:端口号」加入", "2. Host offline mode, joiner licensed: the joiner uses Host Virtual IP:Port in Multiplayer"), color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text(L("3. 房主正版，加入者离线模式：房主安装 mcwifipnp 模组关闭正版验证", "3. Host licensed, joiner offline mode: the host installs the mcwifipnp mod to disable license verification"), color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text(L("4. 双方都是离线模式：房主安装 mcwifipnp 模组关闭正版验证", "4. Both in offline mode: the host installs the mcwifipnp mod to disable license verification"), color = TextPrimary.copy(alpha = 0.85f), fontSize = 13.sp)
+                    Spacer(Modifier.height(8.dp))
+                    Text(L("提示：虚拟IP显示在大厅信息中，端口号由房主在游戏内对局域网开放时显示。若语音/聊天不通，退出大厅重进一次。", "Tip: the virtual IP is shown in lobby info and the port appears when the host opens to LAN. If voice/chat fails, leave and rejoin once."), color = TextPrimary.copy(alpha = 0.72f), fontSize = 12.sp)
                 }
             },
             confirmButton = { TextButton(onClick = { showHelp = false }) { Text(L("知道了", "Got it"), color = GrassGreen) } },
@@ -1586,7 +1733,7 @@ private fun LobbyCard(state: MctierUiState, repository: MctierRepository) {
 private fun AnnouncementBar(state: MctierUiState, repository: MctierRepository) {
     val text = state.announcement
     if (text.isBlank()) return
-    // 只读跑马灯：公告从右向左匀速滚动；房主在「大厅动态设置」中编辑
+    // 只读公告：宽度不足时才滚动；房主在「大厅动态设置」中编辑。
     Column {
         Row(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color(0xFFFFD24A).copy(alpha = 0.14f))
@@ -1602,10 +1749,10 @@ private fun AnnouncementBar(state: MctierUiState, repository: MctierRepository) 
     }
 }
 
-/** 从右向左匀速循环滚动的跑马灯文本 */
+/** basicMarquee 仅在文字超出可用宽度时滚动，并在窗口宽度变化时重新测量。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MarqueeText(text: String, color: Color, modifier: Modifier = Modifier) {
+internal fun MarqueeText(text: String, color: Color, modifier: Modifier = Modifier) {
     Text(
         text,
         color = color,
@@ -1787,7 +1934,7 @@ private fun LobbyHeader(state: MctierUiState, repository: MctierRepository, onTo
                     fontSize = 13.sp, color = GrassGreen,
                 )
             }
-            CircleIconButton(Icons.Rounded.Build, L("房间工具", "Room Tools")) { onTools() }
+            CircleIconButton(Icons.Rounded.HomeRepairService, L("房间工具", "Room Tools")) { onTools() }
             Spacer(Modifier.width(8.dp))
             CircleIconButton(Icons.Rounded.ContentCopy, L("复制大厅信息", "Copy Lobby Info")) {
                 val lobby = state.lobby ?: return@CircleIconButton
@@ -1833,7 +1980,7 @@ private fun RoomToolButton(icon: ImageVector, title: String, active: Boolean = f
 }
 
 @Composable
-private fun RoomToolsDialog(
+internal fun RoomToolsDialog(
     state: MctierUiState,
     repository: MctierRepository,
     onOpenWorlds: () -> Unit,
@@ -1846,7 +1993,7 @@ private fun RoomToolsDialog(
     var newTodo by remember { mutableStateOf("") }
     var minutes by remember { mutableStateOf("5") }
     var seconds by remember { mutableStateOf("0") }
-    var tab by remember { mutableIntStateOf(3) }
+    var tab by remember { mutableIntStateOf(4) }
     var dice by remember { mutableIntStateOf(1) }
     var diceSides by remember { mutableIntStateOf(6) }
     var rolling by remember { mutableStateOf(false) }
@@ -1862,6 +2009,7 @@ private fun RoomToolsDialog(
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
+                    ToggleChip(L("屏幕录制", "Record"), tab == 4, Icons.Rounded.Videocam) { tab = 4 }
                     ToggleChip(L("联机", "Net"), tab == 3, Icons.Rounded.SportsEsports) { tab = 3 }
                     ToggleChip(L("骰子", "Dice"), tab == 0, Icons.Rounded.Casino) { tab = 0 }
                     ToggleChip(L("倒计时", "Timer"), tab == 1, Icons.Rounded.History) { tab = 1 }
@@ -1869,6 +2017,7 @@ private fun RoomToolsDialog(
                 }
                 Spacer(Modifier.height(16.dp))
                 when (tab) {
+                    4 -> ScreenRecordingPanel(captureBusy = state.screenShares.any { it.playerId == state.playerId } || state.remoteControlActiveBy != null)
                     0 -> {
                         // 骰子：支持面数选择 + 本地掷骰 / 掷骰并广播（广播到聊天室，与桌面端一致）
                         Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -2181,7 +2330,7 @@ private fun LobbySettingsCard(state: MctierUiState, repository: MctierRepository
     SectionCard {
         Text(L("大厅公告", "Lobby Announcement"), fontWeight = FontWeight.SemiBold, color = TextPrimary, fontSize = 14.sp)
         Spacer(Modifier.height(4.dp))
-        Text(L("公告会在所有成员的大厅顶部以滚动条形式展示，新加入者也会自动看到（玩法规则/服务器地址等）", "The announcement scrolls at the top for all members, including newcomers"), fontSize = 11.sp, color = TextPrimary.copy(alpha = 0.5f), lineHeight = 16.sp)
+        Text(L("公告展示在所有成员的大厅顶部，内容超出宽度时自动滚动，新加入者也会自动看到（玩法规则/服务器地址等）", "Announcements appear at the top for all members, including newcomers, and scroll only when too long to fit"), fontSize = 11.sp, color = TextPrimary.copy(alpha = 0.5f), lineHeight = 16.sp)
         Spacer(Modifier.height(8.dp))
         MctierField(announce, { announce = it.take(200) }, L("公告内容（留空并发布可清除）", "Announcement (publish empty to clear)"))
         Spacer(Modifier.height(8.dp))
@@ -2276,7 +2425,7 @@ private fun PlayersTab(state: MctierUiState, repository: MctierRepository) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
                         ProfileAvatar(
                             name = player.name,
-                            avatarData = player.avatarData,
+                            avatarData = if (player.id == state.playerId) state.settings.avatarData else player.avatarData,
                             size = 44.dp,
                             editable = isMe,
                             speaking = player.speaking,
@@ -2309,9 +2458,8 @@ private fun PlayersTab(state: MctierUiState, repository: MctierRepository) {
                                 }
                             }
                         }
-                        val useDomain = player.useDomain && !player.virtualDomain.isNullOrBlank()
-                        val ipShow = if (useDomain) L("域名: ${player.virtualDomain}", "Domain: ${player.virtualDomain}") else "IP: ${player.virtualIp ?: L("等待中…", "Waiting...")}"
-                        val ipCopy = (if (useDomain) player.virtualDomain else player.virtualIp).orEmpty()
+                        val ipShow = "IP: ${player.virtualIp ?: L("等待中…", "Waiting...")}"
+                        val ipCopy = player.virtualIp.orEmpty()
                         Column {
                             Text(
                                 ipShow, fontSize = 12.sp, color = GrassGreen.copy(alpha = 0.85f),
@@ -2447,21 +2595,116 @@ private fun parseChatReply(content: String): ParsedChatReply? {
 }
 
 private fun visibleChatContent(content: String): String {
+    if (BuiltinEmojiMessage.decode(content) != null) return L("[内置表情]", "[Built-in emoji]")
     val parsed = parseChatReply(content) ?: return content
     return "> ${parsed.quoteLine}\n${parsed.body}"
 }
 
 @Composable
+private fun ChatUnreadBadge(count: Int) {
+    if (count <= 0) return
+    Box(
+        Modifier.height(18.dp).widthIn(min = 18.dp).clip(CircleShape)
+            .background(Color(0xFFE05252)).padding(horizontal = 4.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            top.pmh13.mctier.data.unreadLabel(count), color = Color.White,
+            fontSize = 11.sp, lineHeight = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1,
+            style = androidx.compose.ui.text.TextStyle(
+                platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false),
+            ),
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
 private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
     val context = LocalContext.current
+    val animatedImageLoader = rememberAnimatedImageLoader()
     var input by remember { mutableStateOf(androidx.compose.ui.text.input.TextFieldValue("")) }
     var showEmoji by remember { mutableStateOf(false) }
-    var emojiCat by remember { mutableStateOf(0) }
+    var emojiCat by remember { mutableStateOf("recent") }
+    var showNewEmojiCategory by remember { mutableStateOf(false) }
+    var newEmojiCategoryName by remember { mutableStateOf("") }
+    var showManageEmojiCategory by remember { mutableStateOf(false) }
+    var manageEmojiCategoryName by remember { mutableStateOf("") }
+    var managedEmoji by remember { mutableStateOf<CustomEmojiItem?>(null) }
+    var managedEmojiName by remember { mutableStateOf("") }
+    var managedEmojiCategory by remember { mutableStateOf("custom") }
+    var confirmEmojiDelete by remember { mutableStateOf(false) }
+    var showSearch by remember { mutableStateOf(false) }
+    var searchQuery by remember { mutableStateOf("") }
     var replyTo by remember { mutableStateOf<ChatMessage?>(null) }
+    var privateMode by remember { mutableStateOf(false) }
+    var privatePeerId by remember { mutableStateOf<String?>(null) }
+    val conversation = if (!privateMode) "lobby" else privatePeerId?.let { "private:$it" }
+    val voiceRecorder = remember { top.pmh13.mctier.audio.VoiceMessageRecorder(context.applicationContext) }
+    var recordingVoice by remember { mutableStateOf(false) }
+    var cancelVoice by remember { mutableStateOf(false) }
+    var voiceSeconds by remember { mutableStateOf(0) }
+    var voiceDrag by remember { mutableStateOf(0f) }
+    var voiceHoldJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
+    var voiceLongPressTriggered by remember { mutableStateOf(false) }
+    var releaseLobbyVoice by remember { mutableStateOf<(() -> Unit)?>(null) }
+    val voiceInputFocus = remember { FocusRequester() }
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val chatFocusManager = LocalFocusManager.current
+    val cancelVoiceThresholdPx = with(LocalDensity.current) { 60.dp.toPx() }
+    val voiceGestureScope = rememberCoroutineScope()
+    val microphonePermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (!granted) android.widget.Toast.makeText(context, L("需要麦克风权限", "Microphone permission required"), android.widget.Toast.LENGTH_SHORT).show()
+    }
+    fun finishVoice(cancel: Boolean) {
+        val seconds = voiceRecorder.seconds
+        val bytes = try { voiceRecorder.finish(cancel) } finally {
+            releaseLobbyVoice?.invoke()
+            releaseLobbyVoice = null
+        }
+        recordingVoice = false
+        cancelVoice = false
+        voiceSeconds = 0
+        if (bytes != null) repository.sendVoiceChat(bytes.bytes, seconds, if (privateMode) privatePeerId else null, bytes.mime)
+        else if (!cancel) android.widget.Toast.makeText(context, L("录音过短或未采集到声音，请按住后再说话", "Recording too short or unavailable. Hold before speaking"), android.widget.Toast.LENGTH_SHORT).show()
+    }
+    DisposableEffect(conversation) { onDispose { voiceHoldJob?.cancel(); finishVoice(true) } }
+    val voiceLifecycle = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(voiceLifecycle) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP) { voiceHoldJob?.cancel(); finishVoice(true) }
+        }
+        voiceLifecycle.lifecycle.addObserver(observer)
+        onDispose { voiceLifecycle.lifecycle.removeObserver(observer) }
+    }
+    LaunchedEffect(recordingVoice) {
+        while (recordingVoice) {
+            voiceSeconds = voiceRecorder.seconds.toInt()
+            if (voiceRecorder.seconds >= 60) { finishVoice(cancelVoice); break }
+            kotlinx.coroutines.delay(100)
+        }
+    }
+    DisposableEffect(conversation) {
+        repository.setChatConversation(conversation)
+        onDispose { repository.setChatConversation(null) }
+    }
+    BackHandler(enabled = privateMode && privatePeerId != null) { privatePeerId = null }
     var highlightedMessageId by remember { mutableStateOf<String?>(null) }
     val listState = rememberLazyListState()
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        if (uri != null) repository.sendImageChat(uri)
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        if (uri != null) repository.sendFileChat(uri, if (privateMode) privatePeerId else null) { ok ->
+            if (!ok) android.widget.Toast.makeText(context, L("文件发送失败，请检查文件大小或聊天连接", "Failed to send file. Check its size or the chat connection"), android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+    val emojiPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
+        if (uris.isNotEmpty()) repository.importEmojiUris(uris, if (emojiCat in setOf("recent", "builtin")) "custom" else emojiCat) { imported, skipped ->
+            val text = when {
+                imported == uris.size -> L("已导入 $imported 个表情", "Imported $imported emoji")
+                imported > 0 -> L("已导入 $imported 个，$skipped 个因格式、大小或容量限制被跳过", "Imported $imported; $skipped skipped due to format, size, or capacity limits")
+                else -> L("没有可导入的图片，请检查格式、大小或表情库容量", "No images were imported. Check their format, size, or library capacity")
+            }
+            android.widget.Toast.makeText(context, text, android.widget.Toast.LENGTH_LONG).show()
+        }
     }
     val avatarPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) repository.updateAvatar(uri)
@@ -2496,10 +2739,16 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
         if (text.isEmpty()) return
         val r = replyTo
         val content = if (r != null) {
-            val quoted = if (r.type == "image") L("[图片]", "[Image]") else (parseChatReply(r.content)?.body ?: r.content).lineSequence().firstOrNull()?.take(40).orEmpty()
+            val quoted = if (r.type == "image") L("[图片]", "[Image]") else if (r.type == "file") r.attachment?.name ?: L("[文件]", "[File]") else visibleChatContent(parseChatReply(r.content)?.body ?: r.content).lineSequence().firstOrNull()?.take(40).orEmpty()
             "> [reply:${Uri.encode(r.id)}] @${r.playerName} $quoted\n$text"
         } else text
-        repository.sendChat(content)
+        if (privateMode && privatePeerId == null) return
+        if (!repository.sendChat(content, if (privateMode) privatePeerId else null)) {
+            android.widget.Toast.makeText(context,
+                if (!state.chatReady) L("聊天连接尚未就绪，消息未发送，输入内容已保留", "Chat is not connected. Message not sent; draft preserved")
+                else L("消息发送失败，输入内容已保留", "Message failed; draft preserved"), android.widget.Toast.LENGTH_LONG).show()
+            return
+        }
         input = androidx.compose.ui.text.input.TextFieldValue("")
         replyTo = null
     }
@@ -2510,22 +2759,56 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
             info.totalItemsCount == 0 || last >= info.totalItemsCount - 1
         }
     }
+    val visibleMessages = state.chatMessages.filter { message ->
+        if (!privateMode) message.recipientId == null
+        else privatePeerId != null && (
+            (message.mine && message.recipientId == privatePeerId) ||
+                (!message.mine && message.playerId == privatePeerId && message.recipientId == state.playerId)
+            )
+    }
+    val searchMatches = remember(visibleMessages, searchQuery) {
+        if (searchQuery.isBlank()) emptyList() else visibleMessages.filter { message ->
+            !message.recalled && fuzzyChatMatch("${message.playerName} ${if (message.type == "image") L("[图片] [表情]", "[Image] [Emoji]") else if (message.type == "file") message.attachment?.name ?: L("[文件]", "[File]") else visibleChatContent(message.content)}", searchQuery)
+        }.asReversed()
+    }
     var hasNew by remember { mutableStateOf(false) }
     var prevCount by remember { mutableStateOf(0) }
     val chatScope = rememberCoroutineScope()
+    var chatViewportHeight by remember { mutableStateOf(0) }
+    val emojiPanelHeight = if (chatViewportHeight > 0) with(LocalDensity.current) { (chatViewportHeight * .42f).toDp() } else 300.dp
+    var messageViewportHeight by remember { mutableStateOf(0) }
+    var followViewportResize by remember { mutableStateOf(true) }
+    LaunchedEffect(isAtBottom, listState.isScrollInProgress) {
+        if (listState.isScrollInProgress) followViewportResize = isAtBottom
+    }
+    // Keep the latest message above the panel/IME as the available height changes.
+    LaunchedEffect(messageViewportHeight) {
+        if (followViewportResize && visibleMessages.isNotEmpty()) listState.scrollToItem(visibleMessages.lastIndex)
+    }
+    fun jumpToMessage(target: ChatMessage) {
+        val targetIndex = visibleMessages.indexOfFirst { it.id == target.id }
+        if (targetIndex < 0) return
+        chatScope.launch {
+            highlightedMessageId = null
+            runCatching { listState.animateScrollToItem(targetIndex) }
+            highlightedMessageId = target.id
+            kotlinx.coroutines.delay(1300)
+            if (highlightedMessageId == target.id) highlightedMessageId = null
+        }
+    }
     fun jumpToReply(source: ChatMessage) {
         val parsed = parseChatReply(source.content) ?: return
-        var targetIndex = parsed.targetId?.let { id -> state.chatMessages.indexOfFirst { it.id == id } } ?: -1
+        var targetIndex = parsed.targetId?.let { id -> visibleMessages.indexOfFirst { it.id == id } } ?: -1
         if (targetIndex < 0) {
             val legacy = Regex("^@([^\\s]+)\\s*(.*)$").find(parsed.quoteLine)
-            val sourceIndex = state.chatMessages.indexOfFirst { it.id == source.id }
+            val sourceIndex = visibleMessages.indexOfFirst { it.id == source.id }
             if (legacy != null && sourceIndex > 0) {
                 val playerName = legacy.groupValues[1]
                 val summary = legacy.groupValues[2]
                 for (index in sourceIndex - 1 downTo 0) {
-                    val candidate = state.chatMessages[index]
+                    val candidate = visibleMessages[index]
                     val candidateSummary = if (candidate.type == "image") L("[图片]", "[Image]")
-                    else (parseChatReply(candidate.content)?.body ?: candidate.content).lineSequence().firstOrNull()?.take(40).orEmpty()
+                    else visibleChatContent(parseChatReply(candidate.content)?.body ?: candidate.content).lineSequence().firstOrNull()?.take(40).orEmpty()
                     if (candidate.playerName == playerName && candidateSummary == summary) {
                         targetIndex = index
                         break
@@ -2537,30 +2820,27 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
             android.widget.Toast.makeText(context, L("原消息已不在聊天记录中", "The original message is no longer available"), android.widget.Toast.LENGTH_SHORT).show()
             return
         }
-        val targetId = state.chatMessages[targetIndex].id
-        chatScope.launch {
-            highlightedMessageId = null
-            runCatching { listState.animateScrollToItem(targetIndex) }
-            highlightedMessageId = targetId
-            kotlinx.coroutines.delay(1300)
-            if (highlightedMessageId == targetId) highlightedMessageId = null
-        }
+        jumpToMessage(visibleMessages[targetIndex])
     }
-    // 标记进入/离开聊天室界面：在聊天室内收到消息不播放提示音
-    DisposableEffect(Unit) {
-        repository.setInChatRoom(true)
-        onDispose { repository.setInChatRoom(false) }
+    LaunchedEffect(privateMode, privatePeerId) {
+        showEmoji = false
+        followViewportResize = true
+        replyTo = null
+        hasNew = false
+        prevCount = visibleMessages.size
+        if (visibleMessages.isNotEmpty()) listState.scrollToItem(visibleMessages.lastIndex)
     }
-    LaunchedEffect(state.chatMessages.size) {
-        val count = state.chatMessages.size
+    LaunchedEffect(visibleMessages) {
+        val count = visibleMessages.size
         if (count > 0) {
             // 自己发的消息：无条件滚到底，且绝不提示"新消息"
-            val isSelfLatest = state.chatMessages.lastOrNull()?.mine == true
+            val isSelfLatest = visibleMessages.lastOrNull()?.mine == true
             // 否则：判断"新消息到来之前"用户是否在底部
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1
             val wasAtBottom = prevCount == 0 || lastVisible >= prevCount - 1
             if (isSelfLatest || wasAtBottom) {
                 runCatching { listState.animateScrollToItem(count - 1) }
+                followViewportResize = true
                 hasNew = false
             } else {
                 hasNew = true
@@ -2569,10 +2849,124 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
         prevCount = count
     }
     LaunchedEffect(isAtBottom) { if (isAtBottom) hasNew = false }
-    Column(Modifier.fillMaxSize().imePadding()) {
-        Box(Modifier.weight(1f)) {
+    Column(Modifier.fillMaxSize().imePadding().onSizeChanged { chatViewportHeight = it.height }) {
+        Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            val lobbyUnread = state.unreadChatMessages.values.count { it == "lobby" }
+            FilterChip(selected = !privateMode, onClick = { privateMode = false }, label = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
+                    Text(L("大厅", "Lobby"))
+                    ChatUnreadBadge(lobbyUnread)
+                }
+            })
+            val privateUnread = notificationUnreadCount(state.unreadChatMessages.filterValues { it.startsWith("private:") }, state.peerPreferences, state.players.map { it.id })
+            FilterChip(selected = privateMode, onClick = { privateMode = true }, label = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(L("私聊", "Private"))
+                    if (privateUnread > 0) {
+                        Spacer(Modifier.width(5.dp))
+                        ChatUnreadBadge(privateUnread)
+                    }
+                }
+            })
+            if (privateMode && privatePeerId != null) {
+                TextButton(onClick = { privatePeerId = null }, modifier = Modifier.weight(1f), contentPadding = PaddingValues(horizontal = 4.dp)) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.AutoMirrored.Rounded.ArrowBack, contentDescription = L("返回玩家列表", "Back to players"), modifier = Modifier.size(18.dp))
+                        Spacer(Modifier.width(4.dp))
+                        Text(state.players.firstOrNull { it.id == privatePeerId }?.name ?: L("私聊", "Private"), modifier = Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.End)
+                    }
+                }
+            }
+            if (!(privateMode && privatePeerId != null)) Spacer(Modifier.weight(1f))
+            Box(
+                Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(if (showSearch) GrassGreen else PanelHigh)
+                    .clickable { showSearch = !showSearch; if (!showSearch) searchQuery = "" },
+                contentAlignment = Alignment.Center,
+            ) { Icon(Icons.Rounded.Search, L("搜索聊天记录", "Search messages"), tint = if (showSearch) OnAccent else TextPrimary) }
+        }
+        if (!state.chatReady) {
+            Text(
+                when {
+                    state.chatConnectionError?.startsWith("HTTP 525") == true -> L("聊天不可用：信令服务器源站 SSL 握手失败（HTTP 525），正在重试", "Chat unavailable: signaling origin TLS handshake failed (HTTP 525). Retrying")
+                    state.chatConnectionError != null -> L("聊天连接失败（${state.chatConnectionError}），正在重试", "Chat connection failed (${state.chatConnectionError}). Retrying")
+                    else -> L("正在连接聊天服务，尚不能发送消息", "Connecting to chat. Sending is not available yet")
+                },
+                color = if (state.chatConnectionError == null) TextPrimary else DangerRed,
+                fontSize = 12.sp,
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 6.dp),
+            )
+        }
+        AnimatedVisibility(showSearch && (!privateMode || privatePeerId != null)) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp)) {
+                OutlinedTextField(
+                    value = searchQuery, onValueChange = { searchQuery = it }, modifier = Modifier.fillMaxWidth(), singleLine = true,
+                    leadingIcon = { Icon(Icons.Rounded.Search, null) },
+                    trailingIcon = { if (searchQuery.isNotEmpty()) Icon(Icons.Rounded.Close, L("清空", "Clear"), modifier = Modifier.clickable { searchQuery = "" }) },
+                    placeholder = { Text(L("搜索当前会话", "Search this conversation")) }, shape = RoundedCornerShape(12.dp), colors = fieldColors(),
+                )
+                if (searchQuery.isNotBlank()) {
+                    Text(if (searchMatches.isEmpty()) L("没有匹配消息", "No matching messages") else L("找到 ${searchMatches.size} 条消息", "${searchMatches.size} messages"), color = TextPrimary.copy(alpha = .55f), fontSize = 11.sp, modifier = Modifier.padding(8.dp, 5.dp))
+                    Column(Modifier.fillMaxWidth().heightIn(max = 210.dp).verticalScroll(rememberScrollState())) {
+                        searchMatches.forEach { message ->
+                            Row(
+                                Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { jumpToMessage(message) }.padding(horizontal = 10.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(message.playerName, color = AccentText, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                    Text(if (message.type == "image") L("[图片/表情]", "[Image/emoji]") else if (message.type == "file") message.attachment?.name ?: L("[文件]", "[File]") else visibleChatContent(message.content), color = TextPrimary.copy(alpha = .72f), fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                                Text(formatChatClock(message.timestamp), color = TextPrimary.copy(alpha = .35f), fontSize = 10.sp)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (privateMode && privatePeerId == null) {
+            Column(Modifier.fillMaxWidth().weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(L("选择要私聊的玩家", "Choose a player to message"), color = TextPrimary.copy(alpha = 0.65f), fontSize = 13.sp)
+                sortPrivatePeers(state.players.filter { it.id != state.playerId }, state.peerPreferences) { it.id }.forEach { player ->
+                    val unread = state.unreadChatMessages.values.count { it == "private:${player.id}" }
+                    val preference = state.peerPreferences[player.id] ?: PeerPreference()
+                    var menuOpen by remember(player.id) { mutableStateOf(false) }
+                    val menuContext = LocalContext.current
+                    fun savePreference(value: PeerPreference) {
+                        if (repository.setPeerPreference(player.id, value)) android.widget.Toast.makeText(menuContext, L("私信设置已保存", "Conversation preference saved"), android.widget.Toast.LENGTH_SHORT).show()
+                        menuOpen = false
+                    }
+                    Box {
+                    Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(if (preference.pinned) GrassGreen.copy(alpha = .12f) else PanelHigh).combinedClickable(onLongClick = { menuOpen = true }, onClick = {
+                        privatePeerId = player.id
+                    }).padding(horizontal = 9.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        ProfileAvatar(player.name, player.avatarData, 38.dp, onLongClick = { menuOpen = true })
+                        Spacer(Modifier.width(10.dp))
+                        Text(player.name, color = TextPrimary, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        if (preference.pinned) Icon(Icons.Rounded.PushPin, L("已置顶", "Pinned"), tint = TextPrimary.copy(alpha = .6f), modifier = Modifier.padding(end = 6.dp).size(15.dp))
+                        if (preference.muted) Icon(Icons.Rounded.NotificationsOff, L("免打扰", "Do Not Disturb"), tint = TextPrimary.copy(alpha = .6f), modifier = Modifier.padding(end = 6.dp).size(15.dp))
+                        if (unread > 0 && !preference.muted) ChatUnreadBadge(unread)
+                        else if (unread > 0 || preference.markedUnread) Box(Modifier.size(8.dp).background(if (preference.muted) TextPrimary.copy(alpha = .45f) else GrassGreen, CircleShape))
+                    }
+                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }, containerColor = PanelHigh) {
+                        DropdownMenuItem(text = { Text(if (preference.pinned) L("取消置顶", "Unpin") else L("置顶", "Pin"), color = TextPrimary) }, onClick = { savePreference(preference.copy(pinned = !preference.pinned)) })
+                        DropdownMenuItem(text = { Text(L("标记未读", "Mark unread"), color = TextPrimary) }, onClick = { savePreference(preference.copy(markedUnread = true)) })
+                        DropdownMenuItem(text = { Text(if (preference.muted) L("关闭免打扰", "Disable Do Not Disturb") else L("设置免打扰", "Do Not Disturb"), color = TextPrimary) }, onClick = { savePreference(preference.copy(muted = !preference.muted)) })
+                    }
+                    }
+                }
+            }
+        }
+        if (!privateMode || privatePeerId != null) Box(Modifier.weight(1f).onSizeChanged { messageViewportHeight = it.height }
+            .pointerInput(Unit) {
+                awaitPointerEventScope {
+                    while (true) {
+                        val event = awaitPointerEvent(androidx.compose.ui.input.pointer.PointerEventPass.Initial)
+                        if (event.changes.any { it.pressed && !it.previousPressed }) showEmoji = false
+                    }
+                }
+            }) {
         LazyColumn(Modifier.fillMaxSize(), state = listState, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(state.chatMessages, key = { it.id }) {
+            items(visibleMessages, key = { it.id }) {
                 ChatBubble(
                     it,
                     repository,
@@ -2582,6 +2976,7 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
                     highlighted = highlightedMessageId == it.id,
                     onQuote = { message -> replyTo = message },
                     onJumpToQuote = { message -> jumpToReply(message) },
+                    privatePeerId = if (privateMode) privatePeerId else null,
                 )
             }
         }
@@ -2595,15 +2990,16 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
                 contentAlignment = Alignment.Center,
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Rounded.ArrowDownward, null, tint = TextPrimary, modifier = Modifier.size(16.dp))
-                    if (hasNew) { Spacer(Modifier.width(4.dp)); Text(L("新消息", "New messages"), fontSize = 12.sp, color = TextPrimary) }
+                    Icon(Icons.Rounded.ArrowDownward, null, tint = if (hasNew) OnAccent else TextPrimary, modifier = Modifier.size(16.dp))
+                    if (hasNew) { Spacer(Modifier.width(4.dp)); Text(L("新消息", "New messages"), fontSize = 12.sp, color = OnAccent) }
                 }
             }
         }
         }
+        if (!privateMode || privatePeerId != null) {
         Spacer(Modifier.height(8.dp))
         // @提及候选
-        AnimatedVisibility(visible = mentionCandidates.isNotEmpty()) {
+        AnimatedVisibility(visible = !privateMode && mentionCandidates.isNotEmpty()) {
             Row(
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 6.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -2612,7 +3008,7 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
                     Box(
                         Modifier.clip(RoundedCornerShape(16.dp)).background(GrassGreen.copy(alpha = 0.2f))
                             .clickable { applyMention(name) }.padding(horizontal = 12.dp, vertical = 6.dp),
-                    ) { Text("@$name", color = GrassGreen, fontSize = 13.sp) }
+                    ) { Text("@$name", color = AccentText, fontSize = 13.sp) }
                 }
             }
         }
@@ -2626,8 +3022,8 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
                     Box(Modifier.width(3.dp).height(32.dp).clip(RoundedCornerShape(2.dp)).background(GrassGreen))
                     Spacer(Modifier.width(8.dp))
                     Column(Modifier.weight(1f)) {
-                        Text(L("回复 ${r.playerName}", "Reply to ${r.playerName}"), fontSize = 11.sp, color = GrassGreen)
-                        Text(if (r.type == "image") L("[图片]", "[Image]") else r.content, fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(L("回复 ${r.playerName}", "Reply to ${r.playerName}"), fontSize = 11.sp, color = AccentText)
+                        Text(if (r.type == "image") L("[图片]", "[Image]") else visibleChatContent(r.content), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.7f), maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                     Icon(Icons.Rounded.Close, L("取消引用", "Cancel quote"), tint = TextPrimary.copy(alpha = 0.6f), modifier = Modifier.size(18.dp).clickable { replyTo = null })
                 }
@@ -2635,73 +3031,409 @@ private fun ChatTab(state: MctierUiState, repository: MctierRepository) {
         }
         // 表情面板
         AnimatedVisibility(visible = showEmoji) {
-            val emojiCats = remember(appLang) {
-                listOf(
-                    L("表情", "Smileys") to listOf("😀", "😁", "😂", "🤣", "😊", "😍", "😘", "😎", "🤩", "🥳", "😅", "😇", "🙂", "😉", "😏", "😴", "😭", "😱"),
-                    L("手势", "Gestures") to listOf("👍", "👎", "👌", "✌️", "🤝", "🙏", "💪", "👏", "🤗", "🙌", "👋", "🤙", "🤞", "👊", "✋", "🫶", "🤛", "🤜"),
-                    L("符号", "Symbols") to listOf("❤️", "💔", "✨", "🔥", "💯", "⭐", "🌟", "💢", "💥", "💦", "💤", "✅", "❌", "❓", "❗", "➕", "💕", "💙"),
-                    L("活动", "Activities") to listOf("🎮", "🎉", "🎁", "🍻", "☕", "🚀", "🏆", "🎯", "🎲", "🎵", "💩", "🤡", "👀", "🐶", "🐱", "🌈", "⚽", "🏀"),
-                )
-            }
-            Column(Modifier.fillMaxWidth().padding(bottom = 8.dp)) {
-                // 分类标签页
+            val visibleEmoji = if (emojiCat == "recent") state.recentEmojiIds.mapNotNull { id -> state.customEmojiItems.firstOrNull { it.id == id } }
+                else state.customEmojiItems.filter { it.categoryId == emojiCat }
+            val manageableCategory = state.emojiCategories.firstOrNull { it.id == emojiCat && !it.builtin }
+            Column(Modifier.fillMaxWidth().heightIn(max = emojiPanelHeight).padding(bottom = 8.dp)) {
                 Row(
                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    emojiCats.forEachIndexed { idx, (name, _) ->
-                        val active = idx == emojiCat
+                    state.emojiCategories.forEach { category ->
+                        val active = category.id == emojiCat
                         Box(
                             Modifier.clip(RoundedCornerShape(14.dp))
                                 .background(if (active) GrassGreen else PanelHigh)
-                                .clickable { emojiCat = idx }
+                                .clickable {
+                                    emojiCat = category.id
+                                    if (category.id == "builtin") repository.ensureBuiltinEmoji()
+                                }
                                 .padding(horizontal = 14.dp, vertical = 6.dp),
-                        ) { Text(name, color = TextPrimary, fontSize = 13.sp, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal) }
+                        ) { Text(category.name, color = if (active) OnAccent else TextPrimary, fontSize = 13.sp, fontWeight = if (active) FontWeight.Bold else FontWeight.Normal) }
+                    }
+                    Box(Modifier.size(32.dp).clip(CircleShape).background(PanelHigh).clickable { showNewEmojiCategory = true }, contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Add, L("新建分类", "New category"), tint = TextPrimary, modifier = Modifier.size(18.dp)) }
+                    if (manageableCategory != null) {
+                        Box(Modifier.size(32.dp).clip(CircleShape).background(PanelHigh).clickable {
+                            manageEmojiCategoryName = manageableCategory.name
+                            showManageEmojiCategory = true
+                        }, contentAlignment = Alignment.Center) { Icon(Icons.Rounded.Edit, L("管理当前分类", "Manage category"), tint = TextPrimary, modifier = Modifier.size(17.dp)) }
                     }
                 }
-                FlowRowChips(
-                    emojiCats[emojiCat.coerceIn(0, emojiCats.size - 1)].second,
-                    big = true,
-                ) { emoji -> input = androidx.compose.ui.text.input.TextFieldValue(input.text + emoji, androidx.compose.ui.text.TextRange(input.text.length + emoji.length)) }
+                if (visibleEmoji.isEmpty()) {
+                    Column(Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 150.dp).verticalScroll(rememberScrollState()), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+                        if (emojiCat == "builtin" && state.emojiBuiltinSyncing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(26.dp),
+                                color = AccentText,
+                                strokeWidth = 2.5.dp,
+                            )
+                        } else {
+                            Icon(Icons.Rounded.EmojiEmotions, null, tint = TextPrimary.copy(alpha = .3f), modifier = Modifier.size(30.dp))
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        if (emojiCat == "builtin" && state.emojiBuiltinSyncing && state.emojiBuiltinTotal > 0) {
+                            val fraction = state.emojiBuiltinDownloaded.toFloat() / state.emojiBuiltinTotal.toFloat()
+                            LinearProgressIndicator(
+                                progress = { fraction.coerceIn(0f, 1f) },
+                                modifier = Modifier.width(240.dp).height(7.dp).clip(RoundedCornerShape(4.dp)),
+                                color = AccentText,
+                                trackColor = PanelHigh,
+                            )
+                            Spacer(Modifier.height(6.dp))
+                            Text(
+                                L("已解压 ${state.emojiBuiltinDownloaded} / ${state.emojiBuiltinTotal}", "${state.emojiBuiltinDownloaded} / ${state.emojiBuiltinTotal} extracted"),
+                                color = TextPrimary.copy(alpha = .72f), fontSize = 11.sp,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                        }
+                        Text(
+                            when {
+                                emojiCat == "builtin" && state.emojiBuiltinSyncing -> L("正在解压内置表情...", "Extracting built-in emoji...")
+                                emojiCat == "builtin" && state.emojiBuiltinError != null -> L("内置表情准备失败", "Built-in emoji preparation failed")
+                                emojiCat == "builtin" -> L("内置表情资源尚未安装", "Built-in emoji are not installed")
+                                else -> L("这里还没有表情", "No emoji here yet")
+                            },
+                            color = TextPrimary.copy(alpha = .55f),
+                            fontSize = 12.sp,
+                        )
+                        if (emojiCat == "builtin" && state.emojiBuiltinError != null && !state.emojiBuiltinSyncing) {
+                            Text(state.emojiBuiltinError, color = TextPrimary.copy(alpha = .65f), fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                            TextButton(onClick = repository::retryBuiltinEmojiSync) {
+                                Icon(Icons.Rounded.Refresh, null, tint = AccentText, modifier = Modifier.size(17.dp))
+                                Spacer(Modifier.width(5.dp))
+                                Text(L("重试", "Retry"), color = AccentText)
+                            }
+                        }
+                    }
+                } else {
+                    if (emojiCat == "builtin" && (state.emojiBuiltinSyncing || state.emojiBuiltinError != null)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                if (state.emojiBuiltinSyncing) L("正在解压表情 ${state.emojiBuiltinDownloaded}/${state.emojiBuiltinTotal}", "Extracting ${state.emojiBuiltinDownloaded}/${state.emojiBuiltinTotal}")
+                                else state.emojiBuiltinError.orEmpty(),
+                                modifier = Modifier.weight(1f), color = TextPrimary.copy(alpha = .65f), fontSize = 11.sp, maxLines = 2, overflow = TextOverflow.Ellipsis,
+                            )
+                            if (!state.emojiBuiltinSyncing) TextButton(onClick = repository::retryBuiltinEmojiSync) { Text(L("重试准备", "Retry"), color = AccentText) }
+                        }
+                    }
+                    FlowRow(
+                        Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 210.dp).verticalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        visibleEmoji.forEach { emoji ->
+                            val manageable = emoji.categoryId != "builtin"
+                            val library = if (emoji.categoryId == "builtin") "emoji-library-v3" else "emoji-library-v1"
+                            Box(
+                                Modifier.size(58.dp).clip(RoundedCornerShape(8.dp)).background(PanelHigh)
+                                    .combinedClickable(
+                                        onClick = {
+                                            repository.sendEmoji(emoji, if (privateMode) privatePeerId else null) { ok ->
+                                                if (!ok) android.widget.Toast.makeText(context, L("表情发送失败", "Failed to send emoji"), android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                        },
+                                        onLongClick = if (manageable) ({
+                                            managedEmoji = emoji
+                                            managedEmojiName = emoji.name
+                                            managedEmojiCategory = emoji.categoryId
+                                            confirmEmojiDelete = false
+                                        }) else null,
+                                    ),
+                                ) {
+                                    AsyncImage(
+                                        model = java.io.File(context.filesDir, "$library/${emoji.fileName}"), imageLoader = animatedImageLoader,
+                                    contentDescription = if (manageable) L("${emoji.name}，长按管理", "${emoji.name}, hold to manage") else emoji.name,
+                                    contentScale = ContentScale.Fit,
+                                    modifier = Modifier.fillMaxSize().padding(4.dp),
+                                )
+                                if (manageable) {
+                                    Box(
+                                        Modifier.align(Alignment.TopEnd).padding(3.dp).size(18.dp).clip(CircleShape).background(PageBg.copy(alpha = .82f)),
+                                        contentAlignment = Alignment.Center,
+                                    ) { Icon(Icons.Rounded.Edit, null, tint = TextPrimary, modifier = Modifier.size(11.dp)) }
+                                }
+                            }
+                        }
+                    }
+                }
+                Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { emojiPicker.launch(arrayOf("image/gif", "image/png", "image/jpeg", "image/webp")) }) { Icon(Icons.Rounded.Add, null); Spacer(Modifier.width(5.dp)); Text(L("批量导入", "Import images")) }
+                    Spacer(Modifier.weight(1f))
+                    Text(L("GIF · PNG · JPG · WebP", "GIF · PNG · JPG · WebP"), color = TextPrimary.copy(alpha = .4f), fontSize = 10.sp)
+                }
             }
+        }
+        if (showNewEmojiCategory) AlertDialog(
+            onDismissRequest = { showNewEmojiCategory = false },
+            title = { Text(L("新建表情分类", "New emoji category")) },
+            text = { OutlinedTextField(value = newEmojiCategoryName, onValueChange = { newEmojiCategoryName = it.take(20) }, singleLine = true, placeholder = { Text(L("分类名称", "Category name")) }) },
+            confirmButton = { TextButton(onClick = {
+                if (repository.createEmojiCategory(newEmojiCategoryName)) {
+                    emojiCat = repository.state.value.emojiCategories.lastOrNull()?.id ?: "custom"
+                    newEmojiCategoryName = ""
+                    showNewEmojiCategory = false
+                    android.widget.Toast.makeText(context, L("分类已创建", "Category created"), android.widget.Toast.LENGTH_SHORT).show()
+                } else android.widget.Toast.makeText(context, L("分类名称不能为空或与现有分类重复", "Category name cannot be empty or duplicate"), android.widget.Toast.LENGTH_SHORT).show()
+            }) { Text(L("创建", "Create")) } },
+            dismissButton = { TextButton(onClick = { showNewEmojiCategory = false }) { Text(L("取消", "Cancel")) } },
+        )
+        if (showManageEmojiCategory) AlertDialog(
+            onDismissRequest = { showManageEmojiCategory = false },
+            title = { Text(L("管理表情分类", "Manage emoji category"), color = TextPrimary) },
+            text = { OutlinedTextField(value = manageEmojiCategoryName, onValueChange = { manageEmojiCategoryName = it.take(20) }, singleLine = true, placeholder = { Text(L("分类名称", "Category name")) }) },
+            confirmButton = { TextButton(onClick = {
+                if (repository.renameEmojiCategory(emojiCat, manageEmojiCategoryName)) {
+                    showManageEmojiCategory = false
+                    android.widget.Toast.makeText(context, L("分类已重命名", "Category renamed"), android.widget.Toast.LENGTH_SHORT).show()
+                } else android.widget.Toast.makeText(context, L("分类名称不能为空或与现有分类重复", "Category name cannot be empty or duplicate"), android.widget.Toast.LENGTH_SHORT).show()
+            }) { Text(L("保存", "Save"), color = AccentText) } },
+            dismissButton = {
+                Row {
+                    TextButton(onClick = {
+                        if (repository.deleteEmojiCategory(emojiCat)) {
+                            emojiCat = "custom"
+                            showManageEmojiCategory = false
+                            android.widget.Toast.makeText(context, L("分类已删除，其中的表情已移至自定义", "Category deleted; its emoji were moved to Custom"), android.widget.Toast.LENGTH_SHORT).show()
+                        } else android.widget.Toast.makeText(context, L("删除分类失败", "Failed to delete category"), android.widget.Toast.LENGTH_SHORT).show()
+                    }) { Icon(Icons.Rounded.Delete, null, tint = DangerRed); Spacer(Modifier.width(4.dp)); Text(L("删除", "Delete"), color = DangerRed) }
+                    TextButton(onClick = { showManageEmojiCategory = false }) { Text(L("取消", "Cancel"), color = TextPrimary) }
+                }
+            },
+        )
+        managedEmoji?.let { emoji ->
+            val destinations = state.emojiCategories.filter { it.id !in setOf("recent", "builtin") }
+            AlertDialog(
+                onDismissRequest = { managedEmoji = null; confirmEmojiDelete = false },
+                title = { Text(L("管理表情", "Manage emoji"), color = TextPrimary) },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        AsyncImage(
+                            model = java.io.File(context.filesDir, "emoji-library-v1/${emoji.fileName}"),
+                            imageLoader = animatedImageLoader,
+                            contentDescription = emoji.name,
+                            contentScale = ContentScale.Fit,
+                            modifier = Modifier.align(Alignment.CenterHorizontally).size(92.dp).clip(RoundedCornerShape(8.dp)).background(PanelHigh).padding(6.dp),
+                        )
+                        OutlinedTextField(
+                            value = managedEmojiName,
+                            onValueChange = { managedEmojiName = it.take(80) },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            label = { Text(L("名称", "Name")) },
+                            colors = fieldColors(),
+                        )
+                        Text(L("移动到", "Move to"), color = TextPrimary.copy(alpha = .62f), fontSize = 12.sp)
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            destinations.forEach { category ->
+                                val selected = managedEmojiCategory == category.id
+                                Box(
+                                    Modifier.clip(RoundedCornerShape(8.dp)).background(if (selected) GrassGreen else PanelHigh)
+                                        .clickable { managedEmojiCategory = category.id }
+                                        .padding(horizontal = 11.dp, vertical = 7.dp),
+                                ) { Text(category.name, color = if (selected) OnAccent else TextPrimary, fontSize = 12.sp, fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal) }
+                            }
+                        }
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        enabled = managedEmojiName.isNotBlank(),
+                        onClick = {
+                            if (repository.updateCustomEmoji(emoji.id, managedEmojiName, managedEmojiCategory)) {
+                                managedEmoji = null
+                                confirmEmojiDelete = false
+                                android.widget.Toast.makeText(context, L("表情信息已保存", "Emoji changes saved"), android.widget.Toast.LENGTH_SHORT).show()
+                            } else android.widget.Toast.makeText(context, L("保存失败，请检查名称和目标分类", "Save failed. Check the name and destination category"), android.widget.Toast.LENGTH_SHORT).show()
+                        },
+                    ) { Text(L("保存", "Save"), color = AccentText) }
+                },
+                dismissButton = {
+                    Row {
+                        TextButton(onClick = {
+                            if (!confirmEmojiDelete) confirmEmojiDelete = true
+                            else if (repository.deleteCustomEmoji(emoji.id)) {
+                                managedEmoji = null
+                                confirmEmojiDelete = false
+                                android.widget.Toast.makeText(context, L("表情已删除", "Emoji deleted"), android.widget.Toast.LENGTH_SHORT).show()
+                            } else android.widget.Toast.makeText(context, L("删除表情失败", "Failed to delete emoji"), android.widget.Toast.LENGTH_SHORT).show()
+                        }) {
+                            Icon(Icons.Rounded.Delete, null, tint = DangerRed, modifier = Modifier.size(17.dp))
+                            Spacer(Modifier.width(4.dp))
+                            Text(if (confirmEmojiDelete) L("确认删除", "Confirm delete") else L("删除", "Delete"), color = DangerRed)
+                        }
+                        TextButton(onClick = { managedEmoji = null; confirmEmojiDelete = false }) { Text(L("取消", "Cancel"), color = TextPrimary) }
+                    }
+                },
+            )
         }
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             Box(
-                Modifier.size(46.dp).clip(CircleShape).background(if (showEmoji) GrassGreen else PanelHigh).clickable { showEmoji = !showEmoji },
+                Modifier.size(46.dp).clip(CircleShape).background(if (showEmoji) GrassGreen else PanelHigh).clickable {
+                    chatFocusManager.clearFocus()
+                    keyboardController?.hide()
+                    showEmoji = !showEmoji
+                },
                 contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Rounded.EmojiEmotions, L("表情", "Emoji"), tint = TextPrimary) }
+            ) { Icon(Icons.Rounded.EmojiEmotions, L("表情", "Emoji"), tint = if (showEmoji) OnAccent else TextPrimary, modifier = Modifier.size(24.dp)) }
             Box(
-                Modifier.size(46.dp).clip(CircleShape).background(PanelHigh).clickable { imagePicker.launch("image/*") },
+                Modifier.size(46.dp).clip(CircleShape).background(PanelHigh).clickable { showEmoji = false; filePicker.launch(arrayOf("*/*")) },
                 contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Rounded.Photo, L("发送图片", "Send image"), tint = TextPrimary) }
-            OutlinedTextField(
-                value = input, onValueChange = { input = it }, modifier = Modifier.weight(1f),
-                placeholder = { Text(L("发送消息", "Send a message")) }, maxLines = 4, shape = RoundedCornerShape(14.dp), colors = fieldColors(),
-            )
+            ) { Icon(Icons.Rounded.AttachFile, L("发送文件", "Send file"), tint = TextPrimary, modifier = Modifier.size(24.dp)) }
+            Column(Modifier.weight(1f)) {
+                Box(Modifier.fillMaxWidth()) {
+                    OutlinedTextField(
+                        value = input, onValueChange = { input = it },
+                        modifier = Modifier.fillMaxWidth().focusRequester(voiceInputFocus).onFocusChanged { if (it.isFocused) showEmoji = false },
+                        placeholder = { Text(L("长按发送语音", "Hold to record voice"), color = TextPrimary.copy(alpha = 0.55f)) }, maxLines = 4, shape = RoundedCornerShape(14.dp), colors = fieldColors(),
+                    )
+                    // Keep the input and gesture surface at the same position
+                    // throughout the press; changing their slot/layout cancels it.
+                    Box(Modifier.matchParentSize()) {
+                        if (recordingVoice) Column(
+                            Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)).background(PanelHigh).padding(horizontal = 8.dp),
+                            verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally,
+                        ) {
+                            Text("${voiceSeconds}s", color = if (cancelVoice) DangerRed else GrassGreen, fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                            Text(if (cancelVoice) L("松开取消", "Release to cancel") else L("上滑取消", "Slide up to cancel"), color = TextPrimary, fontSize = 11.sp, maxLines = 1)
+                        }
+                    }
+                    if (input.text.isEmpty()) {
+                        // Consume the empty-field gesture before BasicTextField sees
+                        // it. A tap explicitly opens the IME; a hold records and
+                        // never opens Android's selection/context menu.
+                        Box(
+                            Modifier.matchParentSize().zIndex(2f).pointerInteropFilter { event ->
+                                when (event.actionMasked) {
+                                    android.view.MotionEvent.ACTION_DOWN -> {
+                                        voiceHoldJob?.cancel()
+                                        voiceDrag = event.rawY
+                                        voiceLongPressTriggered = false
+                                        voiceHoldJob = voiceGestureScope.launch {
+                                            kotlinx.coroutines.delay(android.view.ViewConfiguration.getLongPressTimeout().toLong())
+                                            voiceLongPressTriggered = true
+                                            if (!state.chatReady) {
+                                                android.widget.Toast.makeText(context, L("聊天连接尚未就绪，暂不能发送语音", "Chat is not connected. Voice messages are unavailable"), android.widget.Toast.LENGTH_LONG).show()
+                                            } else if (androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                                                microphonePermission.launch(android.Manifest.permission.RECORD_AUDIO)
+                                            } else runCatching {
+                                                releaseLobbyVoice = repository.suspendLobbyVoiceForRecording()
+                                                voiceRecorder.start()
+                                                cancelVoice = false
+                                                voiceSeconds = 0
+                                                recordingVoice = true
+                                            }.onFailure {
+                                                finishVoice(true)
+                                                android.widget.Toast.makeText(context, L("无法开始录音", "Cannot start recording"), android.widget.Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                        true
+                                    }
+                                    android.view.MotionEvent.ACTION_MOVE -> {
+                                        if (recordingVoice) cancelVoice = voiceDrag - event.rawY > cancelVoiceThresholdPx
+                                        true
+                                    }
+                                    android.view.MotionEvent.ACTION_UP -> {
+                                        voiceHoldJob?.cancel()
+                                        voiceHoldJob = null
+                                        if (recordingVoice) finishVoice(cancelVoice)
+                                        else if (!voiceLongPressTriggered) {
+                                            voiceInputFocus.requestFocus()
+                                            voiceGestureScope.launch {
+                                                // The text input session is installed after focus recomposes.
+                                                androidx.compose.runtime.withFrameNanos { }
+                                                if (!recordingVoice) keyboardController?.show()
+                                            }
+                                        }
+                                        voiceLongPressTriggered = false
+                                        true
+                                    }
+                                    android.view.MotionEvent.ACTION_CANCEL -> {
+                                        voiceHoldJob?.cancel()
+                                        voiceHoldJob = null
+                                        if (recordingVoice) finishVoice(true)
+                                        voiceLongPressTriggered = false
+                                        true
+                                    }
+                                    else -> true
+                                }
+                            },
+                        )
+                    }
+                }
+            }
             Box(
-                Modifier.size(46.dp).clip(CircleShape).background(if (input.text.isBlank()) PanelHigh else GrassGreen)
+                Modifier.size(46.dp).clip(CircleShape).background(if (input.text.isBlank()) PanelHigh else ChatSendFill)
                     .clickable(enabled = input.text.isNotBlank()) { doSend() },
                 contentAlignment = Alignment.Center,
-            ) { Icon(Icons.AutoMirrored.Rounded.Send, L("发送", "Send"), tint = if (input.text.isBlank()) TextPrimary.copy(alpha = 0.4f) else TextPrimary) }
+            ) { Icon(Icons.AutoMirrored.Rounded.Send, L("发送", "Send"), tint = if (input.text.isBlank()) TextPrimary.copy(alpha = 0.4f) else Color.White) }
         }
         Spacer(Modifier.height(6.dp))
+        }
     }
 }
 
 private fun buildMentionText(content: String, baseColor: Color): AnnotatedString = buildAnnotatedString {
-    val regex = Regex("@([^\\s@]{1,20})")
+    val urlRegex = Regex("https?://[^\\s]+", RegexOption.IGNORE_CASE)
+    val mentionRegex = Regex("@([^\\s@]{1,20})")
+    var last = 0
+    urlRegex.findAll(content).forEach { match ->
+        if (match.range.first > last) {
+            appendChatMentions(content.substring(last, match.range.first), baseColor, mentionRegex)
+        }
+        val raw = match.value
+        val trimmed = raw.trimEnd('。', '，', '、', '.', ',', '!', '?', '！', '？', ';', '；', ')', '）', ']', '】')
+        if (isSafeChatUrl(trimmed)) {
+            pushStringAnnotation("url", trimmed)
+            withStyle(SpanStyle(color = baseColor, fontWeight = FontWeight.SemiBold, textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline)) { append(trimmed) }
+            pop()
+            append(raw.substring(trimmed.length))
+        } else {
+            appendChatMentions(raw, baseColor, mentionRegex)
+        }
+        last = match.range.last + 1
+    }
+    if (last < content.length) appendChatMentions(content.substring(last), baseColor, mentionRegex)
+}
+
+private fun AnnotatedString.Builder.appendChatMentions(
+    content: String,
+    baseColor: Color,
+    regex: Regex,
+) {
     var last = 0
     regex.findAll(content).forEach { m ->
         if (m.range.first > last) withStyle(SpanStyle(color = baseColor)) { append(content.substring(last, m.range.first)) }
-        withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(m.value) }
+        withStyle(SpanStyle(color = baseColor, fontWeight = FontWeight.Bold)) { append(m.value) }
         last = m.range.last + 1
     }
     if (last < content.length) withStyle(SpanStyle(color = baseColor)) { append(content.substring(last)) }
 }
 
+@Composable
+private fun ChatMessageText(content: String, color: Color, modifier: Modifier = Modifier) {
+    val context = LocalContext.current
+    val annotated = remember(content, color) { buildMentionText(content, color) }
+    var layoutResult by remember { mutableStateOf<androidx.compose.ui.text.TextLayoutResult?>(null) }
+    Text(
+        annotated,
+        color = color,
+        fontSize = 15.sp,
+        onTextLayout = { layoutResult = it },
+        modifier = modifier.pointerInput(annotated) {
+            detectTapGestures { position ->
+                val offset = layoutResult?.getOffsetForPosition(position) ?: return@detectTapGestures
+                annotated.getStringAnnotations("url", offset, offset).firstOrNull()?.item?.let { url ->
+                    runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url))) }
+                        .onFailure { android.widget.Toast.makeText(context, L("没有可用的浏览器", "No browser is available"), android.widget.Toast.LENGTH_SHORT).show() }
+                }
+            }
+        },
+    )
+}
+
 private fun formatChatClock(timestamp: Long): String =
     if (timestamp > 0) java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(timestamp)) else "--:--"
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ProfileAvatar(
     name: String,
@@ -2709,6 +3441,7 @@ private fun ProfileAvatar(
     size: androidx.compose.ui.unit.Dp,
     editable: Boolean = false,
     speaking: Boolean = false,
+    onLongClick: (() -> Unit)? = null,
     onClick: () -> Unit = {},
 ) {
     val bitmap = remember(avatarData) {
@@ -2719,20 +3452,23 @@ private fun ProfileAvatar(
             }.getOrNull()
         }
     }
+    var showAvatar by remember(avatarData) { mutableStateOf(false) }
     Box(
         Modifier.size(size)
             .clip(CircleShape)
             .background(if (speaking) GrassGreen else PanelHigh)
             .then(if (speaking) Modifier.border(2.dp, GrassGreen, CircleShape) else Modifier)
-            .clickable(enabled = editable, onClick = onClick),
+            .combinedClickable(enabled = editable || bitmap != null || onLongClick != null, onLongClick = onLongClick,
+                onClick = { if (editable) onClick() else if (bitmap != null) showAvatar = true }),
         contentAlignment = Alignment.Center,
     ) {
         if (bitmap != null) {
-            Image(bitmap = bitmap.asImageBitmap(), contentDescription = L("头像", "Avatar"), contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+            Image(bitmap = bitmap.asImageBitmap(), contentDescription = L("$name 的头像", "$name's avatar"), contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
         } else {
             Text(name.trim().firstOrNull()?.uppercase() ?: "?", fontWeight = FontWeight.Bold, color = TextPrimary)
         }
     }
+    if (showAvatar && bitmap != null && !editable) FullscreenImageViewer(bitmap, L("$name 的头像", "$name's avatar"), { showAvatar = false })
 }
 
 /** 聊天消息首字符圆形头像（与玩家列表统一风格） */
@@ -2769,6 +3505,466 @@ private fun BubbleTail(mine: Boolean) {
     )
 }
 
+private fun humanFileSize(bytes: Long): String = when {
+    bytes < 1024 -> "$bytes B"
+    bytes < 1024 * 1024 -> String.format(java.util.Locale.US, "%.1f KB", bytes / 1024.0)
+    else -> String.format(java.util.Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0)
+}
+
+private fun mediaClock(milliseconds: Int): String {
+    val seconds = (milliseconds.coerceAtLeast(0) / 1000)
+    return "%d:%02d".format(seconds / 60, seconds % 60)
+}
+
+@Composable
+private fun LocalAudioFilePlayer(file: java.io.File, meta: ChatAttachmentMeta, mine: Boolean) {
+    val player = remember(file.absolutePath) {
+        val candidate = MediaPlayer()
+        runCatching { candidate.apply { setDataSource(file.absolutePath); prepare() } }
+            .onFailure {
+                runCatching { candidate.release() }
+                android.util.Log.w("MctierFilePreview", "Audio decoder rejected ${meta.name}: ${it.message}")
+            }.getOrNull()
+    }
+    var playing by remember { mutableStateOf(false) }
+    var position by remember { mutableIntStateOf(0) }
+    val duration = remember(player) { runCatching { player?.duration ?: 0 }.getOrDefault(0).coerceAtLeast(0) }
+    DisposableEffect(player) { onDispose { runCatching { player?.release() } } }
+    LaunchedEffect(playing) {
+        while (playing && player != null) { position = runCatching { player.currentPosition }.getOrDefault(position); kotlinx.coroutines.delay(100) }
+    }
+    Row(
+        Modifier.widthIn(max = 290.dp).clip(RoundedCornerShape(14.dp)).background(if (mine) GrassGreen else PanelHigh)
+            .padding(horizontal = 11.dp, vertical = 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(9.dp),
+    ) {
+        Box(Modifier.size(31.dp).clip(CircleShape).background(TextPrimary.copy(alpha = .14f)).clickable(enabled = player != null) {
+            runCatching {
+                if (player?.isPlaying == true) { player.pause(); playing = false } else { player?.start(); playing = player != null }
+            }.onFailure { playing = false }
+        }, contentAlignment = Alignment.Center) { Icon(if (player == null) Icons.Rounded.Close else if (playing) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, null, tint = if (mine) OnAccent else TextPrimary, modifier = Modifier.size(18.dp)) }
+        Column(Modifier.weight(1f)) {
+            Text(meta.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, fontSize = 13.sp, color = if (mine) OnAccent else TextPrimary)
+            Slider(value = position.toFloat(), onValueChange = { value -> position = value.toInt(); runCatching { player?.seekTo(position) } }, valueRange = 0f..duration.coerceAtLeast(1).toFloat(), enabled = player != null, modifier = Modifier.fillMaxWidth().height(22.dp), colors = SliderDefaults.colors(thumbColor = if (mine) OnAccent else GrassGreen, activeTrackColor = if (mine) OnAccent else GrassGreen, inactiveTrackColor = TextPrimary.copy(alpha = .2f)))
+            Text(if (player == null) L("无法解码此音频 · ${humanFileSize(meta.size)}", "Unsupported audio · ${humanFileSize(meta.size)}") else "${mediaClock(position)} / ${mediaClock(duration)} · ${humanFileSize(meta.size)}", fontSize = 10.sp, color = (if (mine) OnAccent else TextPrimary).copy(alpha = .68f))
+        }
+    }
+}
+
+private fun extractOfficeText(file: java.io.File, kind: String): List<String> {
+    require(file.length() <= ChatMaxAttachmentBytes.toLong())
+    val extension = file.extension.lowercase()
+    if (extension in setOf("doc", "xls", "ppt", "rtf")) return extractLegacyOfficeText(file, extension)
+    if (extension in setOf("csv", "tsv")) {
+        val delimiter = if (extension == "tsv") '\t' else ','
+        val rows = file.bufferedReader().useLines { lines -> lines.take(500).map { line ->
+            if (delimiter == '\t') line else parseCsvRow(line).take(50).joinToString("\t")
+        }.toList() }
+        return listOf("--- 1 ---\n${rows.joinToString("\n")}")
+    }
+    java.util.zip.ZipFile(file).use { zip ->
+        fun decode(value: String): String = value.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&apos;", "'").replace("&amp;", "&")
+        fun readEntry(name: String): String {
+            val entry = zip.getEntry(name) ?: return ""
+            require(entry.size in 0..8 * 1024 * 1024)
+            return zip.getInputStream(entry).bufferedReader().use { reader ->
+                val output = StringBuilder(minOf(entry.size.toInt(), 64 * 1024))
+                val buffer = CharArray(8192)
+                while (output.length <= 8 * 1024 * 1024) { val count = reader.read(buffer); if (count < 0) break; output.append(buffer, 0, count) }
+                require(output.length <= 8 * 1024 * 1024)
+                output.toString()
+            }
+        }
+        if (extension in setOf("odt", "ods", "odp")) {
+            val xml = readEntry("content.xml")
+            require(xml.isNotBlank())
+            return when (extension) {
+                "odt" -> Regex("<text:p(?:\\s[^>]*)?>(.*?)</text:p>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).findAll(xml).take(600)
+                    .map { decode(it.groupValues[1].replace(Regex("<[^>]+>"), "")) }.filter(String::isNotBlank).toList()
+                "odp" -> Regex("<draw:page(?:\\s[^>]*)?>(.*?)</draw:page>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).findAll(xml).take(200)
+                    .mapIndexed { index, page -> "--- ${index + 1} ---\n" + decode(page.groupValues[1].replace(Regex("<[^>]+>"), " ")).trim() }.toList()
+                else -> Regex("<table:table(?:\\s[^>]*)?>(.*?)</table:table>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).findAll(xml).take(50).mapIndexed { index, sheet ->
+                    val rows = Regex("<table:table-row(?:\\s[^>]*)?>(.*?)</table:table-row>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).findAll(sheet.groupValues[1]).take(500).map { row ->
+                        Regex("<table:table-cell(?:\\s[^>]*)?>(.*?)</table:table-cell>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).findAll(row.groupValues[1]).take(50).joinToString("\t") { cell -> decode(cell.groupValues[1].replace(Regex("<[^>]+>"), " ")).trim() }
+                    }.joinToString("\n")
+                    "--- ${index + 1} ---\n$rows"
+                }.toList()
+            }
+        }
+        val names = when (kind) {
+            "word" -> listOf("word/document.xml")
+            "slides" -> zip.entries().asSequence().map { it.name }.filter { it.matches(Regex("ppt/slides/slide\\d+\\.xml")) }.sortedWith(compareBy { Regex("\\d+").find(it)?.value?.toIntOrNull() ?: 0 }).take(200).toList()
+            "sheet" -> zip.entries().asSequence().map { it.name }.filter { it.matches(Regex("xl/worksheets/sheet\\d+\\.xml")) }.sortedWith(compareBy { Regex("\\d+").find(it)?.value?.toIntOrNull() ?: 0 }).take(50).toList()
+            else -> emptyList()
+        }
+        var expanded = 0L
+        val textTag = Regex("<(?:w:|a:)?t(?:\\s[^>]*)?>(.*?)</(?:w:|a:)?t>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL))
+        val shared = if (kind == "sheet") {
+            val sharedXml = readEntry("xl/sharedStrings.xml")
+            Regex("<si(?:\\s[^>]*)?>(.*?)</si>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).findAll(sharedXml)
+                .map { match -> decode(textTag.findAll(match.groupValues[1]).joinToString("") { it.groupValues[1] }) }.toList()
+        } else emptyList()
+        return names.mapIndexed { index, name ->
+            val entry = zip.getEntry(name) ?: return@mapIndexed ""
+            require(entry.size in 0..8 * 1024 * 1024)
+            expanded += entry.size
+            require(expanded <= 32 * 1024 * 1024)
+            val xml = readEntry(name)
+            when (kind) {
+                "word" -> Regex("<w:p(?:\\s[^>]*)?>(.*?)</w:p>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).findAll(xml)
+                    .map { paragraph -> decode(textTag.findAll(paragraph.groupValues[1]).joinToString("") { it.groupValues[1] }).trim() }.filter(String::isNotBlank).joinToString("\n")
+                "slides" -> "--- ${index + 1} ---\n" + textTag.findAll(xml).map { decode(it.groupValues[1]).trim() }.filter(String::isNotBlank).joinToString("\n")
+                "sheet" -> {
+                    val rows = Regex("<row(?:\\s[^>]*)?>(.*?)</row>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).findAll(xml).take(500).map { row ->
+                        Regex("<c(\\s[^>]*)?>(.*?)</c>", setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL)).findAll(row.groupValues[1]).take(50).map { cell ->
+                            val attributes = cell.groupValues[1]
+                            val body = cell.groupValues[2]
+                            val type = Regex("\\bt=\"([^\"]+)\"").find(attributes)?.groupValues?.get(1)
+                            val raw = Regex("<v>(.*?)</v>", RegexOption.DOT_MATCHES_ALL).find(body)?.groupValues?.get(1).orEmpty()
+                            when (type) {
+                                "s" -> shared.getOrNull(raw.toIntOrNull() ?: -1).orEmpty()
+                                "inlineStr" -> decode(textTag.findAll(body).joinToString("") { it.groupValues[1] })
+                                "b" -> if (raw == "1") "TRUE" else "FALSE"
+                                else -> decode(raw.ifBlank { Regex("<f>(.*?)</f>", RegexOption.DOT_MATCHES_ALL).find(body)?.groupValues?.get(1).orEmpty() })
+                            }
+                        }.joinToString("\t")
+                    }.joinToString("\n")
+                    "--- ${index + 1} ---\n$rows"
+                }
+                else -> ""
+            }
+        }.filter { it.isNotBlank() }
+    }
+}
+
+private fun parseCsvRow(line: String): List<String> {
+    val cells = mutableListOf<String>()
+    val current = StringBuilder()
+    var quoted = false
+    var index = 0
+    while (index < line.length) {
+        val character = line[index]
+        when {
+            character == '"' && quoted && line.getOrNull(index + 1) == '"' -> { current.append('"'); index += 1 }
+            character == '"' -> quoted = !quoted
+            character == ',' && !quoted -> { cells += current.toString(); current.clear() }
+            else -> current.append(character)
+        }
+        index += 1
+    }
+    cells += current.toString()
+    return cells
+}
+
+private fun extractLegacyOfficeText(file: java.io.File, extension: String): List<String> = when (extension) {
+    "xls" -> file.inputStream().use { input ->
+        org.apache.poi.hssf.usermodel.HSSFWorkbook(input).use { workbook ->
+            val formatter = org.apache.poi.ss.usermodel.DataFormatter()
+            (0 until workbook.numberOfSheets.coerceAtMost(50)).map { sheetIndex ->
+                val sheet = workbook.getSheetAt(sheetIndex)
+                val rows = sheet.rowIterator().asSequence().take(500).map { row ->
+                    val last = row.lastCellNum.toInt().coerceIn(0, 50)
+                    (0 until last).joinToString("\t") { column -> row.getCell(column)?.let(formatter::formatCellValue).orEmpty() }
+                }.joinToString("\n")
+                "--- ${sheetIndex + 1} ---\n$rows"
+            }
+        }
+    }
+    "doc" -> file.inputStream().use { input ->
+        org.apache.poi.hwpf.HWPFDocument(input).use { document ->
+            org.apache.poi.hwpf.extractor.WordExtractor(document).use { extractor -> extractor.paragraphText.map(String::trim).filter(String::isNotBlank) }
+        }
+    }
+    "ppt" -> file.inputStream().use { input ->
+        org.apache.poi.hslf.usermodel.HSLFSlideShow(input).use { presentation ->
+            presentation.slides.mapIndexed { index, slide ->
+                val text = slide.textParagraphs.flatten().joinToString("\n") { paragraph ->
+                    paragraph.textRuns.joinToString("") { run -> run.rawText }.trim()
+                }
+                "--- ${index + 1} ---\n$text"
+            }
+        }
+    }
+    "rtf" -> listOf(file.readText().replace(Regex("\\\\'[0-9a-fA-F]{2}"), "").replace(Regex("\\\\[a-zA-Z]+-?\\d* ?|[{}]"), " ").replace(Regex("\\s+"), " ").trim())
+    else -> emptyList()
+}
+
+@Composable
+private fun OfficeDocumentPreview(kind: String, sections: List<String>) {
+    when (kind) {
+        "word" -> Column(
+            Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(vertical = 8.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Column(
+                Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 28.dp, vertical = 38.dp),
+                verticalArrangement = Arrangement.spacedBy(11.dp),
+            ) {
+                sections.flatMap { it.lines() }.filter(String::isNotBlank).forEach { paragraph ->
+                    Text(paragraph, color = Color(0xFF202124), fontFamily = FontFamily.Serif, fontSize = 15.sp, lineHeight = 25.sp)
+                }
+            }
+        }
+        "slides" -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            sections.forEachIndexed { index, section ->
+                val lines = section.lines().filter { it.isNotBlank() && !it.trim().matches(Regex("--- \\d+ ---")) }
+                Box(Modifier.fillMaxWidth().aspectRatio(16f / 9f).clip(RoundedCornerShape(8.dp)).background(Color(0xFFF4F7FA)).border(1.dp, Color(0xFFD5DCE3), RoundedCornerShape(8.dp))) {
+                    Column(Modifier.fillMaxSize().padding(horizontal = 24.dp, vertical = 20.dp)) {
+                        lines.firstOrNull()?.let { Text(it, color = Color(0xFF17202B), fontSize = 20.sp, fontWeight = FontWeight.Bold, modifier = Modifier.fillMaxWidth().padding(bottom = 10.dp)) }
+                        Box(Modifier.fillMaxWidth().height(3.dp).background(GrassGreen))
+                        Spacer(Modifier.height(10.dp))
+                        lines.drop(1).forEach { Text(it, color = Color(0xFF34404D), fontSize = 13.sp, lineHeight = 19.sp, modifier = Modifier.padding(vertical = 2.dp)) }
+                    }
+                    Text("${index + 1}", color = Color(0xFF66717E), fontSize = 10.sp, modifier = Modifier.align(Alignment.BottomEnd).padding(9.dp))
+                }
+            }
+        }
+        "sheet" -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            nonEmptySheets(sections).forEachIndexed { index, section ->
+                val sheetNumber = Regex("^--- (\\d+) ---").find(section)?.groupValues?.get(1) ?: "${index + 1}"
+                Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).border(1.dp, TextPrimary.copy(alpha = .14f), RoundedCornerShape(8.dp))) {
+                    Text(L("工作表 $sheetNumber", "Sheet $sheetNumber"), Modifier.fillMaxWidth().background(GrassGreen.copy(alpha = .15f)).padding(10.dp), color = AccentText, fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                    Column(Modifier.horizontalScroll(rememberScrollState()).background(Color.White)) {
+                        section.lines().filter { it.isNotBlank() && !it.trim().matches(Regex("--- \\d+ ---")) }.take(500).forEachIndexed { rowIndex, row ->
+                            Row(Modifier.background(if (rowIndex == 0) Color(0xFFEDF5E9) else Color.White)) {
+                                row.split('\t').take(50).forEach { cell ->
+                                    Text(cell, Modifier.width(120.dp).heightIn(min = 34.dp).border(.5.dp, Color(0xFFD9DEE5)).padding(7.dp), color = Color(0xFF202124), maxLines = 3, overflow = TextOverflow.Ellipsis, fontSize = 11.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        else -> Text(sections.joinToString("\n"), Modifier.fillMaxSize().verticalScroll(rememberScrollState()).horizontalScroll(rememberScrollState()).clip(RoundedCornerShape(7.dp)).background(PanelHigh).padding(14.dp), color = TextPrimary, fontFamily = FontFamily.Monospace, fontSize = 12.sp, lineHeight = 18.sp)
+    }
+}
+
+@Composable
+private fun FilePreviewDialog(file: java.io.File, meta: ChatAttachmentMeta, onDownload: () -> Unit, onDismiss: () -> Unit) {
+    val kind = chatAttachmentKind(meta)
+    var videoView by remember { mutableStateOf<android.widget.VideoView?>(null) }
+    var videoPlaying by remember { mutableStateOf(false) }
+    var videoPosition by remember { mutableIntStateOf(0) }
+    var videoDuration by remember { mutableIntStateOf(0) }
+    val textSections by produceState<List<String>?>(initialValue = null, file.absolutePath, kind) {
+        value = withContext(Dispatchers.IO) { runCatching {
+            when (kind) {
+                "text" -> listOf(file.bufferedReader().use { it.readText().take(2 * 1024 * 1024) })
+                "word", "sheet" -> extractOfficeText(file, kind)
+                else -> emptyList()
+            }
+        }.getOrDefault(emptyList()) }
+    }
+    LaunchedEffect(videoPlaying, videoView) { while (videoPlaying) { videoPosition = videoView?.currentPosition ?: 0; videoDuration = videoView?.duration?.coerceAtLeast(0) ?: 0; kotlinx.coroutines.delay(100) } }
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(Modifier.fillMaxSize().background(PageBg).statusBarsPadding().navigationBarsPadding()) {
+            Row(Modifier.fillMaxWidth().height(58.dp).background(Panel).padding(horizontal = 14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) { Text(meta.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.Bold, color = TextPrimary); Text("${meta.mime} · ${humanFileSize(meta.size)}", fontSize = 10.sp, color = TextPrimary.copy(alpha = .55f)) }
+                CircleIconButton(Icons.Rounded.Download, L("下载文件", "Download file")) { onDownload() }
+                Spacer(Modifier.width(7.dp))
+                CircleIconButton(Icons.Rounded.Close, L("关闭", "Close")) { onDismiss() }
+            }
+            Box(Modifier.fillMaxSize().padding(12.dp), contentAlignment = Alignment.Center) {
+                when (kind) {
+                    "audio" -> LocalAudioFilePlayer(file, meta, false)
+                    "video" -> Column(Modifier.fillMaxSize()) {
+                        AndroidView(factory = { ctx -> android.widget.VideoView(ctx).also { view -> view.setVideoPath(file.absolutePath); view.setOnPreparedListener { videoDuration = it.duration }; videoView = view } }, modifier = Modifier.weight(1f).fillMaxWidth().background(Color.Black))
+                        Row(Modifier.fillMaxWidth().padding(top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                            CircleIconButton(if (videoPlaying) Icons.Rounded.Pause else Icons.Rounded.PlayArrow, L("播放/暂停", "Play/pause")) { videoView?.let { if (it.isPlaying) { it.pause(); videoPlaying = false } else { it.start(); videoPlaying = true } } }
+                            Slider(videoPosition.toFloat(), { videoPosition = it.toInt(); videoView?.seekTo(videoPosition) }, valueRange = 0f..videoDuration.coerceAtLeast(1).toFloat(), modifier = Modifier.weight(1f), colors = SliderDefaults.colors(thumbColor = GrassGreen, activeTrackColor = GrassGreen))
+                            Text("${mediaClock(videoPosition)} / ${mediaClock(videoDuration)}", color = TextPrimary.copy(alpha = .7f), fontSize = 11.sp)
+                        }
+                    }
+                    "image" -> AsyncImage(model = file, contentDescription = meta.name, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                    "pdf" -> PdfFileViewer(file)
+                    "archive" -> LocalFilePreview(file, kind)
+                    "slides" -> if (file.extension.equals("pptx", ignoreCase = true)) LocalFilePreview(file, kind)
+                        else Text(L("此旧版演示文稿需要先另存为 PPTX 或 PDF 才能显示实际页面", "Save this legacy presentation as PPTX or PDF to view its pages"), color = TextPrimary, textAlign = TextAlign.Center)
+                    "text", "word", "sheet" -> when {
+                        textSections == null -> CircularProgressIndicator(color = AccentText)
+                        textSections.isNullOrEmpty() -> Text(L("无法解析此文件的可预览内容", "No previewable content could be parsed from this file"), color = TextPrimary.copy(alpha = .68f), textAlign = TextAlign.Center)
+                        else -> OfficeDocumentPreview(kind, textSections.orEmpty())
+                    }
+                    else -> Text(L("此格式暂无内嵌内容视图。长按消息气泡可下载后用系统应用打开。", "No embedded viewer is available. Long-press the message to download and open it in a system app."), color = TextPrimary.copy(alpha = .68f), textAlign = TextAlign.Center)
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun ChatImageBubble(
+    model: Any,
+    description: String,
+    onLongClick: () -> Unit,
+    onDownload: (() -> Unit)? = null,
+    alpha: Float = 1f,
+) {
+    val imageLoader = rememberAnimatedImageLoader()
+    var showZoom by remember(model) { mutableStateOf(false) }
+    var imageAspect by remember(model) { mutableStateOf(1f) }
+    AsyncImage(
+        model = model,
+        imageLoader = imageLoader,
+        contentDescription = description,
+        contentScale = ContentScale.Fit,
+        onSuccess = { result ->
+            val image = result.result.image
+            if (image.width > 0 && image.height > 0) imageAspect = image.width.toFloat() / image.height
+        },
+        modifier = Modifier.width(minOf(180f, 180f * imageAspect).dp).aspectRatio(imageAspect).clip(RoundedCornerShape(8.dp))
+            .graphicsLayer { this.alpha = alpha }
+            .combinedClickable(onClick = { showZoom = true }, onLongClick = onLongClick),
+    )
+    if (showZoom) FullscreenImageViewer(model, description, { showZoom = false }, onDownload)
+}
+
+@Composable
+private fun FullscreenImageViewer(model: Any, description: String, onClose: () -> Unit, onDownload: (() -> Unit)? = null) {
+        Dialog(onDismissRequest = onClose, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            var scale by remember { mutableStateOf(1f) }
+            var offsetX by remember { mutableStateOf(0f) }
+            var offsetY by remember { mutableStateOf(0f) }
+            val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+                scale = (scale * zoomChange).coerceIn(1f, 5f)
+                offsetX += panChange.x
+                offsetY += panChange.y
+            }
+            Box(
+                Modifier.fillMaxSize().background(Color.Black.copy(alpha = .95f)).clickable(onClick = onClose),
+                contentAlignment = Alignment.Center,
+            ) {
+                AsyncImage(
+                    model = model,
+                    imageLoader = rememberAnimatedImageLoader(),
+                    contentDescription = description,
+                    contentScale = ContentScale.Fit,
+                    modifier = Modifier.fillMaxSize().graphicsLayer(
+                        scaleX = scale,
+                        scaleY = scale,
+                        translationX = offsetX,
+                        translationY = offsetY,
+                    ).transformable(transformState),
+                )
+                CircleIconButton(Icons.Rounded.Close, L("关闭", "Close"), Modifier.align(Alignment.TopEnd).padding(16.dp), onClick = onClose)
+                if (onDownload != null) CircleIconButton(Icons.Rounded.Download, L("下载", "Download"), Modifier.align(Alignment.TopStart).padding(16.dp)) { onDownload() }
+            }
+        }
+}
+
+@Composable
+private fun PdfFileViewer(file: java.io.File) {
+    var finished by remember(file.absolutePath) { mutableStateOf(false) }
+    val pages by produceState<List<android.graphics.Bitmap>>(initialValue = emptyList(), file.absolutePath) {
+        value = withContext(Dispatchers.IO) { runCatching {
+            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY).use { descriptor -> PdfRenderer(descriptor).use { renderer ->
+                (0 until renderer.pageCount.coerceAtMost(20)).map { index -> renderer.openPage(index).use { page ->
+                    val scale = minOf(1f, 1400f / page.width.coerceAtLeast(1), 2000f / page.height.coerceAtLeast(1))
+                    val width = (page.width * scale).toInt().coerceAtLeast(1)
+                    val height = (page.height * scale).toInt().coerceAtLeast(1)
+                    android.graphics.Bitmap.createBitmap(width, height, android.graphics.Bitmap.Config.ARGB_8888).also { bitmap ->
+                        val matrix = android.graphics.Matrix().apply { postScale(scale, scale) }
+                        page.render(bitmap, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    }
+                } }
+            } }
+        }.getOrDefault(emptyList()) }
+        finished = true
+    }
+    if (!finished) CircularProgressIndicator(color = AccentText)
+    else if (pages.isEmpty()) Text(L("无法解析此 PDF 文件", "Unable to parse this PDF"), color = TextPrimary.copy(alpha = .68f))
+    else LazyColumn(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(10.dp)) { items(pages) { bitmap -> Image(bitmap.asImageBitmap(), null, Modifier.fillMaxWidth().background(Color.White), contentScale = ContentScale.FillWidth) } }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun FileAttachmentBubble(message: ChatMessage, repository: MctierRepository, onLongClick: () -> Unit) {
+    val meta = message.attachment ?: return
+    val kind = chatAttachmentKind(meta)
+    var localFile by remember(message.id, message.attachmentPath) { mutableStateOf<java.io.File?>(message.attachmentPath?.let { java.io.File(it) }?.takeIf { it.isFile }) }
+    var loading by remember(message.id) { mutableStateOf(false) }
+    var showPreview by remember(message.id) { mutableStateOf(false) }
+    val context = LocalContext.current
+    LaunchedEffect(message.id, meta.id) {
+        if (kind in setOf("audio", "image", "video") && localFile == null) {
+            loading = true
+            repository.fetchChatAttachment(message) { file -> localFile = file; loading = false }
+        }
+    }
+    fun open() {
+        localFile?.let { showPreview = true; return }
+        loading = true
+        repository.fetchChatAttachment(message) { file ->
+            localFile = file
+            loading = false
+            showPreview = file != null
+            if (file == null) android.widget.Toast.makeText(context, L("文件预览加载失败，发送者可能已离线", "Failed to load preview; the sender may be offline"), android.widget.Toast.LENGTH_SHORT).show()
+        }
+    }
+    val videoThumbnail by produceState<android.graphics.Bitmap?>(initialValue = null, localFile?.absolutePath, kind) {
+        value = if (kind == "video" && localFile != null) withContext(Dispatchers.IO) {
+            runCatching {
+                android.media.MediaMetadataRetriever().let { retriever ->
+                    try { retriever.setDataSource(localFile!!.absolutePath); retriever.getFrameAtTime(0, android.media.MediaMetadataRetriever.OPTION_CLOSEST_SYNC) }
+                    finally { retriever.release() }
+                }
+            }.getOrNull()
+        } else null
+    }
+    if (kind == "audio" && localFile != null) {
+        Box(Modifier.combinedClickable(onClick = ::open, onLongClick = onLongClick)) { LocalAudioFilePlayer(localFile!!, meta, message.mine) }
+    } else if (kind == "image" && localFile != null) {
+        ChatImageBubble(
+            model = localFile!!,
+            description = meta.name,
+            onLongClick = onLongClick,
+            onDownload = { repository.saveChatAttachment(message) { ok -> android.widget.Toast.makeText(context, if (ok) L("已下载到 Download/MCTier", "Downloaded to Download/MCTier") else L("下载文件失败", "File download failed"), android.widget.Toast.LENGTH_SHORT).show() } },
+        )
+    } else if (kind in setOf("image", "video")) {
+        Box(
+            Modifier.widthIn(min = 220.dp, max = 280.dp).height(190.dp).clip(RoundedCornerShape(14.dp)).background(Color.Black)
+                .combinedClickable(onClick = ::open, onLongClick = onLongClick),
+            contentAlignment = Alignment.Center,
+        ) {
+            when {
+                kind == "image" && localFile != null -> AsyncImage(model = localFile, contentDescription = meta.name, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                kind == "video" && videoThumbnail != null -> Image(videoThumbnail!!.asImageBitmap(), meta.name, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                else -> Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    if (loading) CircularProgressIndicator(Modifier.size(23.dp), strokeWidth = 2.dp, color = AccentText)
+                    else Icon(if (kind == "video") Icons.Rounded.PlayArrow else Icons.Rounded.Description, null, tint = Color.White.copy(alpha = .72f))
+                    Text(if (loading) L("正在加载预览", "Loading preview") else meta.name, maxLines = 1, overflow = TextOverflow.Ellipsis, color = Color.White.copy(alpha = .72f), fontSize = 11.sp)
+                }
+            }
+            if (kind == "video" && localFile != null) {
+                Box(Modifier.size(46.dp).clip(CircleShape).background(Color.Black.copy(alpha = .66f)).border(1.dp, Color.White.copy(alpha = .28f), CircleShape), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.PlayArrow, L("播放视频", "Play video"), tint = Color.White, modifier = Modifier.size(26.dp))
+                }
+                Row(Modifier.align(Alignment.BottomCenter).fillMaxWidth().background(Color.Black.copy(alpha = .62f)).padding(horizontal = 10.dp, vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(meta.name, Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis, color = Color.White, fontSize = 11.sp)
+                    Text(humanFileSize(meta.size), color = Color.White.copy(alpha = .7f), fontSize = 10.sp)
+                }
+            }
+        }
+    } else Row(
+        Modifier.widthIn(max = 290.dp).clip(RoundedCornerShape(14.dp)).background(if (message.mine) GrassGreen else PanelHigh)
+            .combinedClickable(onClick = ::open, onLongClick = onLongClick).padding(10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(Modifier.size(36.dp).clip(RoundedCornerShape(8.dp)).background(TextPrimary.copy(alpha = .12f)), contentAlignment = Alignment.Center) { if (loading) CircularProgressIndicator(Modifier.size(19.dp), strokeWidth = 2.dp, color = TextPrimary) else Icon(Icons.Rounded.Description, null, tint = if (message.mine) OnAccent else GrassGreen) }
+        Column(Modifier.weight(1f)) { Text(meta.name, maxLines = 1, overflow = TextOverflow.Ellipsis, fontWeight = FontWeight.SemiBold, color = if (message.mine) OnAccent else TextPrimary, fontSize = 13.sp); Text("${meta.mime} · ${humanFileSize(meta.size)}", maxLines = 1, overflow = TextOverflow.Ellipsis, color = (if (message.mine) OnAccent else TextPrimary).copy(alpha = .65f), fontSize = 10.sp) }
+    }
+    if (showPreview && localFile != null) FilePreviewDialog(
+        localFile!!,
+        meta,
+        onDownload = { repository.saveChatAttachment(message) { ok -> android.widget.Toast.makeText(context, if (ok) L("已下载到 Download/MCTier", "Downloaded to Download/MCTier") else L("下载文件失败", "File download failed"), android.widget.Toast.LENGTH_SHORT).show() } },
+        onDismiss = { showPreview = false },
+    )
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChatBubble(
@@ -2780,21 +3976,27 @@ private fun ChatBubble(
     highlighted: Boolean = false,
     onQuote: (ChatMessage) -> Unit = {},
     onJumpToQuote: (ChatMessage) -> Unit = {},
+    privatePeerId: String? = null,
 ) {
+    val builtinId = if (message.type == "text" && !message.recalled) BuiltinEmojiMessage.decode(message.content) else null
     // 名字与时间戳与气泡左/右边缘对齐：需避开头像占用的宽度（头像 34dp + 间距 8dp = 42dp，再留 4dp 视觉内缩）
     val labelStart = if (message.mine) 4.dp else 46.dp
     val labelEnd = if (message.mine) 46.dp else 4.dp
     val clipboard = LocalClipboardManager.current
     val context = LocalContext.current
     var showActions by remember(message.id) { mutableStateOf(false) }
+    var transcribingVoice by remember(message.id) { mutableStateOf(false) }
+    var transcriptionStatus by remember(message.id) { mutableStateOf("") }
+    var voiceTranscript by remember(message.id) { mutableStateOf<String?>(null) }
+    var voiceTranscriptError by remember(message.id) { mutableStateOf<String?>(null) }
     var recallClock by remember(message.id) { mutableStateOf(System.currentTimeMillis()) }
-    val canRecall = message.mine && !message.recalled && recallClock - message.timestamp <= ChatRecallWindowMs
+    val canRecall = message.mine && message.delivery == null && !message.recalled && recallClock - message.timestamp <= ChatRecallWindowMs
     fun openActions() {
         recallClock = System.currentTimeMillis()
         showActions = true
     }
     fun recallMessage() {
-        when (repository.recallChat(message.id)) {
+        when (repository.recallChat(message.id, privatePeerId)) {
             RecallChatResult.Success -> Unit
             RecallChatResult.Expired -> android.widget.Toast.makeText(context, L("撤回时间已超过，无法撤回", "The recall window has expired"), android.widget.Toast.LENGTH_SHORT).show()
             RecallChatResult.Unavailable -> android.widget.Toast.makeText(context, L("消息无法撤回", "The message cannot be recalled"), android.widget.Toast.LENGTH_SHORT).show()
@@ -2837,7 +4039,8 @@ private fun ChatBubble(
             horizontalArrangement = if (message.mine) Arrangement.End else Arrangement.Start,
             modifier = Modifier.fillMaxWidth(),
         ) {
-            if (!message.mine) { ChatAvatar(message, avatarData); Spacer(Modifier.width(6.dp)); BubbleTail(mine = false) }
+            val visualMessage = !message.recalled && (builtinId != null || message.type == "image" || (message.type == "file" && message.attachment?.let { chatAttachmentKind(it) in setOf("image", "video") } == true))
+            if (!message.mine) { ChatAvatar(message, avatarData); Spacer(Modifier.width(6.dp)); if (!visualMessage) BubbleTail(mine = false) }
             Box(
                 modifier = Modifier
                     .weight(1f, fill = false),
@@ -2856,67 +4059,74 @@ private fun ChatBubble(
                             modifier = Modifier.graphicsLayer { alpha = highlightAlpha.value },
                         )
                     }
-                } else if (message.type == "image" && message.imageBase64 != null) {
-                    val bitmap = remember(message.id) {
-                        runCatching {
-                            val raw = message.imageBase64.substringAfter("base64,", message.imageBase64)
-                            val bytes = android.util.Base64.decode(raw, android.util.Base64.DEFAULT)
-                            android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                        }.getOrNull()
-                    }
-                    if (bitmap != null) {
-                        var showZoom by remember(message.id) { mutableStateOf(false) }
-                        Image(
-                            bitmap = bitmap.asImageBitmap(),
-                            contentDescription = L("图片", "Image"),
-                            modifier = Modifier.clip(shape).heightIn(max = 240.dp)
-                                .graphicsLayer { alpha = highlightAlpha.value }
-                                .combinedClickable(onClick = { showZoom = true }, onLongClick = { openActions() }),
+                } else if (builtinId != null) {
+                    val emojiState by repository.state.collectAsStateWithLifecycle()
+                    val emojiFile = repository.builtinEmojiFile(builtinId)
+                    if (emojiFile != null) {
+                        ChatImageBubble(
+                            model = emojiFile, description = L("内置表情", "Built-in emoji"), onLongClick = ::openActions, alpha = highlightAlpha.value,
+                            onDownload = { repository.saveBuiltinEmojiToGallery(builtinId) { ok -> android.widget.Toast.makeText(context, if (ok) L("已保存到相册 Pictures/MCTier", "Saved to Pictures/MCTier") else L("保存失败", "Save failed"), android.widget.Toast.LENGTH_SHORT).show() } },
                         )
-                        if (showZoom) {
-                            Dialog(
-                                onDismissRequest = { showZoom = false },
-                                properties = DialogProperties(usePlatformDefaultWidth = false),
+                    } else {
+                        TextButton(onClick = { repository.retryBuiltinEmojiSync() }, enabled = emojiState.emojiBuiltinError != null) {
+                            Text(when {
+                                emojiState.emojiBuiltinSyncing -> L("正在准备内置表情…", "Preparing built-in emoji…")
+                                emojiState.emojiBuiltinError != null -> L("表情准备失败，点击重试", "Emoji preparation failed. Tap to retry")
+                                else -> L("此内置表情不可用，请更新应用", "This emoji is unavailable. Please update the app")
+                            }, color = TextPrimary)
+                        }
+                    }
+                } else if (message.type == "voice" && message.imageBase64 != null) {
+                    Column(
+                        horizontalAlignment = if (message.mine) Alignment.End else Alignment.Start,
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        val voiceDuration = remember(message.id) { runCatching { org.json.JSONObject(message.content).optDouble("duration", 0.0).toFloat() }.getOrDefault(0f) }
+                        VoiceMessagePlayer(message.imageBase64, message.mine, voiceDuration, ::openActions)
+                        when {
+                            transcribingVoice -> Row(
+                                Modifier.clip(RoundedCornerShape(10.dp)).background(PanelHigh).padding(horizontal = 11.dp, vertical = 9.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
                             ) {
-                                var scale by remember { mutableStateOf(1f) }
-                                var offsetX by remember { mutableStateOf(0f) }
-                                var offsetY by remember { mutableStateOf(0f) }
-                                val tState = rememberTransformableState { zoomChange, panChange, _ ->
-                                    scale = (scale * zoomChange).coerceIn(1f, 5f)
-                                    offsetX += panChange.x
-                                    offsetY += panChange.y
-                                }
-                                Box(
-                                    Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.95f))
-                                        .clickable { showZoom = false },
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Image(
-                                        bitmap = bitmap.asImageBitmap(),
-                                        contentDescription = L("图片放大", "Zoom image"),
-                                        modifier = Modifier.fillMaxSize()
-                                            .graphicsLayer(
-                                                scaleX = scale, scaleY = scale,
-                                                translationX = offsetX, translationY = offsetY,
-                                            )
-                                            .transformable(tState),
-                                    )
-                                    CircleIconButton(
-                                        Icons.Rounded.Close, L("关闭", "Close"),
-                                        modifier = Modifier.align(Alignment.TopEnd).padding(16.dp),
-                                    ) { showZoom = false }
-                                    val dlCtx = LocalContext.current
-                                    CircleIconButton(
-                                        Icons.Rounded.Download, L("保存到相册", "Save to gallery"),
-                                        modifier = Modifier.align(Alignment.TopStart).padding(16.dp),
-                                    ) {
-                                        repository.saveChatImageToGallery(message.imageBase64) { ok ->
-                                            android.widget.Toast.makeText(dlCtx, if (ok) L("已保存到相册 Pictures/MCTier", "Saved to Pictures/MCTier") else L("保存失败", "Save failed"), android.widget.Toast.LENGTH_SHORT).show()
-                                        }
-                                    }
-                                }
+                                CircularProgressIndicator(Modifier.size(15.dp), strokeWidth = 2.dp, color = AccentText)
+                                Text(transcriptionStatus.ifBlank { L("正在识别语音…", "Transcribing voice…") }, color = TextPrimary.copy(alpha = .72f), fontSize = 12.sp)
+                            }
+                            voiceTranscriptError != null -> Text(
+                                voiceTranscriptError.orEmpty(),
+                                Modifier.widthIn(max = 300.dp).clip(RoundedCornerShape(10.dp)).background(PanelHigh).border(1.dp, DangerRed.copy(alpha = .28f), RoundedCornerShape(10.dp)).padding(horizontal = 11.dp, vertical = 9.dp),
+                                color = DangerRed,
+                                fontSize = 12.sp,
+                                lineHeight = 18.sp,
+                            )
+                            voiceTranscript != null -> SelectionContainer {
+                                Text(
+                                    voiceTranscript.orEmpty().ifBlank { L("未识别到清晰的语音内容", "No clear speech was recognized") },
+                                    Modifier.widthIn(max = 300.dp).clip(RoundedCornerShape(10.dp)).background(PanelHigh).padding(horizontal = 11.dp, vertical = 9.dp),
+                                    color = TextPrimary,
+                                    fontSize = 13.sp,
+                                    lineHeight = 20.sp,
+                                )
                             }
                         }
+                    }
+                } else if (message.type == "file" && message.attachment != null) {
+                    FileAttachmentBubble(message, repository, ::openActions)
+                } else if (message.type == "image" && message.imageBase64 != null) {
+                    val imageBytes = remember(message.id) {
+                        runCatching {
+                            val raw = message.imageBase64.substringAfter("base64,", message.imageBase64)
+                            android.util.Base64.decode(raw, android.util.Base64.DEFAULT)
+                        }.getOrNull()
+                    }
+                    if (imageBytes != null) {
+                        ChatImageBubble(
+                            model = imageBytes,
+                            description = L("图片", "Image"),
+                            onLongClick = ::openActions,
+                            onDownload = { repository.saveChatImageToGallery(message.imageBase64) { ok -> android.widget.Toast.makeText(context, if (ok) L("已保存到相册 Pictures/MCTier", "Saved to Pictures/MCTier") else L("保存失败", "Save failed"), android.widget.Toast.LENGTH_SHORT).show() } },
+                            alpha = highlightAlpha.value,
+                        )
                     } else {
                         Box(Modifier.clip(shape).background(PanelHigh).padding(14.dp)) { Text(L("[图片加载失败]", "[Image failed]"), color = TextPrimary.copy(alpha = 0.7f)) }
                     }
@@ -2935,22 +4145,22 @@ private fun ChatBubble(
                                     verticalAlignment = Alignment.CenterVertically,
                                     modifier = Modifier.clip(RoundedCornerShape(6.dp)).clickable { onJumpToQuote(message) }.padding(bottom = 6.dp),
                                 ) {
-                                    Box(Modifier.width(3.dp).height(16.dp).clip(RoundedCornerShape(2.dp)).background(if (message.mine) Color(0xFF06210A) else GrassGreen))
+                                    Box(Modifier.width(3.dp).height(16.dp).clip(RoundedCornerShape(2.dp)).background(if (message.mine) OnAccent else GrassGreen))
                                     Spacer(Modifier.width(6.dp))
                                     Text(parsedReply.quoteLine, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis,
-                                        color = if (message.mine) Color(0xFF06210A).copy(alpha = 0.7f) else TextPrimary.copy(alpha = 0.6f))
+                                        color = if (message.mine) OnAccent.copy(alpha = 0.7f) else TextPrimary.copy(alpha = 0.6f))
                                 }
                             }
-                            Text(
-                                buildMentionText(bodyText, if (message.mine) Color(0xFF06210A) else TextPrimary.copy(alpha = 0.92f)),
-                                fontSize = 15.sp,
-                                modifier = Modifier.graphicsLayer { alpha = highlightAlpha.value },
+                            ChatMessageText(
+                                bodyText,
+                                if (message.mine) OnAccent else TextPrimary.copy(alpha = 0.92f),
+                                Modifier.graphicsLayer { alpha = highlightAlpha.value },
                             )
                         }
                     }
                 }
             }
-            if (message.mine) { BubbleTail(mine = true); Spacer(Modifier.width(6.dp)); ChatAvatar(message, avatarData, editable = true, onClick = onAvatarClick) }
+            if (message.mine) { if (!visualMessage) BubbleTail(mine = true); Spacer(Modifier.width(6.dp)); ChatAvatar(message, avatarData, editable = true, onClick = onAvatarClick) }
         }
         // 发送时间（气泡底部）
         Row(
@@ -2958,7 +4168,7 @@ private fun ChatBubble(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Text(formatChatClock(message.timestamp), fontSize = 10.sp, color = TextPrimary.copy(alpha = 0.32f))
+            Text(formatChatClock(message.timestamp) + when (message.delivery) { "sending" -> L(" · 发送中…", " · Sending…"); "failed" -> L(" · 发送失败", " · Send failed"); else -> "" }, fontSize = 10.sp, color = TextPrimary.copy(alpha = 0.32f))
         }
         DropdownMenu(expanded = showActions, onDismissRequest = { showActions = false }) {
             if (!message.recalled) {
@@ -2969,11 +4179,61 @@ private fun ChatBubble(
                 DropdownMenuItem(
                     text = { Text(L("复制消息", "Copy message")) },
                     onClick = {
-                        clipboard.setText(AnnotatedString(if (message.type == "image") L("[图片]", "[Image]") else visibleChatContent(message.content)))
+                        clipboard.setText(AnnotatedString(if (message.type == "image") L("[图片]", "[Image]") else if (message.type == "file") message.attachment?.name ?: L("[文件]", "[File]") else visibleChatContent(message.content)))
                         android.widget.Toast.makeText(context, L("消息已复制", "Message copied"), android.widget.Toast.LENGTH_SHORT).show()
                         showActions = false
                     },
                 )
+                if (message.type == "voice" && message.imageBase64 != null) {
+                    DropdownMenuItem(
+                        text = { Text(L("语音转文字", "Transcribe voice")) },
+                        onClick = {
+                            showActions = false
+                            transcribingVoice = true
+                            voiceTranscript = null
+                            voiceTranscriptError = null
+                            transcriptionStatus = ""
+                            VoiceMessageTranscriber.transcribe(context, message.imageBase64, onProgress = { transcriptionStatus = it }) { result ->
+                                transcribingVoice = false
+                                result.onSuccess { voiceTranscript = it }.onFailure {
+                                    voiceTranscriptError = it.message ?: L("离线语音识别失败，请重试", "Offline transcription failed. Please try again.")
+                                }
+                            }
+                        },
+                    )
+                }
+                if (message.type == "file" && message.attachment != null) {
+                    if (chatAttachmentKind(message.attachment) == "image") {
+                        DropdownMenuItem(
+                            text = { Text(L("添加到表情库", "Add to Emoji Library")) },
+                            onClick = {
+                                repository.addChatAttachmentAsEmoji(message, "custom") { ok ->
+                                    android.widget.Toast.makeText(context, if (ok) L("已添加到表情库", "Added to Emoji Library") else L("添加表情失败，请检查格式、大小或表情库容量", "Failed to add emoji. Check its format, size, or library capacity"), android.widget.Toast.LENGTH_SHORT).show()
+                                }
+                                showActions = false
+                            },
+                        )
+                    }
+                    DropdownMenuItem(
+                        leadingIcon = { Icon(Icons.Rounded.Download, null, tint = AccentText) },
+                        text = { Text(L("下载文件", "Download file")) },
+                        onClick = {
+                            showActions = false
+                            repository.saveChatAttachment(message) { ok -> android.widget.Toast.makeText(context, if (ok) L("已下载到 Download/MCTier", "Downloaded to Download/MCTier") else L("下载文件失败", "File download failed"), android.widget.Toast.LENGTH_SHORT).show() }
+                        },
+                    )
+                }
+                if (message.type == "image" && message.imageBase64 != null) {
+                    DropdownMenuItem(
+                        text = { Text(L("添加到表情库", "Add to Emoji Library")) },
+                        onClick = {
+                            repository.addChatImageAsEmoji(message.imageBase64, "custom") { ok ->
+                                android.widget.Toast.makeText(context, if (ok) L("已添加到表情库", "Added to Emoji Library") else L("添加表情失败，请检查格式、大小或表情库容量", "Failed to add emoji. Check its format, size, or library capacity"), android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                            showActions = false
+                        },
+                    )
+                }
             }
             if (canRecall) {
                 DropdownMenuItem(
@@ -3237,10 +4497,30 @@ private fun formatSize(size: Long): String = when {
 
 // ============================ 屏幕共享 ============================
 @Composable
+private fun ScreenQualityChoice(label: String, selected: Int, options: List<Int>, optionLabel: (Int) -> String, onSelect: (Int) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Text(label, color = TextPrimary, modifier = Modifier.weight(1f))
+        Box {
+            TextButton(onClick = { expanded = true }) {
+                Text(optionLabel(selected), color = GrassGreen)
+                Icon(Icons.Rounded.ArrowDropDown, null, tint = GrassGreen)
+            }
+            DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }, containerColor = PanelHigh) {
+                options.forEach { option ->
+                    DropdownMenuItem(text = { Text(optionLabel(option), color = TextPrimary) }, onClick = { onSelect(option); expanded = false })
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun ScreenTab(state: MctierUiState, repository: MctierRepository) {
     val context = LocalContext.current
     var requirePassword by remember { mutableStateOf(false) }
     var password by remember { mutableStateOf("") }
+    var quality by remember { mutableStateOf(repository.screenShareQuality()) }
     val viewingId = state.viewingShareId
     if (viewingId != null) {
         ScreenViewer(state, repository, viewingId)
@@ -3249,7 +4529,7 @@ private fun ScreenTab(state: MctierUiState, repository: MctierRepository) {
     val iAmSharing = state.screenShares.any { it.playerId == state.playerId }
     val mpLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == android.app.Activity.RESULT_OK && result.data != null) {
-            repository.startScreenCapture(result.data!!, requirePassword, password)
+            repository.startScreenCapture(result.data!!, requirePassword, password, quality)
         }
     }
     LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -3271,6 +4551,17 @@ private fun ScreenTab(state: MctierUiState, repository: MctierRepository) {
                         colors = ButtonDefaults.buttonColors(containerColor = DangerRed),
                     ) { Text(L("停止共享", "Stop Sharing")) }
                 } else {
+                    Text(L("共享画质", "Share quality"), fontWeight = FontWeight.SemiBold, color = TextPrimary)
+                    Spacer(Modifier.height(6.dp))
+                    ScreenQualityChoice(L("分辨率上限", "Resolution limit"), quality.resolution, ScreenShareQuality.resolutions,
+                        { if (it == 1440) "2K (1440p)" else if (it == 2160) "4K (2160p)" else "${it}p" }) { quality = quality.copy(resolution = it) }
+                    ScreenQualityChoice(L("帧率上限", "Frame rate limit"), quality.frameRate, ScreenShareQuality.frameRates,
+                        { "$it FPS" }) { quality = quality.copy(frameRate = it) }
+                    ScreenQualityChoice(L("码率上限", "Bitrate limit"), quality.bitrateMbps, ScreenShareQuality.bitrates,
+                        { if (it == 0) L("自动推荐", "Recommended") else "$it Mbps" }) { quality = quality.copy(bitrateMbps = it) }
+                    Text(L("当前码率上限 ${quality.maxBitrate() / 1_000_000} Mbps。低配或低带宽建议 720p/30 FPS。实际画质和帧率受屏幕、编码器与网络限制，不会放大原画面。", "Bitrate limit: ${quality.maxBitrate() / 1_000_000} Mbps. Use 720p/30 FPS on slower devices or networks. Actual quality depends on the display, encoder and network; the source is never upscaled."),
+                        fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.65f))
+                    Spacer(Modifier.height(10.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text(L("需要观看密码", "Viewing password required"), color = TextPrimary.copy(alpha = 0.85f), modifier = Modifier.weight(1f))
                         Switch(requirePassword, { requirePassword = it }, colors = switchColors())
@@ -3281,9 +4572,12 @@ private fun ScreenTab(state: MctierUiState, repository: MctierRepository) {
                     }
                     Spacer(Modifier.height(14.dp))
                     PrimaryButton(L("共享我的屏幕", "Share my screen")) {
+                        if (top.pmh13.mctier.service.ScreenRecordingService.state.value.phase != "idle") {
+                            android.widget.Toast.makeText(context, L("请先停止屏幕录制，再共享屏幕", "Stop recording before sharing your screen"), android.widget.Toast.LENGTH_LONG).show()
+                            return@PrimaryButton
+                        }
                         FeatureGate.run(context, "screen", L("屏幕共享须知", "Screen Sharing Notice")) {
-                            val mpm = context.getSystemService(android.content.Context.MEDIA_PROJECTION_SERVICE) as android.media.projection.MediaProjectionManager
-                            mpLauncher.launch(mpm.createScreenCaptureIntent())
+                            mpLauncher.launch(top.pmh13.mctier.network.screenCaptureIntent(context))
                         }
                     }
                     Spacer(Modifier.height(6.dp))
@@ -3410,7 +4704,7 @@ private fun ScreenViewer(state: MctierUiState, repository: MctierRepository, sha
                 onClick = { repository.stopViewingScreen() },
                 modifier = Modifier.fillMaxWidth().height(48.dp),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = DangerRed),
+                colors = ButtonDefaults.buttonColors(containerColor = DangerRed, contentColor = Color.White),
             ) { Text(L("停止观看", "Stop watching")) }
         }
     }
@@ -3496,6 +4790,18 @@ private fun ScreenRenderSurface(
     DisposableEffect(track) {
         onDispose {
             rendererRef[0]?.let { r -> track?.let { runCatching { it.removeSink(r) } } }
+        }
+    }
+    // SurfaceViewRenderer owns an EGL/GL thread. Removing the video sink is
+    // not enough when the dialog/page leaves composition; release the renderer
+    // itself so its periodic EglRenderer stats loop cannot outlive the view.
+    DisposableEffect(Unit) {
+        onDispose {
+            rendererRef[0]?.let { renderer ->
+                track?.let { videoTrack -> runCatching { videoTrack.removeSink(renderer) } }
+                runCatching { renderer.release() }
+                rendererRef[0] = null
+            }
         }
     }
 }
@@ -3703,7 +5009,7 @@ private fun SettingsPanel(state: MctierUiState, repository: MctierRepository) {
                 onClick = { downloadFolderLauncher.launch(null) },
                 modifier = Modifier.weight(1f).height(44.dp),
                 shape = RoundedCornerShape(12.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = GrassGreen, contentColor = TextPrimary),
+                colors = ButtonDefaults.buttonColors(containerColor = GrassGreen, contentColor = Color.White),
             ) {
                 Icon(Icons.Rounded.Folder, null, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(6.dp))
@@ -3771,11 +5077,7 @@ private fun SettingsPanel(state: MctierUiState, repository: MctierRepository) {
         Spacer(Modifier.height(10.dp))
         SponsorAdCard()
         Spacer(Modifier.height(12.dp))
-        SwitchRow(L("使用虚拟域名", "Use virtual domain"), settings.useDomain) { onChange(settings.copy(useDomain = it)) }
-        if (settings.useDomain) {
-            Spacer(Modifier.height(8.dp))
-            MctierField(settings.virtualDomain, { onChange(settings.copy(virtualDomain = it)) }, L("虚拟域名", "Virtual domain"))
-        }
+        // Android deliberately has no virtual-domain mode; always use the VPN IP.
         Spacer(Modifier.height(4.dp))
         SwitchRow(L("使用出口节点", "Use exit node"), settings.enableExitNode) { onChange(settings.copy(enableExitNode = it)) }
         SwitchRow(L("作为出口节点", "As exit node"), settings.enableAsExitNode) { onChange(settings.copy(enableAsExitNode = it)) }
@@ -3790,6 +5092,12 @@ private fun SettingsPanel(state: MctierUiState, repository: MctierRepository) {
         }
         if (advancedOpen) {
             MctierField(settings.mtu.toString(), { v -> onChange(settings.copy(mtu = v.filter { it.isDigit() }.toIntOrNull() ?: settings.mtu)) }, L("MTU（默认 1420）", "MTU (default 1420)"))
+            Spacer(Modifier.height(8.dp))
+            MctierField(settings.preferredVirtualIpHost?.toString().orEmpty(), { value ->
+                val host = value.filter { it.isDigit() }.toIntOrNull()?.takeIf { it in 1..254 }
+                onChange(settings.copy(preferredVirtualIpHost = host))
+            }, L("首选虚拟 IP 主机位（10.126.126.）", "Preferred virtual IP host (10.126.126.)"))
+            Text(L("仅自定义固定网段的最后一段；若与大厅成员冲突，会自动换用同网段其他地址。", "Only the last octet of the fixed subnet is customizable; conflicts automatically use another address in the same subnet."), color = TextPrimary.copy(alpha = .55f), fontSize = 11.sp)
             Spacer(Modifier.height(8.dp))
             SwitchRow(L("延迟优先", "Latency first"), settings.latencyFirst) { onChange(settings.copy(latencyFirst = it)) }
             Spacer(Modifier.height(8.dp))
@@ -3818,7 +5126,8 @@ private fun SettingsPanel(state: MctierUiState, repository: MctierRepository) {
             Spacer(Modifier.height(8.dp))
             MctierField(settings.autoLobbyName, { onChange(settings.copy(autoLobbyName = it)) }, L("自动大厅名称", "Auto lobby name"))
             Spacer(Modifier.height(8.dp))
-            MctierField(settings.autoLobbyPassword, { onChange(settings.copy(autoLobbyPassword = it)) }, L("自动大厅密码", "Auto lobby password"))
+            var manualAutoPassword by remember { mutableStateOf(false) }
+            MctierField(settings.autoLobbyPassword, { manualAutoPassword = true; onChange(settings.copy(autoLobbyPassword = it)) }, L("自动大厅密码", "Auto lobby password"), isPassword = true, protectedPassword = !manualAutoPassword)
         }
         Spacer(Modifier.height(16.dp))
         BackgroundKeepAliveSection()
@@ -4094,6 +5403,7 @@ private fun HudSettingsSection(settings: UserSettings, onChange: (UserSettings) 
 }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 private fun DanmakuSettingsSection(settings: UserSettings, onChange: (UserSettings) -> Unit) {
     val ctx = LocalContext.current
     var hasPerm by remember { mutableStateOf(DanmakuOverlay.hasPermission(ctx)) }
@@ -4162,7 +5472,7 @@ private fun DanmakuSettingsSection(settings: UserSettings, onChange: (UserSettin
     Spacer(Modifier.height(8.dp))
     Text(L("弹幕颜色", "Danmaku Color"), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.6f))
     Spacer(Modifier.height(6.dp))
-    Row(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+    FlowRow(horizontalArrangement = Arrangement.spacedBy(10.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         listOf("#FFFFFF", "#52C41A", "#1890FF", "#FAAD14", "#FF4D4F", "#EB2F96").forEach { hex ->
             val selected = settings.danmakuColor.equals(hex, ignoreCase = true)
             Box(
@@ -4174,7 +5484,8 @@ private fun DanmakuSettingsSection(settings: UserSettings, onChange: (UserSettin
                         shape = RoundedCornerShape(50),
                     )
                     .clickable { onChange(settings.copy(danmakuColor = hex)) },
-            )
+                contentAlignment = Alignment.Center,
+            ) { if (selected) ColorSelectionMark() }
         }
         // 彩色（每条随机）
         val rainbowSelected = settings.danmakuColor.equals("rainbow", ignoreCase = true)
@@ -4194,7 +5505,8 @@ private fun DanmakuSettingsSection(settings: UserSettings, onChange: (UserSettin
                     shape = RoundedCornerShape(50),
                 )
                 .clickable { onChange(settings.copy(danmakuColor = "rainbow")) },
-        )
+            contentAlignment = Alignment.Center,
+        ) { if (rainbowSelected) ColorSelectionMark() }
         // 自定义颜色（打开取色器）
         val presetColors = listOf("#FFFFFF", "#52C41A", "#1890FF", "#FAAD14", "#FF4D4F", "#EB2F96", "rainbow")
         val isCustom = presetColors.none { it.equals(settings.danmakuColor, ignoreCase = true) }
@@ -4210,7 +5522,7 @@ private fun DanmakuSettingsSection(settings: UserSettings, onChange: (UserSettin
                 .clickable { showColorDialog = true },
             contentAlignment = Alignment.Center,
         ) {
-            if (!isCustom) Text("+", color = TextPrimary.copy(alpha = 0.7f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            if (isCustom) ColorSelectionMark() else Text("+", color = TextPrimary.copy(alpha = 0.7f), fontSize = 16.sp, fontWeight = FontWeight.Bold)
         }
     }
     Spacer(Modifier.height(8.dp))
@@ -4230,6 +5542,13 @@ private fun DanmakuSettingsSection(settings: UserSettings, onChange: (UserSettin
             .padding(vertical = 11.dp),
         contentAlignment = Alignment.Center,
     ) { Text(L("预览弹幕", "Preview danmaku"), color = TextPrimary, fontWeight = FontWeight.SemiBold) }
+}
+
+@Composable
+internal fun ColorSelectionMark() {
+    Box(Modifier.size(18.dp).clip(CircleShape).background(Color(0xFF16311F)), contentAlignment = Alignment.Center) {
+        Text("✓", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold, lineHeight = 14.sp)
+    }
 }
 
 @Composable
@@ -4307,7 +5626,7 @@ private fun SoundPickerRow(label: String, current: String, muted: Boolean, onMut
         Switch(
             checked = !muted,
             onCheckedChange = { onMuteChange(!it) },
-            colors = SwitchDefaults.colors(checkedThumbColor = Color.White, checkedTrackColor = GrassGreen),
+            colors = switchColors(),
         )
     }
 }
@@ -4329,13 +5648,13 @@ private fun TimeChip(minutes: Int, onPicked: (Int) -> Unit) {
 }
 
 @Composable
-private fun ThemeSettingsSection(settings: UserSettings, onChange: (UserSettings) -> Unit) {
+internal fun ThemeSettingsSection(settings: UserSettings, onChange: (UserSettings) -> Unit) {
     Text(L("主题与配色", "Theme & Colors"), fontSize = 13.sp, color = TextPrimary.copy(alpha = 0.7f))
     Spacer(Modifier.height(8.dp))
     // 语言切换
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text(L("语言", "Language"), color = TextPrimary.copy(alpha = 0.85f), modifier = Modifier.weight(1f))
-        listOf("zh" to L("简体中文", "Simplified Chinese"), "en" to "English").forEach { (code, label) ->
+        listOf("zh" to "简体中文", "en" to "English").forEach { (code, label) ->
             val sel = (settings.language.ifBlank { appLang }) == code
             Box(
                 Modifier.padding(start = 8.dp).clip(RoundedCornerShape(8.dp))
@@ -4551,15 +5870,16 @@ private fun SectionCard(padding: Dp = 18.dp, modifier: Modifier = Modifier, cont
 }
 
 @Composable
-private fun MctierField(value: String, onValueChange: (String) -> Unit, label: String, enabled: Boolean = true, isPassword: Boolean = false) {
+private fun MctierField(value: String, onValueChange: (String) -> Unit, label: String, enabled: Boolean = true, isPassword: Boolean = false, protectedPassword: Boolean = false) {
     var visible by remember { mutableStateOf(false) }
     OutlinedTextField(
-        value = value, onValueChange = onValueChange, label = { Text(label) },
+        value = if (protectedPassword && value.isNotEmpty()) "********" else value,
+        onValueChange = { onValueChange(if (protectedPassword) it.replace("*", "") else it) }, label = { Text(label) },
         modifier = Modifier.fillMaxWidth(), singleLine = true, enabled = enabled,
         shape = RoundedCornerShape(14.dp),
         keyboardOptions = KeyboardOptions(keyboardType = if (isPassword) KeyboardType.Password else KeyboardType.Text),
-        visualTransformation = if (isPassword && !visible) PasswordVisualTransformation() else VisualTransformation.None,
-        trailingIcon = if (isPassword) {
+        visualTransformation = if (isPassword && (!visible || protectedPassword)) PasswordVisualTransformation() else VisualTransformation.None,
+        trailingIcon = if (isPassword && !protectedPassword) {
             {
                 IconButton(onClick = { visible = !visible }) {
                     Icon(
@@ -4580,7 +5900,7 @@ private fun PrimaryButton(text: String, enabled: Boolean = true, icon: ImageVect
         onClick = onClick, enabled = enabled,
         modifier = Modifier.fillMaxWidth().height(52.dp), shape = RoundedCornerShape(14.dp),
         colors = ButtonDefaults.buttonColors(
-            containerColor = GrassGreen, contentColor = TextPrimary,
+            containerColor = GrassGreen, contentColor = Color.White,
             disabledContainerColor = PanelHigh, disabledContentColor = TextPrimary.copy(alpha = 0.4f),
         ),
     ) {
@@ -4918,7 +6238,7 @@ private fun AboutScreen(onBack: () -> Unit) {
                 SectionCard {
                     Text(L("软件简介", "About"), fontWeight = FontWeight.Bold, color = TextPrimary)
                     Spacer(Modifier.height(8.dp))
-                    Text(L("MCTier 基于 EasyTier 虚拟组网，让你和好友像在同一局域网内一样联机 Minecraft，支持语音、聊天、文件共享与屏幕共享，并与电脑端完全互通。", "MCTier uses EasyTier virtual networking so you and your friends can play Minecraft as if on the same LAN, with voice, chat, file and screen sharing, fully interoperable with the desktop client."), fontSize = 13.sp, color = TextPrimary.copy(alpha = 0.8f), lineHeight = 20.sp)
+                    Text(L("MCTier 基于 EasyTier 虚拟组网，支持局域网游戏联机、语音通话、文字与语音消息、本地语音转文字、文件和屏幕共享、授权远程控制与本地录屏，可与电脑端连接使用。", "MCTier uses EasyTier for virtual LAN gaming, voice calls, text and voice messages, local transcription, file and screen sharing, authorized remote control and local recording, with connections to desktop clients."), fontSize = 13.sp, color = TextPrimary.copy(alpha = 0.8f), lineHeight = 20.sp)
                 }
             }
             item {
@@ -4950,12 +6270,12 @@ private fun AboutScreen(onBack: () -> Unit) {
                                 "· WebRTC —— BSD-3-Clause\n" +
                                 "· LocalVQE —— Apache-2.0；内嵌 GGML —— MIT\n" +
                                 "· GTCRN 模型权重 —— 训练数据含 CC BY 4.0 素材\n" +
-                                "· OkHttp、NanoHTTPD、AndroidX、Kotlin 等依赖见完整声明",
+                                "· sherpa-onnx / Zipformer —— 本地语音识别，模型许可见完整声明\n· ZXing —— 二维码；AndroidX WorkManager —— 后台任务\n· OkHttp、NanoHTTPD、AndroidX、Kotlin 等依赖见完整声明",
                             "· EasyTier — LGPL-3.0 (Android uses a modified build; the patch ships with the repository)\n" +
                                 "· WebRTC — BSD-3-Clause\n" +
                                 "· LocalVQE — Apache-2.0; bundled GGML — MIT\n" +
                                 "· GTCRN model weights — training data includes CC BY 4.0 material\n" +
-                                "· OkHttp, NanoHTTPD, AndroidX, Kotlin and others: see the full notice"
+                                "· sherpa-onnx / Zipformer — local transcription; model licenses in full notice\n· ZXing — QR codes; AndroidX WorkManager — background tasks\n· OkHttp, NanoHTTPD, AndroidX, Kotlin and others: see the full notice"
                         ),
                         fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.7f), lineHeight = 19.sp
                     )
@@ -5039,7 +6359,7 @@ private fun AboutScreen(onBack: () -> Unit) {
             containerColor = Panel,
             title = { Text(L("赞助支持开发者", "Sponsor the developer"), color = TextPrimary, fontWeight = FontWeight.Bold) },
             text = {
-                Column {
+                Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
                     Text(L("点击二维码可放大查看", "Tap the QR code to enlarge"), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.6f))
                     Spacer(Modifier.height(12.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -5192,13 +6512,9 @@ private fun isValidLobbyName(n: String): Boolean {
 }
 
 private fun isValidLobbyPassword(p: String): Boolean {
-    val t = p.trim()
-    // 留空表示无密码大厅，与输入框文案及 LobbyInviteCodec.isValidLobbyPassword 保持一致（issue #42）。
-    if (t.isEmpty()) return true
-    if (t.length < 8 || t.length > 32) return false
-    val hasLetter = t.any { it in 'a'..'z' || it in 'A'..'Z' }
-    val hasDigit = t.any { it in '0'..'9' }
-    return hasLetter && hasDigit
+    // Validate the resolved plaintext, never the invite/local envelope length.
+    val resolved = LobbyInviteCodec.resolveLobbyPassword(p) ?: return false
+    return LobbyInviteCodec.isValidLobbyPassword(resolved)
 }
 
 // 随机密码：与桌面端一致（12位，含大小写字母和数字，至少各一个）
@@ -5307,11 +6623,25 @@ private fun FlowRowChips(items: List<String>, big: Boolean = false, selectedLabe
                 Text(
                     item,
                     fontSize = if (big) 20.sp else 13.sp,
-                    color = TextPrimary,
+                    color = if (selected) Color.White else TextPrimary,
                     fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun HomeLobbyModeButton(text: String, active: Boolean, icon: ImageVector, modifier: Modifier = Modifier, onClick: () -> Unit) {
+    Column(
+        modifier.heightIn(min = 58.dp).clip(RoundedCornerShape(12.dp))
+            .background(if (active) GrassGreen.copy(alpha = 0.18f) else PanelHigh)
+            .border(1.dp, if (active) GrassGreen.copy(alpha = 0.5f) else Color.Transparent, RoundedCornerShape(12.dp))
+            .clickable(role = androidx.compose.ui.semantics.Role.Tab, onClick = onClick).padding(horizontal = 6.dp, vertical = 8.dp),
+        horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterVertically),
+    ) {
+        Icon(icon, null, tint = if (active) AccentText else TextPrimary.copy(alpha = 0.6f), modifier = Modifier.size(18.dp))
+        Text(text, fontSize = 12.sp, color = if (active) AccentText else TextPrimary.copy(alpha = 0.7f), textAlign = TextAlign.Center)
     }
 }
 
@@ -5345,7 +6675,7 @@ private fun HostActionChip(text: String, icon: ImageVector, danger: Boolean, mod
 private fun fieldColors() = OutlinedTextFieldDefaults.colors(
     focusedBorderColor = GrassGreen,
     unfocusedBorderColor = Hairline,
-    focusedLabelColor = GrassGreen,
+    focusedLabelColor = AccentText,
     unfocusedLabelColor = TextPrimary.copy(alpha = 0.5f),
     focusedTextColor = TextPrimary,
     unfocusedTextColor = TextPrimary,
@@ -5357,10 +6687,12 @@ private fun fieldColors() = OutlinedTextFieldDefaults.colors(
 )
 
 @Composable
-private fun switchColors() = SwitchDefaults.colors(
-    checkedThumbColor = TextPrimary,
+internal fun switchColors() = SwitchDefaults.colors(
+    checkedThumbColor = Color.White,
     checkedTrackColor = GrassGreen,
-    uncheckedThumbColor = TextPrimary.copy(alpha = 0.85f),
+    uncheckedThumbColor = Color.White,
+    disabledCheckedThumbColor = Color.White,
+    disabledUncheckedThumbColor = Color.White,
     uncheckedTrackColor = PanelHigh,
     uncheckedBorderColor = Color.Transparent,
 )

@@ -6,19 +6,38 @@
   **A universal virtual-LAN networking tool**
 
   <p>
-    <img src="https://img.shields.io/badge/version-3.0.0-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-3.9.5-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-2ea44f?style=flat-square" alt="Windows 10/11">
     <img src="https://img.shields.io/badge/Android-supported-3ddc84?style=flat-square" alt="Android">
     <img src="https://img.shields.io/badge/license-Custom-orange?style=flat-square" alt="License">
   </p>
 
 
-  **Supports Windows 10/11 and Android. Desktop and mobile can join the same lobby to quickly form a cross-network virtual LAN. Current version: 2.7.5.**
+  **Supports Windows 10/11 and Android. Desktop and mobile can join the same lobby to quickly form a cross-network virtual LAN.**
 
   [GitHub](https://github.com/pmh1314520/MCTier) · [Gitee](https://gitee.com/peng-minghang/mctier) · [Quick Start](#quick-start) · [Screenshots](#screenshots) · [Sponsor](#sponsor)
 
   English | [简体中文](./README.md)
 </div>
+
+<table>
+  <tr>
+    <td align="center" width="160">
+      <a href="https://langlangy.cn/?imctier" target="_blank" rel="noopener">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="public/langlangyun-logo-white.png">
+          <source media="(prefers-color-scheme: light)" srcset="public/langlangyun-logo-black.png">
+          <img src="public/langlangyun-logo-black.png" alt="Langlangyun" width="120">
+        </picture>
+      </a>
+    </td>
+    <td>
+      <sub>Advertisement</sub><br>
+      <a href="https://langlangy.cn/?imctier"><strong>Langlangyun BGP servers · lower latency and faster game networking</strong></a><br>
+      Hosting a signaling or game server? Explore Langlangyun's cloud server plans.
+    </td>
+  </tr>
+</table>
 
 ---
 
@@ -112,7 +131,7 @@ Screenshots are grouped by desktop and mobile and laid out compactly to avoid an
 - **Cross-platform lobbies**: Phones and PCs can join the same lobby, with handy QR-code invites.
 - **Public lobby plaza**: Hosts can publish a lobby to the plaza, so strangers can find it and join with one click.
 - **Custom nodes & virtual domains**: Add your own EasyTier nodes and configure a custom domain for the virtual network.
-- **Built-in EasyTier nodes**: The default is the Haibo US node, `udp://us01.225284.xyz:11010`; Haibo Mainland China and Weiai Xiamen nodes are also available, and the last selection is remembered.
+- **Built-in EasyTier nodes**: Listed in this order: Weiai Xiamen, Haibo Mainland China, and Haibo US. The default is Weiai Xiamen, `tcp://easytier.weiai.org.cn:11010`, and the last selection is remembered.
 - **Node settings in invites**: QR codes, invite links, recent lobbies and favorite lobbies carry and restore the matching EasyTier node and signaling-server settings, preventing cross-node join failures.
 - **Self-healing connections**: Both desktop and Android support signaling reconnects, secondary member-state confirmation and automatic voice-connection recovery to tolerate short network interruptions.
 - **Connection / network diagnostics**: Aggregate members' direct/relay status, latency and packet loss into a score with tuning tips; network diagnostics can also check the virtual adapter, firewall, UDP ports and security-software blocking, with one-click firewall allow.
@@ -199,18 +218,6 @@ If virtual domains are enabled, you can also connect with an address like `membe
 ## Self-hosting Quick Flow
 
 If you want to host your own MCTier signaling server, download `MCTier信令服务器.zip` and the deployment documentation from the official MCTier website. This source repository contains the desktop and Android client source code, not the website or signaling-server deployment package.
-
-> Self-hosting the signaling server needs a host with a public IP. If you do not have one yet, take a look at our sponsor:
->
-> <a href="https://langlangy.cn/?imctier" target="_blank" rel="noopener">
->   <picture>
->     <source media="(prefers-color-scheme: dark)" srcset="public/langlangyun-logo-white.png">
->     <source media="(prefers-color-scheme: light)" srcset="public/langlangyun-logo-black.png">
->     <img src="public/langlangyun-logo-black.png" alt="Langlangyun" height="34">
->   </picture>
-> </a>
->
-> **[Langlangyun BGP servers — lower latency and faster game networking](https://langlangy.cn/?imctier)**
 
 Basic flow:
 
@@ -360,8 +367,8 @@ MCTier transmits communication content (chat, voice, files, screen, remote contr
 
 | Default service | Address | Metadata visible to the server | Purpose |
 |---|---|---|---|
-| Signaling server | `wss://test.pmhs.top` | Public IP, connection time, lobby name and password hash used for matching, player name, virtual IP/domain, member count, client version | Exchange WebRTC signaling, discover members of the same lobby |
-| EasyTier public node | `udp://us01.225284.xyz:11010` | Public IP, connection time, EasyTier network identifier | P2P hole punching and relaying when required |
+| Signaling server | `wss://mctier.pmhs.top/signaling` | Public IP, connection time, lobby name and password hash used for matching, player name, virtual IP/domain, member count, client version | Exchange WebRTC signaling, discover members of the same lobby |
+| EasyTier public node | Default: `tcp://easytier.weiai.org.cn:11010`; alternatives: `tcp://225284.xyz:11010`, `udp://us01.225284.xyz:11010` | Public IP, connection time, EasyTier network identifier | P2P hole punching and relaying when required |
 | Version check | `https://gitee.com/api/v5/repos/peng-minghang/mctier/tags` | Public IP, request time (recorded by Gitee) | Retrieve the latest version number |
 
 Notes:

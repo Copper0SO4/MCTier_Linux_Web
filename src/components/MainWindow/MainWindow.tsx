@@ -8,6 +8,8 @@ import { open } from '@tauri-apps/plugin-shell';
 import { useAppStore } from '../../stores';
 import { LobbyForm } from '../LobbyForm/LobbyForm';
 import { AboutWindow } from '../AboutWindow/AboutWindow';
+import { QuarkSupportEntry } from '../QuarkSupport/QuarkSupport';
+import { OPEN_QUARK_SUPPORT } from '../QuarkSupport/QuarkStartupPrompt';
 import { SettingsWindow } from '../SettingsWindow';
 import { OnboardingWizard, isOnboardingDone } from '../OnboardingWizard/OnboardingWizard';
 import { CloseIcon } from '../icons';
@@ -23,7 +25,7 @@ const { Title, Paragraph } = Typography;
  * 主窗口组件
  * 显示创建/加入大厅的入口
  */
-export const MainWindow: React.FC = () => {
+export const MainWindow: React.FC<{ startupReady?: boolean }> = ({ startupReady = true }) => {
   const { t } = useTranslation();
   const [showForm, setShowForm] = useState(false);
   const [formMode, setFormMode] = useState<'create' | 'join'>('create');
@@ -71,15 +73,17 @@ export const MainWindow: React.FC = () => {
 
   // 首次启动弹出新手引导
   useEffect(() => {
-    if (!isOnboardingDone()) {
+    if (startupReady && !isOnboardingDone()) {
       const timer = setTimeout(() => setShowOnboarding(true), 800);
       return () => clearTimeout(timer);
     }
-  }, []);
+  }, [startupReady]);
 
   // 邀请 deep link：收到后切到加入模式并打开表单（LobbyForm 自行读取预填）
   useEffect(() => {
     const onDeepLink = () => {
+      (window as any).__autoLobbyTriggered = true;
+      delete (window as any).__autoLobbyConfig;
       setFormMode('join');
       setShowForm(true);
       // 再次派发，确保已挂载的 LobbyForm 也能立即读取
@@ -103,20 +107,22 @@ export const MainWindow: React.FC = () => {
   // 组件加载时主动拉取自动大厅配置，仅应用启动后首次触发一次
   useEffect(() => {
     // 用全局标志确保整个应用生命周期内只触发一次，避免从大厅返回主界面时重复触发
-    if ((window as any).__autoLobbyTriggered) return;
+    if (!startupReady || (window as any).__autoLobbyTriggered) return;
+    let disposed = false;
     const checkAutoLobby = async () => {
       try {
         const settings = await invoke<any>('get_settings');
+        if (disposed || (window as any).__autoLobbyTriggered) return;
         
         // 加载 GPU 渲染设置
         const gpuEnabled = settings.enableGpuRendering ?? true;
         setEnableGpuRendering(gpuEnabled);
         console.log('GPU 渲染设置:', gpuEnabled);
         
-        if (settings.autoLobbyEnabled && settings.lobbyName && settings.lobbyPassword && settings.playerName) {
-          console.log('检测到自动大厅配置，自动创建大厅:', settings.lobbyName);
+        if (settings.autoLobbyEnabled && settings.lobbyName && settings.playerName) {
+          console.log('检测到自动大厅配置，自动进入大厅:', settings.lobbyName);
           (window as any).__autoLobbyTriggered = true;
-          setFormMode('create');
+          setFormMode('join');
           (window as any).__autoLobbyConfig = {
             lobbyName: settings.lobbyName,
             lobbyPassword: settings.lobbyPassword,
@@ -134,15 +140,15 @@ export const MainWindow: React.FC = () => {
     };
     // 延迟500ms等待窗口完全渲染
     const timer = setTimeout(checkAutoLobby, 500);
-    return () => clearTimeout(timer);
-  }, []);
+    return () => { disposed = true; clearTimeout(timer); };
+  }, [startupReady]);
 
   // 监听版本错误并显示弹窗
   useEffect(() => {
     if (versionError) {
       console.log('MainWindow检测到版本错误，显示弹窗');
       
-      Modal.warning({
+      const dialog = Modal.warning({
         title: tl('版本过低', 'Version Too Low'),
         content: (
           <div style={{ lineHeight: '1.8' }}>
@@ -162,6 +168,9 @@ export const MainWindow: React.FC = () => {
         ),
         okText: tl('前往官网', 'Go to Website'),
         centered: true,
+        zIndex: 1200,
+        keyboard: false,
+        maskClosable: false,
         onOk: async () => {
           console.log('用户点击了"前往官网"按钮');
           try {
@@ -176,15 +185,20 @@ export const MainWindow: React.FC = () => {
           setVersionError(null);
         },
       });
+      return () => dialog.destroy();
     }
   }, [versionError, setVersionError]);
 
   const handleCreateLobby = () => {
+    (window as any).__autoLobbyTriggered = true;
+    delete (window as any).__autoLobbyConfig;
     setFormMode('create');
     setShowForm(true);
   };
 
   const handleJoinLobby = () => {
+    (window as any).__autoLobbyTriggered = true;
+    delete (window as any).__autoLobbyConfig;
     setFormMode('join');
     setShowForm(true);
   };
@@ -202,6 +216,8 @@ export const MainWindow: React.FC = () => {
   };
 
   const handleShowSettings = () => {
+    (window as any).__autoLobbyTriggered = true;
+    delete (window as any).__autoLobbyConfig;
     setShowSettings(true);
   };
 
@@ -225,6 +241,7 @@ export const MainWindow: React.FC = () => {
     <div className={`main-window ${!enableGpuRendering ? 'gpu-rendering-disabled' : ''}`}>
       {/* 拖拽区域 - 只在顶部 */}
       <div className="main-window-drag-area" data-tauri-drag-region>
+        <QuarkSupportEntry onClick={() => window.dispatchEvent(new Event(OPEN_QUARK_SUPPORT))} />
         <div className="main-window-controls">
           <button className="main-window-control-btn" onClick={handleMinimizeToTray} title={tl('最小化到系统托盘', 'Minimize to system tray')}>
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true">
@@ -345,8 +362,9 @@ export const MainWindow: React.FC = () => {
         </motion.div>
       </motion.div>
 
+
       {/* 新手引导向导 */}
-      <OnboardingWizard visible={showOnboarding} onClose={() => setShowOnboarding(false)} />
+      <OnboardingWizard visible={showOnboarding && startupReady} onClose={() => setShowOnboarding(false)} />
 
       {/* 设置界面 - 作为overlay覆盖在主界面上，避免透明闪烁 */}
       <AnimatePresence>

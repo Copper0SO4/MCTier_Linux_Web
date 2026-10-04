@@ -5,6 +5,8 @@ import fi.iki.elonen.NanoHTTPD
 import top.pmh13.mctier.data.ChatMaxHistoryBytes
 import top.pmh13.mctier.data.ChatMaxHistoryMessages
 import top.pmh13.mctier.data.ChatMaxHttpBodyBytes
+import top.pmh13.mctier.data.ChatMaxAttachmentBytes
+import top.pmh13.mctier.data.ChatAttachmentMeta
 import top.pmh13.mctier.data.ChatPeerIdentity
 import top.pmh13.mctier.data.ChatSendRequest
 import top.pmh13.mctier.data.ChatServerPort
@@ -12,6 +14,9 @@ import top.pmh13.mctier.data.ChatTokenHeader
 import top.pmh13.mctier.data.ChatTokenHexLength
 import top.pmh13.mctier.data.ChatWireMessage
 import top.pmh13.mctier.data.MctierJson
+import top.pmh13.mctier.data.validChatAttachment
+import java.io.ByteArrayInputStream
+import java.io.File
 import java.net.InetAddress
 import java.net.Inet4Address
 import java.security.MessageDigest
@@ -45,6 +50,7 @@ class ChatHttpServer(
     private val ownerId: String,
     bindIp: String,
 ) : NanoHTTPD(requireBindIp(bindIp), ChatServerPort) {
+    var encryptionSigner: (() -> ChatAuth.ChatSigner?)? = null
 
     private val boundIp = requireBindIp(bindIp)
     private val sessionLock = Any()
@@ -55,6 +61,10 @@ class ChatHttpServer(
     private var authSession: AuthSession? = null
     private val requestTimes = HashMap<RateLimitKey, ArrayDeque<Long>>()
     private val replayGuard = ChatAuth.ReplayGuard()
+    private val attachmentLock = Any()
+    private val attachments = HashMap<String, LocalAttachment>()
+
+    private data class LocalAttachment(val meta: ChatAttachmentMeta, val file: File, val recipientId: String?)
 
     /** 收到他人 POST 的新消息时回调（用于推送到 UI） */
     var onMessageReceived: ((ChatWireMessage) -> Unit)? = null
@@ -90,7 +100,13 @@ class ChatHttpServer(
                 if (tokenEpoch < current.tokenEpoch) return false
                 if (tokenEpoch == current.tokenEpoch && current.token != token) return false
             }
-            if (!isValidHostId(hostId, identities)) return false
+            // register-success carries the authoritative host id before the
+            // first players-list snapshot arrives. At that point a remote
+            // host is intentionally not present in `identities` yet; defer
+            // strict roster validation until updatePeers() receives the
+            // snapshot. Once peers are known, reject any host id outside it.
+            val hostKnownOrBootstrap = isValidHostId(hostId, identities) || peers.isEmpty()
+            if (!hostKnownOrBootstrap) return false
             authSession = AuthSession(token, tokenEpoch, normalizedLocal, hostId, identities, peersByKey)
         }
         return true
@@ -133,6 +149,16 @@ class ChatHttpServer(
 
     fun currentTokenEpoch(): Long = synchronized(sessionLock) { authSession?.tokenEpoch ?: 0L }
 
+    fun registerAttachment(meta: ChatAttachmentMeta, file: File, recipientId: String?): Boolean {
+        if (!validChatAttachment(meta) || !file.isFile || file.length() != meta.size) return false
+        synchronized(attachmentLock) { attachments[meta.id] = LocalAttachment(meta, file, recipientId) }
+        return true
+    }
+
+    fun localAttachment(meta: ChatAttachmentMeta): File? = synchronized(attachmentLock) {
+        attachments[meta.id]?.takeIf { it.meta == meta && it.file.isFile && it.file.length() == meta.size }?.file
+    }
+
     fun localIdentity(): ChatPeerIdentity? = synchronized(sessionLock) { authSession?.local }
 
     fun hasSession(): Boolean = synchronized(sessionLock) { authSession != null }
@@ -141,6 +167,14 @@ class ChatHttpServer(
         authSession?.identities?.values?.any { identity ->
             identity.playerId == message.playerId && identity.playerName == message.playerName
         } == true
+    }
+
+    internal fun isValidHostAnnouncement(message: ChatWireMessage, expectedHostId: String?): Boolean = synchronized(sessionLock) {
+        val session = authSession ?: return false
+        expectedHostId != null && session.hostId == expectedHostId &&
+            message.playerId == expectedHostId && message.messageType == "announce" &&
+            message.recipientId == null && isKnownPeer(message) &&
+            isValidMessage(message, session.hostId, checkHost = true)
     }
 
     /** 把本机发送的消息加入存储（供他人拉取）。 */
@@ -160,6 +194,15 @@ class ChatHttpServer(
             messages.clear()
             historyBytes = 0
         }
+        val stale = synchronized(attachmentLock) { attachments.values.toList().also { attachments.clear() } }
+        stale.forEach { runCatching { it.file.delete() } }
+    }
+
+    /** Revoke only signaling-issued authorization while preserving history. */
+    fun resetAuthBaseline() {
+        synchronized(sessionLock) { authSession = null }
+        synchronized(rateLimitLock) { requestTimes.clear() }
+        replayGuard.clear()
     }
 
     private fun messagesSince(since: Long?): List<ChatWireMessage> = synchronized(historyLock) {
@@ -175,6 +218,7 @@ class ChatHttpServer(
             when {
                 session.uri == "/api/chat/messages" && session.method == Method.GET -> handleMessages(session, origin)
                 session.uri == "/api/chat/send" && session.method == Method.POST -> handleSend(session, origin)
+                session.uri.startsWith("/api/chat/attachment/") && session.method == Method.GET -> handleAttachment(session, origin)
                 else -> withCors(newFixedLengthResponse(Response.Status.NOT_FOUND, "text/plain", "not found"), origin)
             }
         } catch (rejected: RequestRejected) {
@@ -196,7 +240,14 @@ class ChatHttpServer(
             rawSince.isBlank() -> reject(Response.Status.BAD_REQUEST)
             else -> rawSince.toLongOrNull()?.takeIf { it >= 0L } ?: reject(Response.Status.BAD_REQUEST)
         }
-        return json(messagesSince(since), origin)
+        val visible = messagesSince(since).filter { message ->
+            message.recipientId == null ||
+                message.recipientId == auth.identity.playerId ||
+                message.playerId == auth.identity.playerId
+        }
+        val body = MctierJson.encodeToString(kotlinx.serialization.builtins.ListSerializer(ChatWireMessage.serializer()), visible).toByteArray(Charsets.UTF_8)
+        val encrypted = encryptionSigner?.invoke()?.encrypt(auth.identity.chatPublicKey ?: reject(Response.Status.UNAUTHORIZED), currentToken() ?: reject(Response.Status.UNAUTHORIZED), "/api/chat/messages", body) ?: reject(Response.Status.UNAUTHORIZED)
+        return withCors(newFixedLengthResponse(Response.Status.OK, "application/json", encrypted.toString(Charsets.UTF_8)), origin)
     }
 
     private fun handleSend(session: IHTTPSession, origin: String?): Response {
@@ -207,8 +258,12 @@ class ChatHttpServer(
         val auth = authenticate(session, "POST", "/api/chat/send", bodyBytes)
         if (!allowRequest(auth.identity, auth.sourceIp)) reject(Response.Status.TOO_MANY_REQUESTS)
         val req = runCatching {
-            MctierJson.decodeFromString(ChatSendRequest.serializer(), bodyBytes.toString(Charsets.UTF_8))
+            val plain = encryptionSigner?.invoke()?.decrypt(auth.identity.chatPublicKey ?: error("Missing key"), currentToken() ?: error("Missing session"), "/api/chat/send", bodyBytes) ?: error("Missing encryption identity")
+            MctierJson.decodeFromString(ChatSendRequest.serializer(), plain.toString(Charsets.UTF_8))
         }.getOrElse { reject(Response.Status.BAD_REQUEST) }
+        if (req.recipientId != null && req.recipientId != synchronized(sessionLock) { authSession?.local?.playerId }) {
+            reject(Response.Status.FORBIDDEN)
+        }
         val type = req.messageType.trim().lowercase(Locale.US)
         val id = req.id?.trim()?.takeIf { it.isNotEmpty() }
         val message = ChatWireMessage(
@@ -219,13 +274,30 @@ class ChatHttpServer(
             messageType = type,
             timestamp = System.currentTimeMillis() / 1000L,
             imageData = req.imageData,
+            recipientId = req.recipientId,
         )
         if (!isValidMessage(message, auth.hostId, checkHost = true)) {
             reject(Response.Status.BAD_REQUEST)
         }
         if (!storeMessage(message)) reject(Response.Status.PAYLOAD_TOO_LARGE)
         onMessageReceived?.invoke(message)
-        return json(message, origin)
+        return withCors(newFixedLengthResponse(Response.Status.OK, "application/json", "{\"accepted\":true}"), origin)
+    }
+
+    private fun handleAttachment(session: IHTTPSession, origin: String?): Response {
+        val id = session.uri.removePrefix("/api/chat/attachment/")
+        if (id.length !in 12..128 || id.any { !it.isLetterOrDigit() && it != '-' && it != '_' }) reject(Response.Status.BAD_REQUEST)
+        val path = "/api/chat/attachment/$id"
+        val auth = authenticate(session, "GET", path, EMPTY_BODY)
+        if (!allowRequest(auth.identity, auth.sourceIp)) reject(Response.Status.TOO_MANY_REQUESTS)
+        val attachment = synchronized(attachmentLock) { attachments[id] } ?: reject(Response.Status.NOT_FOUND)
+        if (attachment.recipientId != null && attachment.recipientId != auth.identity.playerId) reject(Response.Status.FORBIDDEN)
+        if (!attachment.file.isFile || attachment.file.length() != attachment.meta.size || attachment.file.length() > ChatMaxAttachmentBytes) reject(Response.Status.NOT_FOUND)
+        val plain = runCatching { attachment.file.readBytes() }.getOrElse { reject(Response.Status.INTERNAL_ERROR) }
+        val signer = encryptionSigner?.invoke() ?: reject(Response.Status.UNAUTHORIZED)
+        val encrypted = runCatching { signer.encrypt(auth.identity.chatPublicKey ?: error("Missing key"), currentToken() ?: error("Missing token"), path, plain) }
+            .getOrElse { reject(Response.Status.INTERNAL_ERROR) }
+        return withCors(newFixedLengthResponse(Response.Status.OK, "application/json", ByteArrayInputStream(encrypted), encrypted.size.toLong()), origin)
     }
 
     /**
@@ -379,6 +451,9 @@ class ChatHttpServer(
         return when (message.messageType.lowercase(Locale.US)) {
             "text" -> message.content.isNotEmpty() && message.contentBytes() <= MAX_TEXT_BYTES && message.imageData == null
             "image" -> message.contentBytes() <= MAX_IMAGE_CONTENT_BYTES && validImage(message.imageData)
+            "voice" -> validVoice(message)
+            "file" -> message.contentBytes() in 1..MAX_FILE_CONTENT_BYTES && message.imageData == null &&
+                runCatching { MctierJson.decodeFromString(ChatAttachmentMeta.serializer(), message.content) }.getOrNull()?.let(::validChatAttachment) == true
             "announce" -> message.contentBytes() <= MAX_ANNOUNCE_BYTES && message.imageData == null
             "voicegroup" -> message.contentBytes() <= MAX_VOICE_GROUP_BYTES &&
                 message.imageData == null && message.content.toIntOrNull()?.let { it in 0..4 } == true
@@ -401,6 +476,21 @@ class ChatHttpServer(
 
     private fun validImage(image: List<Int>?): Boolean = image != null && image.isNotEmpty() &&
         image.size <= MAX_IMAGE_BYTES && image.all { it in 0..255 }
+
+    private fun validVoice(message: ChatWireMessage): Boolean = runCatching {
+        val data = message.imageData ?: return false
+        if (data.isEmpty() || data.size > 2 * 1024 * 1024 || data.any { it !in 0..255 } || message.content.length > 128) return false
+        val meta = org.json.JSONObject(message.content)
+        if (meta.getDouble("duration") !in 0.5..60.5) return false
+        val head = data.take(12).map { it.toByte() }.toByteArray()
+        when (meta.getString("mime")) {
+            "audio/webm" -> head.take(4) == listOf(0x1a.toByte(), 0x45.toByte(), 0xdf.toByte(), 0xa3.toByte())
+            "audio/ogg" -> head.take(4).toByteArray().contentEquals("OggS".toByteArray())
+            "audio/wav" -> head.take(4).toByteArray().contentEquals("RIFF".toByteArray()) && head.drop(8).toByteArray().contentEquals("WAVE".toByteArray())
+            "audio/mp4" -> head.drop(4).take(4).toByteArray().contentEquals("ftyp".toByteArray())
+            else -> false
+        }
+    }.getOrDefault(false)
 
     private fun ChatWireMessage.contentBytes(): Int = content.toByteArray(Charsets.UTF_8).size
 
@@ -470,8 +560,9 @@ class ChatHttpServer(
         private const val MAX_PLAYER_NAME_BYTES = 256
         private const val MAX_CONTENT_BYTES = 512 * 1024
         private const val MAX_TEXT_BYTES = 16 * 1024
-        private const val MAX_IMAGE_BYTES = 512 * 1024
+        private const val MAX_IMAGE_BYTES = 2 * 1024 * 1024
         private const val MAX_IMAGE_CONTENT_BYTES = 256
+        private const val MAX_FILE_CONTENT_BYTES = 1024
         private const val MAX_ANNOUNCE_BYTES = 16 * 1024
         private const val MAX_VOICE_GROUP_BYTES = 32
         private const val MAX_CLIPBOARD_BYTES = 16 * 1024

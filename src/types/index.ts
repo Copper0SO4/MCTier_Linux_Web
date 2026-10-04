@@ -21,6 +21,9 @@ export interface Lobby {
   createdAt: string;
   /** 虚拟 IP 地址（当前玩家的） */
   virtualIp: string;
+  automaticVirtualIp?: boolean;
+  addressAttempt?: number;
+  addressRecoveryStartedAt?: number;
   /** 创建者的虚拟 IP 地址（用于连接 WebSocket 信令服务器） */
   creatorVirtualIp: string;
   /** 虚拟域名（如果配置了） */
@@ -164,6 +167,8 @@ export type ConnectionStatus =
  * 聊天消息
  */
 export interface ChatMessage {
+  /** Local-only send state; never sent over the network. */
+  delivery?: 'sending' | 'failed';
   /** 消息ID */
   id: string;
   /** 发送者玩家ID */
@@ -175,11 +180,14 @@ export interface ChatMessage {
   /** 发送时间戳 */
   timestamp: number;
   /** 消息类型 */
-  type?: 'text' | 'image';
+  type?: 'text' | 'image' | 'voice' | 'file';
   /** 图片数据（Base64） */
   imageData?: string;
+  /** 按需从发送端获取的文件附件元数据，文件字节不进入聊天历史。 */
+  attachment?: import('../services/chat/fileAttachment').ChatAttachment;
   /** 消息是否已由原发送者撤回 */
   recalled?: boolean;
+  recipientId?: string;
 }
 
 /**

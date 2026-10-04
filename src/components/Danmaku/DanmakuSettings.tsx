@@ -1,8 +1,13 @@
 import React, { useState } from 'react';
-import { Switch, Slider, App } from 'antd';
+import { Switch, Slider, App, ColorPicker } from 'antd';
+import { CheckOutlined, BgColorsOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import { tl } from '../../i18n';
 import { danmakuService, type DanmakuConfig } from '../../services/danmaku/danmakuService';
+import { randomDanmakuColor } from '../../services/danmaku/colors';
+import './DanmakuSettings.css';
+
+const PRESETS = ['#ffffff', '#52c41a', '#1890ff', '#faad14', '#ff4d4f', '#eb2f96'];
 
 /**
  * 消息弹幕配置面板（全局设置 / 大厅动态设置共用）
@@ -12,10 +17,12 @@ export const DanmakuSettings: React.FC = () => {
   useTranslation();
   const { message: antdMessage } = App.useApp();
   const [cfg, setCfg] = useState<DanmakuConfig>(() => danmakuService.getConfig());
+  const [randomColor, setRandomColor] = useState(randomDanmakuColor);
 
   const update = (patch: Partial<DanmakuConfig>) => {
     const next = { ...cfg, ...patch };
     setCfg(next);
+    if (patch.color === 'rainbow') setRandomColor(randomDanmakuColor());
     void danmakuService.setConfig(patch);
   };
 
@@ -51,36 +58,42 @@ export const DanmakuSettings: React.FC = () => {
       <div className="snd-block">
         <div className="snd-block-title-text">{tl('弹幕颜色', 'Danmaku Color')}</div>
         <div className="snd-block-desc">{tl('自定义弹幕文字颜色', 'Customize the danmaku text color')}</div>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-          {['#ffffff', '#52c41a', '#1890ff', '#faad14', '#ff4d4f', '#eb2f96'].map((c) => (
-            <span
+        <div className="danmaku-color-options" role="group" aria-label={tl('弹幕颜色', 'Danmaku color')}>
+          {PRESETS.map((c) => (
+            <button
               key={c}
+              type="button"
+              className="danmaku-color-swatch"
+              aria-label={c}
+              aria-pressed={cfg.color.toLowerCase() === c}
               onClick={() => update({ color: c })}
               title={c}
-              style={{
-                width: 24, height: 24, borderRadius: '50%', background: c, cursor: 'pointer', flexShrink: 0,
-                border: cfg.color.toLowerCase() === c ? '2px solid #fff' : '2px solid rgba(255,255,255,0.25)',
-                boxShadow: cfg.color.toLowerCase() === c ? '0 0 6px rgba(255,255,255,0.6)' : 'none',
-              }}
-            />
+              style={{ background: c }}
+            >{cfg.color.toLowerCase() === c && <CheckOutlined className="danmaku-color-check" />}</button>
           ))}
-          <span
+          <button
+            type="button"
+            className="danmaku-color-swatch danmaku-color-random"
+            aria-label={tl('彩色（每条随机）', 'Rainbow (random per message)')}
+            aria-pressed={cfg.color === 'rainbow'}
             onClick={() => update({ color: 'rainbow' })}
             title={tl('彩色（每条随机）', 'Rainbow (random per message)')}
-            style={{
-              width: 24, height: 24, borderRadius: '50%', cursor: 'pointer', flexShrink: 0,
-              background: 'conic-gradient(#ff4d4f,#faad14,#52c41a,#1890ff,#eb2f96,#ff4d4f)',
-              border: cfg.color === 'rainbow' ? '2px solid #fff' : '2px solid rgba(255,255,255,0.25)',
-              boxShadow: cfg.color === 'rainbow' ? '0 0 6px rgba(255,255,255,0.8)' : 'none',
-            }}
-          />
-          <input
-            type="color"
+          >{cfg.color === 'rainbow' && <CheckOutlined className="danmaku-color-check" />}</button>
+          <ColorPicker
             value={cfg.color === 'rainbow' ? '#ffffff' : cfg.color}
-            onChange={(e) => update({ color: e.target.value })}
-            title={tl('自定义颜色', 'Custom color')}
-            style={{ width: 34, height: 28, padding: 0, border: 'none', background: 'transparent', cursor: 'pointer', flexShrink: 0 }}
-          />
+            onChange={color => update({ color: color.toHexString() })}
+            disabledAlpha
+            format="hex"
+            placement="bottomRight"
+            rootClassName="mctier-color-picker"
+            getPopupContainer={trigger => trigger.parentElement ?? document.body}
+          >
+            <button type="button" className="danmaku-color-custom" aria-label={tl('自定义颜色', 'Custom color')}
+              aria-pressed={cfg.color !== 'rainbow' && !PRESETS.includes(cfg.color.toLowerCase())}>
+              <BgColorsOutlined /><span>{tl('自定义', 'Custom')}</span>
+              {cfg.color !== 'rainbow' && !PRESETS.includes(cfg.color.toLowerCase()) && <CheckOutlined />}
+            </button>
+          </ColorPicker>
         </div>
       </div>
 
@@ -89,13 +102,14 @@ export const DanmakuSettings: React.FC = () => {
         <div className="snd-block-title-text">{tl('预览', 'Preview')}</div>
         <div className="danmaku-preview-box" style={{ opacity: cfg.opacity }}>
           <span
-            key={`${cfg.fontSize}-${cfg.speed}-${sampleDuration}`}
-            className={`danmaku-preview-bullet ${cfg.color === 'rainbow' ? 'rainbow' : ''}`}
+            key={`${cfg.fontSize}-${cfg.speed}-${sampleDuration}-${cfg.color}`}
+            className="danmaku-preview-bullet"
+            onAnimationIteration={() => { if (cfg.color === 'rainbow') setRandomColor(randomDanmakuColor()); }}
             style={{
               fontSize: `${cfg.fontSize}px`,
               animationDuration: `${sampleDuration}s`,
-              color: cfg.color === 'rainbow' ? undefined : cfg.color,
-              ['--danmaku-preview-color' as string]: cfg.color === 'rainbow' ? undefined : cfg.color,
+              color: cfg.color === 'rainbow' ? randomColor : cfg.color,
+              ['--danmaku-preview-color' as string]: cfg.color === 'rainbow' ? randomColor : cfg.color,
             }}
           >
             {tl('示例弹幕：开黑走起！🎮', 'Sample danmaku: Let\'s game! 🎮')}

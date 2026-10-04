@@ -5,10 +5,11 @@
  */
 
 import { isSafeServerNode, isSafeSignalingServer, sanitizeUntrustedText } from '../../security/trustBoundary';
+import { isProtectedPassword, protectLobbyPassword } from '../../security/lobbyPassword';
 
 export interface RecentLobby {
   name: string;
-  /** Passwords are intentionally never persisted. A selected record requires re-entry. */
+  /** Authenticated ciphertext; never a plaintext password. */
   password?: string;
   playerName?: string;
   useDomain?: boolean;
@@ -28,6 +29,30 @@ const PLAYERS_KEY = 'mctier_recent_players';
 const FAV_PLAYERS_KEY = 'mctier_favorite_players';
 const MAX_LOBBIES = 10;
 const MAX_PLAYERS = 30;
+let lobbyOperation: Promise<unknown> = Promise.resolve();
+
+function withLobbyStorage<T>(operation: () => Promise<T> | T): Promise<T> {
+  const result = lobbyOperation.then(operation);
+  lobbyOperation = result.catch(() => undefined);
+  return result;
+}
+
+async function migrateRecentLobbies(): Promise<RecentLobby[]> {
+  const raw = readJson<Record<string, unknown>>(LOBBIES_KEY);
+  const migrated: RecentLobby[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== 'object') continue;
+    const password = typeof item.password === 'string' && item.password
+      ? item.password.startsWith('mctier-local-v1:') && isProtectedPassword(item.password)
+        ? item.password : await protectLobbyPassword(item.password)
+      : '';
+    const normalized = normalizeRecentLobby({ ...item, password });
+    if (normalized) migrated.push(normalized);
+  }
+  const list = migrated.sort((a, b) => b.lastJoined - a.lastJoined).slice(0, MAX_LOBBIES);
+  writeRecentLobbies(list);
+  return list;
+}
 
 function readJson<T>(key: string): T[] {
   try {
@@ -65,6 +90,7 @@ function normalizeRecentLobby(value: unknown): RecentLobby | null {
     : undefined;
   return {
     name,
+    ...(isProtectedPassword(item.password) ? { password: item.password } : {}),
     ...(playerName ? { playerName } : {}),
     ...(item.useDomain === true ? { useDomain: true } : {}),
     ...(serverNode ? { serverNode } : {}),
@@ -73,17 +99,10 @@ function normalizeRecentLobby(value: unknown): RecentLobby | null {
   };
 }
 
-function readRecentLobbies(): RecentLobby[] {
-  return readJson<unknown>(LOBBIES_KEY).flatMap((item) => {
-    const lobby = normalizeRecentLobby(item);
-    return lobby ? [lobby] : [];
-  });
-}
-
 function writeRecentLobbies(value: RecentLobby[]): void {
-  // Explicitly rebuild each object so legacy `password` properties cannot be
-  // copied back into localStorage during migration.
-  writeJson(LOBBIES_KEY, value.map(({ password: _password, ...lobby }) => lobby));
+  writeJson(LOBBIES_KEY, value.map(({ password, ...lobby }) => ({
+    ...lobby, ...(isProtectedPassword(password) ? { password } : {}),
+  })));
 }
 
 function normalizeRecentPlayers(value: unknown): RecentPlayer[] {
@@ -104,11 +123,12 @@ function normalizeRecentPlayers(value: unknown): RecentPlayer[] {
 
 export const recentService = {
   /** 记录一次成功进入的大厅 */
-  recordLobby(lobby: Omit<RecentLobby, 'lastJoined'>): void {
+  async recordLobby(lobby: Omit<RecentLobby, 'lastJoined'>): Promise<void> {
+    return withLobbyStorage(async () => {
     const name = sanitizeUntrustedText(lobby.name, 64).trim();
     if (!name) return;
-    let list = readRecentLobbies();
-    // Passwords are not a stable local identifier and must never be written.
+    const password = await protectLobbyPassword(lobby.password || '');
+    let list = await migrateRecentLobbies();
     list = list.filter((item) => !(
       item.name === name &&
       item.serverNode === lobby.serverNode &&
@@ -123,6 +143,7 @@ export const recentService = {
       : undefined;
     list.unshift({
       name,
+      password,
       ...(playerName ? { playerName } : {}),
       ...(lobby.useDomain === true ? { useDomain: true } : {}),
       ...(serverNode ? { serverNode } : {}),
@@ -131,24 +152,25 @@ export const recentService = {
     });
     if (list.length > MAX_LOBBIES) list = list.slice(0, MAX_LOBBIES);
     writeRecentLobbies(list);
+    });
   },
 
-  getRecentLobbies(): RecentLobby[] {
-    const list = readRecentLobbies().sort((a, b) => b.lastJoined - a.lastJoined);
-    writeRecentLobbies(list.slice(0, MAX_LOBBIES));
-    return list;
+  async getRecentLobbies(): Promise<RecentLobby[]> {
+    return withLobbyStorage(migrateRecentLobbies);
   },
 
-  removeLobby(name: string, lastJoined?: number): void {
+  removeLobby(name: string, lastJoined?: number): Promise<void> {
+    return withLobbyStorage(async () => {
     const safeName = sanitizeUntrustedText(name, 64).trim();
-    const list = readRecentLobbies().filter((lobby) =>
+    const list = (await migrateRecentLobbies()).filter((lobby) =>
       !(lobby.name === safeName && (lastJoined === undefined || lobby.lastJoined === lastJoined))
     );
     writeRecentLobbies(list);
+    });
   },
 
-  clearLobbies(): void {
-    writeJson(LOBBIES_KEY, []);
+  clearLobbies(): Promise<void> {
+    return withLobbyStorage(() => writeJson(LOBBIES_KEY, []));
   },
 
   /** 记录一起联机过的玩家（传入当前大厅其他玩家名） */

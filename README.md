@@ -6,18 +6,37 @@
   **虚拟局域网通用组网工具**
 
   <p>
-    <img src="https://img.shields.io/badge/version-3.0.0-blue?style=flat-square" alt="Version">
+    <img src="https://img.shields.io/badge/version-3.9.5-blue?style=flat-square" alt="Version">
     <img src="https://img.shields.io/badge/Windows-10%20%2F%2011-2ea44f?style=flat-square" alt="Windows 10/11">
     <img src="https://img.shields.io/badge/Android-supported-3ddc84?style=flat-square" alt="Android">
     <img src="https://img.shields.io/badge/license-Custom-orange?style=flat-square" alt="License">
   </p>
 
-  **支持 Windows 10/11 与 Android。电脑端和手机端可加入同一个大厅，快速组成跨网络虚拟局域网。当前版本：2.7.5。**
+  **支持 Windows 10/11 与 Android。电脑端和手机端可加入同一个大厅，快速组成跨网络虚拟局域网。**
 
   [GitHub](https://github.com/pmh1314520/MCTier) · [Gitee](https://gitee.com/peng-minghang/mctier) · [快速开始](#快速开始) · [运行预览](#运行预览) · [赞助支持](#赞助支持)
 
   [English](./README_EN.md) | 简体中文
 </div>
+
+<table>
+  <tr>
+    <td align="center" width="160">
+      <a href="https://langlangy.cn/?imctier" target="_blank" rel="noopener">
+        <picture>
+          <source media="(prefers-color-scheme: dark)" srcset="public/langlangyun-logo-white.png">
+          <source media="(prefers-color-scheme: light)" srcset="public/langlangyun-logo-black.png">
+          <img src="public/langlangyun-logo-black.png" alt="浪浪云" width="120">
+        </picture>
+      </a>
+    </td>
+    <td>
+      <sub>广告赞助</sub><br>
+      <a href="https://langlangy.cn/?imctier"><strong>浪浪云 BGP 服务器 · 让游戏组网延迟更低更快</strong></a><br>
+      自建信令服务器或游戏服务器？了解浪浪云的云服务器方案。
+    </td>
+  </tr>
+</table>
 
 ---
 
@@ -111,7 +130,7 @@ MCTier 基于 EasyTier 与 WebRTC，用来把不同网络环境下的设备组�
 - **跨端加入大厅**：手机和电脑可加入同一个大厅，二维码邀请更方便。
 - **公开大厅广场**：房主可把大厅公开到广场，陌生人也能在广场看到并一键加入一起玩。
 - **自定义节点与虚拟域名**：支持添加自定义 EasyTier 节点，并为虚拟网络配置自定义域名。
-- **内置 EasyTier 节点**：默认使用海波美国节点 `udp://us01.225284.xyz:11010`，也可切换海波中国大陆或唯爱厦门节点；客户端会记住上次选择。
+- **内置 EasyTier 节点**：按唯爱厦门、海波中国大陆、海波美国的顺序显示，默认使用唯爱厦门节点 `tcp://easytier.weiai.org.cn:11010`；客户端会记住上次选择。
 - **邀请信息同步节点**：二维码、邀请链接、最近大厅和收藏大厅会同步并恢复对应的 EasyTier 节点与信令服务器配置，避免跨节点导致组网失败。
 - **连接自动自愈**：桌面端和 Android 端均支持信令断线重连、成员状态二次确认与语音连接自动恢复，降低短暂网络波动造成的离线或听不到声音问题。
 - **连接 / 网络诊断**：聚合成员直连、中继、延迟、丢包，给出整体评分与优化建议；网络诊断还能检测虚拟网卡、防火墙、UDP 端口与安全软件拦截，并支持一键放行防火墙。
@@ -199,18 +218,6 @@ MCTier 是通用组网工具，Minecraft 只是其中一个典型使用场景。
 
 如果你想自建 MCTier 信令服务器，请从 MCTier 官网获取 `MCTier信令服务器.zip` 及配套部署文档。本源码仓库只包含桌面端与 Android 客户端源码，不包含官网和信令服务器部署包。
 
-> 自建信令服务器需要一台公网主机。若还没有合适的机器，可以看看下面的赞助商：
->
-> <a href="https://langlangy.cn/?imctier" target="_blank" rel="noopener">
->   <picture>
->     <source media="(prefers-color-scheme: dark)" srcset="public/langlangyun-logo-white.png">
->     <source media="(prefers-color-scheme: light)" srcset="public/langlangyun-logo-black.png">
->     <img src="public/langlangyun-logo-black.png" alt="浪浪云" height="34">
->   </picture>
-> </a>
->
-> **[浪浪云 BGP 服务器 · 让游戏组网延迟更低更快](https://langlangy.cn/?imctier)**
-
 基本流程：
 
 1. 准备一台 Linux 服务器或局域网内主机。
@@ -291,6 +298,30 @@ MCTier 会持续维护桌面端和手机端体验。如果它帮你完成了组�
   </table>
 </div>
 
+### **赞助者名单（按时间排序）**
+
+| 序号 | 赞助者 | 赞助日期 | 赞助金额 |
+| :-: | :-: | :--: | :-: |
+| 1 | ＂Tyler    | 2026-05-02 11:55:19 | 1000.00  |
+| 2 | /dp长乐/dp | 2026-08-09 13:36:43 | 10.00    |
+| 3 | 萌萌哒miku | 2026-08-15 20:03:59 | 3.00 |
+| 4 | cutemiku | 2026-08-29 17:14:58 | 1.00 |
+| 5 | 萌萌哒miku | 2026-09-06 09:54:58 | 0.20 |
+| 6 | cutemiku | 2026-09-06 17:12:39 | 8.10 |
+| 7 | cutemiku | 2026-09-13 09:40:57 | 1.00 |
+| 8 | cutemiku | 2026-09-18 00:30:35 | 1.00 |
+| 9 | cutemiku | 2026-09-20 22:08:03 | 6.00 |
+| 10 | 萌萌哒miku | 2026-09-22 15:56:08 | 10.00 |
+| 11 | 乐天-晨曦 | 2026-09-23 11:34:11 | 20.00 |
+| 12 | 萌萌哒miku | 2026-09-25 18:28:42 | 1.00 |
+| 13 | wdz | 2026-09-27 11:25:45 | 3.00 |
+| 14 | Forever | 2026-09-27 13:04:21 | 10.00 |
+| 15 | *空 | 2026-09-28 22:48:36 | 10.00 |
+| 16 | 血影 | 2026-09-29 22:16:37 | 50.00 |
+| 17 | 血影 | 2026-09-29 22:50:54 | 50.00 |
+| 18 | 萌萌哒miku | 2026-10-03 01:03:59 | 2.33 |
+| 19 | 呼呼呼 | 2026-10-03 15:51:15 | 7.99 |
+
 ## 许可协议
 
 MCTier **自有代码**使用自定义**源码可得（source-available）非商业**许可（详见 [LICENSE](LICENSE)）：
@@ -354,8 +385,8 @@ MCTier 的通信内容（聊天、语音、文件、屏幕、远程控制）在�
 
 | 默认服务 | 地址 | 服务端可见的元数据 | 用途 |
 |---|---|---|---|
-| 信令服务器 | `wss://test.pmhs.top` | 公网 IP、连接时间、大厅名称与密码哈希用于匹配、玩家名、虚拟 IP/虚拟域名、成员数、客户端版本 | 交换 WebRTC 信令、发现同一大厅的成员 |
-| EasyTier 公共节点 | `udp://us01.225284.xyz:11010` | 公网 IP、连接时间、EasyTier 网络标识 | P2P 打洞与必要时的流量中继 |
+| 信令服务器 | `wss://mctier.pmhs.top/signaling` | 公网 IP、连接时间、大厅名称与密码哈希用于匹配、玩家名、虚拟 IP/虚拟域名、成员数、客户端版本 | 交换 WebRTC 信令、发现同一大厅的成员 |
+| EasyTier 公共节点 | 默认 `tcp://easytier.weiai.org.cn:11010`，另可选 `tcp://225284.xyz:11010`、`udp://us01.225284.xyz:11010` | 公网 IP、连接时间、EasyTier 网络标识 | P2P 打洞与必要时的流量中继 |
 | 版本检查 | `https://gitee.com/api/v5/repos/peng-minghang/mctier/tags` | 公网 IP、请求时间（由 Gitee 记录） | 获取最新版本号 |
 
 说明：

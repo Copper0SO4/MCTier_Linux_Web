@@ -724,7 +724,7 @@ html[data-theme='light'] .version-update-modal .ant-modal-title,
 html[data-theme='light'] .update-log-title,
 html[data-theme='light'] .update-log-text,
 html[data-theme='light'] .ant-modal-body
-  :is(p, div, label, span):not(.ant-btn-icon):not(.anticon):not(:is(button, .ant-btn, .mct-on-dark) *) {
+  :is(p, div, label, span):not(.ant-btn-icon):not(.anticon):not(:is(button, .ant-btn, .mct-on-dark, .quark-support) *) {
   color: #18202b !important;
 }
 html[data-theme='light'] .ant-modal-close,
@@ -921,36 +921,34 @@ html[data-theme='light'] .mct-on-dark :is(span, p, div, label, svg, .anticon) {
 
 /* Filled danger buttons keep white text; outlined danger buttons keep a
    readable red label on their white surface. */
-html[data-theme='light'] .ant-btn-dangerous:not(.ant-btn-primary),
-html[data-theme='light'] .ant-btn-dangerous:not(.ant-btn-primary) span,
-html[data-theme='light'] .ant-btn-dangerous:not(.ant-btn-primary) svg {
+html[data-theme='light'] .ant-btn-dangerous:not(.ant-btn-primary) {
   background: #ffffff !important;
   border-color: #e5484d !important;
   color: #c7353a !important;
 }
 
-html[data-theme='light'] .ant-btn-dangerous:not(.ant-btn-primary):hover,
-html[data-theme='light'] .ant-btn-dangerous:not(.ant-btn-primary):hover span,
-html[data-theme='light'] .ant-btn-dangerous:not(.ant-btn-primary):hover svg {
+html[data-theme='light'] .ant-btn-dangerous:not(.ant-btn-primary):hover {
   background: #fff3f3 !important;
   border-color: #c7353a !important;
   color: #a8282e !important;
 }
 
-html[data-theme='light'] .ant-btn-primary.ant-btn-dangerous,
-html[data-theme='light'] .ant-btn-primary.ant-btn-dangerous span,
-html[data-theme='light'] .ant-btn-primary.ant-btn-dangerous svg {
+html[data-theme='light'] .ant-btn-primary.ant-btn-dangerous {
   background: #e5484d !important;
   border-color: #e5484d !important;
   color: #ffffff !important;
 }
 
-html[data-theme='light'] .ant-btn-primary.ant-btn-dangerous:hover,
-html[data-theme='light'] .ant-btn-primary.ant-btn-dangerous:hover span,
-html[data-theme='light'] .ant-btn-primary.ant-btn-dangerous:hover svg {
+html[data-theme='light'] .ant-btn-primary.ant-btn-dangerous:hover {
   background: #c7353a !important;
   border-color: #c7353a !important;
   color: #ffffff !important;
+}
+
+/* Paint one button surface. Children inherit text color without independent fills. */
+html[data-theme='light'] .ant-btn-dangerous :is(span, svg) {
+  background: transparent !important;
+  color: inherit !important;
 }
 
 html[data-theme='light'] .leave-lobby-confirm-btn,
@@ -1379,26 +1377,27 @@ html[data-theme='light'] :is(
   transition: background-color 0.16s ease, border-color 0.16s ease, color 0.16s ease, box-shadow 0.16s ease !important;
 }
 
-html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button),
-html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button):hover:not(:disabled),
-html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button):focus-visible:not(:disabled),
-html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button):active:not(:disabled) {
+/* Chat owns both its enabled and disabled send-button palette. */
+html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button):not(:where(.send-button)),
+html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button):not(:where(.send-button)):hover:not(:disabled),
+html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button):not(:where(.send-button)):focus-visible:not(:disabled),
+html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button):not(:where(.send-button)):active:not(:disabled) {
   background-image: none !important;
   border-color: #4b941e !important;
   color: #ffffff !important;
 }
 
-html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button) {
+html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button):not(:where(.send-button)) {
   background-color: #4b941e !important;
 }
 
-html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button):hover:not(:disabled),
-html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button):focus-visible:not(:disabled) {
+html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button):not(:where(.send-button)):hover:not(:disabled),
+html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button):not(:where(.send-button)):focus-visible:not(:disabled) {
   background-color: #3f8118 !important;
   border-color: #3f8118 !important;
 }
 
-html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button):active:not(:disabled) {
+html[data-theme='light'] .ant-btn-primary:not(.ant-btn-dangerous):not(.mct-choice-button):not(:where(.send-button)):active:not(:disabled) {
   background-color: #367313 !important;
   border-color: #367313 !important;
 }

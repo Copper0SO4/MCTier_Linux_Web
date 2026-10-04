@@ -16,6 +16,12 @@ import top.pmh13.mctier.network.LobbyInviteCodec
 import top.pmh13.mctier.ui.MctierApp
 
 class MainActivity : ComponentActivity() {
+    override fun onStart() {
+        super.onStart()
+        // Check daily automatic support at startup/resume; the service also watches for midnight.
+        if (top.pmh13.mctier.ui.ConsentStore.isAgreed(applicationContext)) top.pmh13.mctier.network.QuarkSupport.get(applicationContext).onLaunch()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // 开启 edge-to-edge：让 statusBars/navigationBars/ime 等 WindowInsets 只计一次，
@@ -46,7 +52,7 @@ class MainActivity : ComponentActivity() {
         handleDeepLink(intent)
         setContent {
             val repository = remember { MctierRepository.get(applicationContext) }
-            MctierApp(repository = repository, onConsentGranted = { requestStartupPermissions() })
+            MctierApp(repository = repository, onConsentGranted = { repository.checkUpdateOnStart(); requestStartupPermissions(); top.pmh13.mctier.network.QuarkSupport.get(applicationContext).onLaunch() })
         }
     }
 

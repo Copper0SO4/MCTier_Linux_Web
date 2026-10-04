@@ -35,6 +35,11 @@ internal class SecurePreferenceStore(private val preferences: SharedPreferences)
         }.getOrNull()
     }
 
+    fun putString(key: String, value: String): Boolean {
+        val encoded = encodeString(key, value) ?: return false
+        return preferences.edit().putString(key, encoded).commit()
+    }
+
     fun putStringRemoving(key: String, value: String, legacyKey: String): Boolean {
         val encoded = encodeString(key, value) ?: return false
         return preferences.edit()

@@ -30,7 +30,11 @@ interface BackendChatMessage {
   message_type: string;
   timestamp: number;
   image_data?: number[]; // Uint8Array转换为number[]
+  recipient_id?: string | null;
 }
+import { MAX_VOICE_BYTES, voiceMetadata, voiceDataUrl } from './voiceMessage';
+import { bytesToImageDataUrl } from './imageData';
+import { parseChatAttachment, type ChatAttachment } from './fileAttachment';
 
 // 本机聊天服务器端口（服务器现在仅绑定在虚拟网卡 IP 上，不再监听 0.0.0.0，
 // 因此自订阅也必须连接到本机的虚拟 IP，而不是 127.0.0.1）
@@ -39,6 +43,13 @@ const CHAT_SERVER_PORT = 14540;
 class P2PChatService {
   private selfStreamAbortController: AbortController | null = null;
   private selfReconnectTimer: number | null = null;
+  private historyReconcileTimer: number | null = null;
+  private historyReconcileInFlight = false;
+  private historySince = 0;
+  private listeningGeneration = 0;
+  private lastFullHistory = 0;
+  private streamWatchdog: number | null = null;
+  private lastStreamActivity = 0;
   private isListening: boolean = false;
   private onMessageCallback?: (message: ChatMessage) => void;
   private peerIps: string[] = [];
@@ -46,6 +57,7 @@ class P2PChatService {
   private myVirtualIp: string = ''; // 本机虚拟IP，用于连接本机聊天服务器
   private chatToken: string = '';
   private seenMessageIds: Set<string> = new Set(); // 基于消息ID去重，避免重复回调
+  private reconciledMessageIds: Set<string> = new Set();
   private seenMessageOrder: string[] = []; // 维护去重集合的插入顺序，便于裁剪
   private pendingRecalls: Map<string, string> = new Map();
   private onAvatarCallback?: (playerId: string, avatarData?: string) => void;
@@ -90,8 +102,7 @@ class P2PChatService {
     this.stopListening();
     this.chatToken = nextToken;
     if (wasListening && nextToken) {
-      this.isListening = true;
-      void this.connectToSelfStream();
+      this.startPolling();
     }
   }
   
@@ -107,8 +118,11 @@ class P2PChatService {
     this.onMessageCallback = undefined;
     this.onAvatarCallback = undefined;
     this.seenMessageIds.clear();
+    this.reconciledMessageIds.clear();
     this.seenMessageOrder = [];
     this.pendingRecalls.clear();
+    this.historySince = 0;
+    this.lastFullHistory = 0;
     console.log('🔄 [P2PChatService] 服务已重置');
   }
 
@@ -124,9 +138,69 @@ class P2PChatService {
   }
 
   startPolling(): void {
-    if (this.selfStreamAbortController) return;
     this.isListening = true;
     void this.connectToSelfStream();
+    this.scheduleHistoryReconcile();
+    if (!this.streamWatchdog) this.streamWatchdog = window.setInterval(() => {
+      if (!this.isListening) return;
+      if (this.selfStreamAbortController && Date.now() - this.lastStreamActivity > 45000) {
+        this.selfStreamAbortController.abort();
+        this.selfStreamAbortController = null;
+      }
+      if (!this.selfStreamAbortController) void this.connectToSelfStream();
+    }, 10000);
+  }
+
+  /**
+   * SSE is low latency but inherently lossy across reconnects. Reconcile from
+   * the authenticated native history endpoint so a message or avatar sent
+   * while the stream was being replaced is delivered to the renderer too.
+   */
+  private scheduleHistoryReconcile(): void {
+    if (!this.isListening) return;
+    const generation = this.listeningGeneration;
+    if (this.historyReconcileTimer) window.clearTimeout(this.historyReconcileTimer);
+    this.historyReconcileTimer = window.setTimeout(() => {
+      this.historyReconcileTimer = null;
+      if (!this.isListening || generation !== this.listeningGeneration) return;
+      void this.reconcileHistory().finally(() => {
+        if (generation === this.listeningGeneration) this.scheduleHistoryReconcile();
+      });
+    }, 2500);
+  }
+
+  private async reconcileHistory(): Promise<void> {
+    if (this.historyReconcileInFlight || !this.isListening || !this.currentPlayerId) return;
+    this.historyReconcileInFlight = true;
+    const generation = this.listeningGeneration;
+    // Timestamps originate on different peers. Periodic full bounded-history
+    // reads recover messages missed by a cursor advanced by a faster clock.
+    const full = Date.now() - this.lastFullHistory >= 30000;
+    try {
+      const messages = await invoke<BackendChatMessage[]>('get_p2p_chat_messages', {
+        peerIps: this.peerIps,
+        since: full ? null : Math.max(0, this.historySince - 2),
+      });
+      if (!this.isListening || generation !== this.listeningGeneration) return;
+      if (!Array.isArray(messages)) return;
+      if (full) this.lastFullHistory = Date.now();
+      const snapshotIds = full ? new Set<string>() : null;
+      for (const message of messages) {
+        if (typeof message.timestamp === 'number' && Number.isFinite(message.timestamp)) {
+          this.historySince = Math.max(this.historySince, message.timestamp);
+        }
+        this.handleMessage(message);
+        const id = sanitizeIdentifier(message.id);
+        if (this.seenMessageIds.has(id) || this.reconciledMessageIds.has(id)) snapshotIds?.add(id);
+      }
+      // Multiple peers can contribute more than the rolling 1,000-ID window.
+      // Keep the last bounded snapshot too, so full recovery never replays it.
+      if (snapshotIds) this.reconciledMessageIds = snapshotIds;
+    } catch (error) {
+      console.warn('⚠️ [P2PChatService] 聊天历史对账失败:', error instanceof Error ? error.message : '请求失败');
+    } finally {
+      if (generation === this.listeningGeneration) this.historyReconcileInFlight = false;
+    }
   }
 
   /**
@@ -148,6 +222,7 @@ class P2PChatService {
     const streamUrl = `http://${this.myVirtualIp}:${CHAT_SERVER_PORT}/api/chat/stream`;
     const controller = new AbortController();
     this.selfStreamAbortController = controller;
+    this.lastStreamActivity = Date.now();
     console.log('📡 [P2PChatService] 连接到本机认证消息流');
 
     try {
@@ -171,12 +246,14 @@ class P2PChatService {
       let buffer = '';
       while (this.isListening && this.selfStreamAbortController === controller) {
         const { done, value } = await reader.read();
+        if (controller.signal.aborted || this.selfStreamAbortController !== controller) return;
         if (done) break;
+        this.lastStreamActivity = Date.now();
         buffer += decoder.decode(value, { stream: true });
         buffer = this.consumeSseFrames(buffer);
       }
       buffer += decoder.decode();
-      this.consumeSseFrames(buffer);
+      if (!controller.signal.aborted && this.selfStreamAbortController === controller) this.consumeSseFrames(buffer);
     } catch (error) {
       if (!controller.signal.aborted && this.isListening) {
         const detail = error instanceof Error ? error.message : '连接失败';
@@ -236,13 +313,19 @@ class P2PChatService {
     const messageType = sanitizeIdentifier(msg.message_type, 32).toLowerCase();
     const playerName = sanitizeUntrustedText(msg.player_name, 64).trim();
     const contentLimit = messageType === 'todo' ? MAX_TODO_ITEMS * (MAX_TODO_TEXT_LENGTH + 128) : MAX_CHAT_TEXT_LENGTH;
-    const content = sanitizeUntrustedText(msg.content, contentLimit);
+    const content = messageType === 'avatar'
+      ? (msg.content === '' ? '' : sanitizeImageDataUrl(msg.content) ?? '')
+      : sanitizeUntrustedText(msg.content, contentLimit);
     const timestamp = typeof msg.timestamp === 'number' ? msg.timestamp : Number.NaN;
 
     if (!messageId || !playerId || !Number.isFinite(timestamp) || timestamp < 0) return;
-    if (!['text', 'image', 'announce', 'voicegroup', 'todo', 'recall', 'avatar'].includes(messageType)) return;
+    if (msg.recipient_id && msg.recipient_id !== this.currentPlayerId) return;
+    if (!['text', 'image', 'voice', 'file', 'announce', 'voicegroup', 'todo', 'recall', 'avatar'].includes(messageType)) return;
+    if (messageType === 'voice' && (!voiceMetadata(content) || !Array.isArray(msg.image_data) || msg.image_data.length === 0 || msg.image_data.length > MAX_VOICE_BYTES || !msg.image_data.every(b => Number.isInteger(b) && b >= 0 && b <= 255))) return;
     if (messageType !== 'announce' && messageType !== 'voicegroup' && messageType !== 'todo' && messageType !== 'recall' && messageType !== 'avatar' && !playerName) return;
     if (messageType === 'image' && !this.isSafeImageBytes(msg.image_data)) return;
+    const attachment = messageType === 'file' ? parseChatAttachment(content) : null;
+    if (messageType === 'file' && (!attachment || msg.image_data != null)) return;
 
     const safeMessage: BackendChatMessage = {
       ...msg,
@@ -252,7 +335,7 @@ class P2PChatService {
       content,
       message_type: messageType,
       timestamp,
-      image_data: messageType === 'image' ? msg.image_data : undefined,
+      image_data: messageType === 'image' || messageType === 'voice' ? msg.image_data : undefined,
     };
 
     // 控制消息（公告 / 语音小队 / 待办）：不计入聊天，分发到状态后返回
@@ -266,7 +349,7 @@ class P2PChatService {
     ) {
       if (safeMessage.player_id === this.currentPlayerId) return;
       // 按消息 ID 去重：避免对账/SSE 重复投递导致控制消息反复触发（如剪贴板反复弹窗、白板重复笔画）
-      if (this.seenMessageIds.has(safeMessage.id)) return;
+      if (this.seenMessageIds.has(safeMessage.id) || this.reconciledMessageIds.has(safeMessage.id)) return;
       this.seenMessageIds.add(safeMessage.id);
       this.seenMessageOrder.push(safeMessage.id);
       if (this.seenMessageOrder.length > 1000) {
@@ -285,7 +368,7 @@ class P2PChatService {
 
     // 【修复】基于消息ID去重（每条消息ID唯一），避免重复回调；
     // 旧逻辑用“内容相同”去重，会误杀用户连续发送的相同文本（如连续两条“哈哈”）。
-    if (this.seenMessageIds.has(safeMessage.id)) {
+    if (this.seenMessageIds.has(safeMessage.id) || this.reconciledMessageIds.has(safeMessage.id)) {
       console.log('🚫 [P2PChatService] 跳过重复消息（ID相同）');
       return;
     }
@@ -308,12 +391,15 @@ class P2PChatService {
       playerName: safeMessage.player_name,
       content: safeMessage.content,
       timestamp: safeMessage.timestamp * 1000, // 转换为毫秒
-      type: safeMessage.message_type === 'image' ? 'image' : 'text',
-      imageData: safeMessage.image_data ? this.arrayToBase64(safeMessage.image_data) : undefined,
+      ...(safeMessage.recipient_id ? { recipientId: safeMessage.recipient_id } : {}),
+      type: messageType === 'voice' ? 'voice' : safeMessage.message_type === 'image' ? 'image' : messageType === 'file' ? 'file' : 'text',
+      imageData: messageType === 'voice' ? voiceDataUrl(safeMessage.image_data!, voiceMetadata(content)!.mime) : safeMessage.image_data ? bytesToImageDataUrl(new Uint8Array(safeMessage.image_data)) : undefined,
+      attachment: attachment ?? undefined,
     };
     if (this.pendingRecalls.get(safeMessage.id) === safeMessage.player_id && isWithinRecallWindow(chatMessage.timestamp)) {
       chatMessage.content = '';
       chatMessage.imageData = undefined;
+      chatMessage.attachment = undefined;
       chatMessage.type = 'text';
       chatMessage.recalled = true;
       this.pendingRecalls.delete(safeMessage.id);
@@ -324,12 +410,10 @@ class P2PChatService {
       this.onMessageCallback(chatMessage);
     }
 
-    // 只有在不在聊天室界面时才播放音效
-    const isInChatRoom = (window as any).__isInChatRoom__;
-    if (!isInChatRoom) {
+    // The registered UI callback applies conversation/mention notification
+    // rules. Do not play the same notification again here.
+    if (!this.onMessageCallback && !(window as any).__isInChatRoom__) {
       this.playNewMessageSound();
-    } else {
-      console.log('🔕 [P2PChatService] 在聊天室中，跳过播放音效');
     }
   }
 
@@ -366,7 +450,7 @@ class P2PChatService {
         }
       } else if (type === 'avatar') {
         const avatarData = sanitizeImageDataUrl(msg.content);
-        if (avatarData) this.onAvatarCallback?.(msg.player_id, avatarData);
+        if (avatarData || msg.content === '') this.onAvatarCallback?.(msg.player_id, avatarData);
       }
     } catch (error) {
       console.warn('⚠️ [P2PChatService] 处理控制消息失败:', error);
@@ -432,6 +516,9 @@ class P2PChatService {
    */
   private stopListening(): void {
     this.isListening = false;
+    this.listeningGeneration++;
+    if (this.streamWatchdog) window.clearInterval(this.streamWatchdog);
+    this.streamWatchdog = null;
 
     if (this.selfReconnectTimer) {
       clearTimeout(this.selfReconnectTimer);
@@ -442,12 +529,17 @@ class P2PChatService {
       this.selfStreamAbortController = null;
       console.log('🛑 [P2PChatService] 已关闭本机消息流连接');
     }
+    if (this.historyReconcileTimer) {
+      window.clearTimeout(this.historyReconcileTimer);
+      this.historyReconcileTimer = null;
+    }
+    this.historyReconcileInFlight = false;
   }
 
   /**
    * 发送文本消息，返回送达统计 {delivered, total}
    */
-  async sendTextMessage(content: string, messageId?: string): Promise<{ delivered: number; total: number }> {
+  async sendTextMessage(content: string, messageId?: string, recipientId?: string): Promise<{ delivered: number; total: number }> {
     if (!this.currentPlayerId) {
       throw new Error('未初始化：缺少玩家ID');
     }
@@ -466,6 +558,7 @@ class P2PChatService {
         imageData: null,
         messageId: safeMessageId,
         peerIps: this.peerIps,
+        recipientId: recipientId || null,
       });
       console.log('✅ [P2PChatService] 文本消息已发送', res);
       return res ?? { delivered: 0, total: 0 };
@@ -475,23 +568,65 @@ class P2PChatService {
     }
   }
 
+  async sendVoiceMessage(blob: Blob, duration: number, messageId: string, recipientId?: string) {
+    const sessionPlayer = this.currentPlayerId;
+    const sessionToken = this.chatToken;
+    const data = Array.from(new Uint8Array(await blob.arrayBuffer()));
+    if (!sessionPlayer || this.currentPlayerId !== sessionPlayer || this.chatToken !== sessionToken) throw new Error('聊天会话已变化，请重新发送语音');
+    return invoke<{ delivered: number; total: number }>('send_p2p_chat_message', {
+      playerId: this.currentPlayerId, playerName: '', messageType: 'voice',
+      content: JSON.stringify({ mime: blob.type, duration }),
+      imageData: data,
+      messageId, recipientId: recipientId || null, peerIps: this.peerIps,
+    });
+  }
+
+  async sendFileMessage(attachment: ChatAttachment, messageId: string, recipientId?: string) {
+    const safe = parseChatAttachment(attachment);
+    if (!this.currentPlayerId || !safe) throw new Error('文件附件元数据无效');
+    return invoke<{ delivered: number; total: number }>('send_p2p_chat_message', {
+      playerId: this.currentPlayerId, playerName: '', messageType: 'file',
+      content: JSON.stringify(safe), imageData: null, messageId,
+      recipientId: recipientId || null, peerIps: this.peerIps,
+    });
+  }
+
   /**
    * 发送图片消息（Base64格式）
    * 【优化】使用更高效的数据转换方式
    */
-  async sendImageMessage(imageDataUrl: string, content = '[图片]', messageId?: string): Promise<void> {
+  async sendImageMessage(imageDataUrl: string, content = '[图片]', messageId?: string, recipientId?: string,
+    onPrepared?: (image: { imageData?: string; attachment?: ChatAttachment }) => void): Promise<void> {
     if (!this.currentPlayerId) {
       throw new Error('未初始化：缺少玩家ID');
     }
 
-    const safeImageDataUrl = sanitizeImageDataUrl(imageDataUrl);
+    const sessionPlayer = this.currentPlayerId;
+    const sessionToken = this.chatToken;
+    if (imageDataUrl.length > Math.ceil(64 * 1024 * 1024 / 3) * 4 + 64) throw new Error('图片超过 64 MiB');
+    const source = /^data:image\/(?:png|jpeg|gif|webp);base64,([A-Za-z0-9+/]*={0,2})$/.exec(imageDataUrl);
     const safeContent = sanitizeUntrustedText(content, 256).trim() || '[图片]';
     const safeMessageId = messageId ? sanitizeIdentifier(messageId) : undefined;
-    if (!safeImageDataUrl) throw new Error('图片数据格式无效');
+    if (!source || source[1].length > Math.ceil(64 * 1024 * 1024 / 3) * 4) throw new Error('图片数据格式无效或超过 64 MiB');
     if (messageId && !safeMessageId) throw new Error('消息ID无效');
 
     try {
       // 从Data URL中提取Base64数据
+      const prepared = await invoke<{ imageDataUrl: string | null; attachment: ChatAttachment | null }>('prepare_chat_image', {
+        imageData: source[1], recipientId: recipientId || null,
+      });
+      if (this.currentPlayerId !== sessionPlayer || this.chatToken !== sessionToken) throw new Error('聊天会话已变化，请重新发送图片');
+      if (prepared.attachment) {
+        const attachment = parseChatAttachment(prepared.attachment);
+        if (!attachment) throw new Error('图片附件无效');
+        onPrepared?.({ attachment });
+        const receipt = await this.sendFileMessage(attachment, messageId || `msg-${this.currentPlayerId}-${Date.now()}`, recipientId);
+        if (receipt.total > 0 && receipt.delivered === 0) throw new Error('图片未送达，请检查连接后重试');
+        return;
+      }
+      const safeImageDataUrl = sanitizeImageDataUrl(prepared.imageDataUrl);
+      if (!safeImageDataUrl) throw new Error('优化后的图片无效');
+      onPrepared?.({ imageData: safeImageDataUrl });
       const base64Data = safeImageDataUrl.split(',')[1];
       
       // 【优化】使用Uint8Array直接转换，避免中间字符串
@@ -512,7 +647,7 @@ class P2PChatService {
 
       const startTime = performance.now();
       
-      await invoke('send_p2p_chat_message', {
+      const receipt = await invoke<{ delivered: number; total: number }>('send_p2p_chat_message', {
         playerId: this.currentPlayerId,
         playerName: '', // 后端会自动填充
         content: safeContent,
@@ -520,7 +655,9 @@ class P2PChatService {
         imageData: Array.from(bytes),
         messageId: safeMessageId,
         peerIps: this.peerIps,
+        recipientId: recipientId || null,
       });
+      if (receipt.total > 0 && receipt.delivered === 0) throw new Error('图片未送达，请检查连接后重试');
       
       const elapsed = performance.now() - startTime;
       console.log(`✅ [P2PChatService] 图片消息已发送 (耗时: ${elapsed.toFixed(2)}ms, 大小: ${(bytes.length / 1024).toFixed(2)}KB)`);
@@ -531,7 +668,7 @@ class P2PChatService {
   }
 
   /** 广播撤回控制消息。接收方会校验撤回者是否为原发送者。 */
-  async recallMessage(messageId: string): Promise<void> {
+  async recallMessage(messageId: string, recipientId?: string): Promise<void> {
     if (!this.currentPlayerId) throw new Error('未初始化：缺少玩家ID');
     const targetId = sanitizeIdentifier(messageId);
     if (!targetId) throw new Error('消息ID无效');
@@ -543,6 +680,7 @@ class P2PChatService {
       imageData: null,
       messageId: `recall-${this.currentPlayerId}-${Date.now()}`,
       peerIps: this.peerIps,
+      recipientId: recipientId || null,
     });
   }
 
@@ -559,24 +697,6 @@ class P2PChatService {
     }
   }
 
-  /**
-   * 将number数组转换为Base64 Data URL
-   * 【优化】直接使用JPEG格式，因为前端已经统一转换为JPEG
-   */
-  private arrayToBase64(data: number[]): string {
-    const bytes = new Uint8Array(data);
-    let binary = '';
-    const chunkSize = 8192; // 分块处理，提高性能
-    
-    for (let i = 0; i < bytes.length; i += chunkSize) {
-      const chunk = bytes.subarray(i, Math.min(i + chunkSize, bytes.length));
-      binary += String.fromCharCode.apply(null, Array.from(chunk));
-    }
-    
-    const base64 = btoa(binary);
-    // 前端已统一转换为JPEG格式
-    return `data:image/jpeg;base64,${base64}`;
-  }
 }
 
 export const p2pChatService = new P2PChatService();

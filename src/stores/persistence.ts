@@ -5,6 +5,7 @@
 
 import { useAppStore } from './appStore';
 import type { UserConfig, WindowPosition } from '../types';
+import { isProtectedPassword, protectLobbyPassword } from '../security/lobbyPassword';
 import {
   isSafeImageDataUrl,
   isSafeServerNode,
@@ -59,8 +60,8 @@ const normalizeStringList = (value: unknown, maxLength: number): string[] | unde
 
 /**
  * Import/storage data is untrusted JSON. Keep only fields understood by the
- * frontend and deliberately drop lobby passwords; localStorage is not a
- * secret store and old records are migrated by omission.
+ * frontend. Passwords must be migrated to device-bound ciphertext before
+ * this synchronous sanitizer is used.
  */
 export const sanitizePersistedConfig = (value: unknown): UserConfig => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
@@ -106,7 +107,9 @@ export const sanitizePersistedConfig = (value: unknown): UserConfig => {
     if (lobbyName) autoLobby.lobbyName = lobbyName;
     if (autoPlayerName) autoLobby.playerName = autoPlayerName;
     if (typeof autoLobbyInput.useDomain === 'boolean') autoLobby.useDomain = autoLobbyInput.useDomain;
-    // Intentionally omit autoLobbyInput.lobbyPassword.
+    if (isProtectedPassword(autoLobbyInput.lobbyPassword) && autoLobbyInput.lobbyPassword.startsWith('mctier-local-v1:')) {
+      autoLobby.lobbyPassword = autoLobbyInput.lobbyPassword;
+    }
     result.autoLobby = autoLobby;
   }
 
@@ -124,6 +127,22 @@ export const sanitizePersistedConfig = (value: unknown): UserConfig => {
 
   return result;
 };
+
+async function protectImportedConfig(value: unknown): Promise<UserConfig> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const input = value as Record<string, unknown>;
+    const auto = input.autoLobby;
+    if (auto && typeof auto === 'object' && !Array.isArray(auto)) {
+      const lobby = auto as Record<string, unknown>;
+      if (typeof lobby.lobbyPassword === 'string' && lobby.lobbyPassword) {
+        return sanitizePersistedConfig({ ...input, autoLobby: {
+          ...lobby, lobbyPassword: await protectLobbyPassword(lobby.lobbyPassword),
+        } });
+      }
+    }
+  }
+  return sanitizePersistedConfig(value);
+}
 
 /**
  * 保存用户配置到本地存储
@@ -201,14 +220,14 @@ export const clearStorage = (): void => {
  * 初始化 Store 持久化
  * 在应用启动时调用，加载保存的配置
  */
-export const initializeStorePersistence = (): void => {
+export const initializeStorePersistence = async (): Promise<void> => {
   try {
     // 加载用户配置
-    const savedConfig = loadConfigFromStorage();
+    const rawConfig = localStorage.getItem(STORAGE_KEYS.CONFIG);
+    const savedConfig = rawConfig ? await protectImportedConfig(JSON.parse(rawConfig)) : null;
     if (savedConfig) {
       useAppStore.getState().updateConfig(savedConfig);
-      // Rewrite legacy entries so dropped secrets are removed immediately,
-      // even when the user does not change any setting this session.
+      // Only replace legacy data after encryption succeeds.
       saveConfigToStorage(savedConfig);
     }
 
@@ -270,13 +289,13 @@ export const importConfigFromFile = (file: File): Promise<void> => {
         return;
       }
       const reader = new FileReader();
-      reader.onload = (e) => {
+      reader.onload = async (e) => {
         try {
           const configJson = e.target?.result;
           if (typeof configJson !== 'string' || configJson.length > MAX_CONFIG_FILE_BYTES) {
             throw new Error('配置文件过大');
           }
-          const config = sanitizePersistedConfig(JSON.parse(configJson));
+          const config = await protectImportedConfig(JSON.parse(configJson));
           useAppStore.getState().updateConfig(config);
           saveConfigToStorage(config);
           resolve();

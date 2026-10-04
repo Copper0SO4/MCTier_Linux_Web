@@ -18,12 +18,13 @@
  */
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::{
     body::Bytes,
-    extract::{ConnectInfo, DefaultBodyLimit, Query, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Path as AxumPath, Query, State},
     http::{header, HeaderMap, StatusCode},
     response::sse::{Event, KeepAlive, Sse},
     routing::{get, post},
@@ -46,11 +47,13 @@ use super::http_cors::lan_cors_layer;
 pub const CHAT_SERVER_PORT: u16 = 14540;
 pub const CHAT_TOKEN_HEX_BYTES: usize = 64;
 pub const MAX_HISTORY_MESSAGES: usize = 1000;
-pub const MAX_HISTORY_BYTES: usize = 4 * 1024 * 1024;
-pub const MAX_HTTP_BODY_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_HISTORY_BYTES: usize = 12 * 1024 * 1024;
+pub const MAX_HTTP_BODY_BYTES: usize = 12 * 1024 * 1024;
 pub const MAX_TEXT_BYTES: usize = 16 * 1024;
-pub const MAX_IMAGE_BYTES: usize = 512 * 1024;
+pub const MAX_IMAGE_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_IMAGE_CONTENT_BYTES: usize = 256;
+pub const MAX_FILE_CONTENT_BYTES: usize = 1024;
+pub const MAX_CHAT_ATTACHMENT_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_ANNOUNCE_BYTES: usize = 16 * 1024;
 pub const MAX_VOICE_GROUP_BYTES: usize = 32;
 pub const MAX_CLIPBOARD_BYTES: usize = 16 * 1024;
@@ -73,6 +76,23 @@ pub struct ChatMessage {
     pub message_type: MessageType,
     pub timestamp: u64,
     pub image_data: Option<Vec<u8>>,
+    #[serde(default)]
+    pub recipient_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ChatAttachmentMeta {
+    pub id: String,
+    pub name: String,
+    pub mime: String,
+    pub size: u64,
+}
+
+#[derive(Debug, Clone)]
+struct LocalChatAttachment {
+    meta: ChatAttachmentMeta,
+    path: PathBuf,
+    recipient_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -80,6 +100,8 @@ pub struct ChatMessage {
 pub enum MessageType {
     Text,
     Image,
+    Voice,
+    File,
     Announce,
     VoiceGroup,
     Clipboard,
@@ -119,6 +141,8 @@ pub struct SendMessageRequest {
     pub content: String,
     pub message_type: MessageType,
     pub image_data: Option<Vec<u8>>,
+    #[serde(default)]
+    pub recipient_id: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -144,12 +168,14 @@ impl std::hash::Hash for RateLimitKey {
 
 #[derive(Clone)]
 struct AppState {
+    signer: Arc<RwLock<Option<Arc<ChatSigner>>>>,
     local_messages: Arc<RwLock<VecDeque<ChatMessage>>>,
     history_bytes: Arc<RwLock<usize>>,
     message_tx: broadcast::Sender<ChatMessage>,
     session: Arc<RwLock<Option<ChatSession>>>,
     rate_limiter: Arc<Mutex<HashMap<RateLimitKey, VecDeque<Instant>>>>,
     replay_guard: Arc<Mutex<ReplayGuard>>,
+    attachments: Arc<RwLock<HashMap<String, LocalChatAttachment>>>,
 }
 
 /// A roster entry resolved by signing key id.
@@ -180,12 +206,56 @@ pub struct ChatService {
     session: Arc<RwLock<Option<ChatSession>>>,
     rate_limiter: Arc<Mutex<HashMap<RateLimitKey, VecDeque<Instant>>>>,
     replay_guard: Arc<Mutex<ReplayGuard>>,
-    /// Signing identity for the current lobby session. Recreated on every
-    /// session so leaving a lobby retires the key permanently.
+    /// Protected installation identity loaded for the current lobby. Clearing
+    /// a session disables signing; tokens and replay state still rotate.
     signer: Arc<RwLock<Option<Arc<ChatSigner>>>>,
+    attachments: Arc<RwLock<HashMap<String, LocalChatAttachment>>>,
 }
 
 impl ChatService {
+    pub fn encrypt_for_peer(
+        &self,
+        peer: &ChatPeerIdentity,
+        path: &str,
+        body: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let signer = self
+            .signer
+            .read()
+            .clone()
+            .ok_or("Chat identity unavailable")?;
+        let token = self.get_chat_token().ok_or("Chat session unavailable")?;
+        signer.encrypt(
+            peer.chat_public_key
+                .as_deref()
+                .ok_or("Peer encryption identity unavailable")?,
+            &token,
+            path,
+            body,
+        )
+    }
+
+    pub fn decrypt_from_peer(
+        &self,
+        peer: &ChatPeerIdentity,
+        path: &str,
+        body: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        let signer = self
+            .signer
+            .read()
+            .clone()
+            .ok_or("Chat identity unavailable")?;
+        let token = self.get_chat_token().ok_or("Chat session unavailable")?;
+        signer.decrypt(
+            peer.chat_public_key
+                .as_deref()
+                .ok_or("Peer encryption identity unavailable")?,
+            &token,
+            path,
+            body,
+        )
+    }
     pub fn new() -> Self {
         let (message_tx, _rx) = broadcast::channel(256);
         Self {
@@ -198,6 +268,7 @@ impl ChatService {
             rate_limiter: Arc::new(Mutex::new(HashMap::new())),
             replay_guard: Arc::new(Mutex::new(ReplayGuard::new())),
             signer: Arc::new(RwLock::new(None)),
+            attachments: Arc::new(RwLock::new(HashMap::new())),
         }
     }
 
@@ -215,7 +286,7 @@ impl ChatService {
         if let Some(signer) = slot.as_ref() {
             return Ok(signer.public_key_b64());
         }
-        let signer = Arc::new(ChatSigner::generate()?);
+        let signer = Arc::new(ChatSigner::local_identity()?);
         let encoded = signer.public_key_b64();
         *slot = Some(signer);
         Ok(encoded)
@@ -424,17 +495,39 @@ impl ChatService {
             .and_then(|session| session.host_id.clone())
     }
 
-    /// Clearing a session is a security boundary: the signing key is retired
-    /// and the replay window is forgotten along with the roster.
+    /// Clearing a session removes its authorization and in-memory signer.
+    /// Rejoining reloads the protected identity but requires fresh registration.
     pub fn clear_session(&self) {
         *self.session.write() = None;
         *self.signer.write() = None;
     }
 
+    /// Revoke the current signaling-issued authorization without rotating the
+    /// device signer or stopping the bound HTTP service. A newly authenticated
+    /// WebSocket registration can then install a fresh epoch baseline even when
+    /// an in-memory signaling server restarted its counter.
+    pub async fn reset_auth_baseline(&self) {
+        *self.session.write() = None;
+        self.rate_limiter.lock().await.clear();
+        self.replay_guard.lock().await.clear();
+    }
+
     /// Start only after a signaling-issued token has configured this session.
     pub async fn start_server(&self) -> Result<(), Box<dyn std::error::Error>> {
         if self.is_running() {
-            return Ok(());
+            // A task can finish after an OS/network reset while its handle is
+            // still present. Abort and recreate the listener instead of
+            // leaving the UI with a false "running" state.
+            // Take the handle in its own scope. Keeping the write guard alive
+            // through the `if let` body would deadlock when putting a live
+            // handle back into the same RwLock.
+            let existing_handle = { self.server_handle.write().take() };
+            if let Some(handle) = existing_handle {
+                if !handle.is_finished() {
+                    *self.server_handle.write() = Some(handle);
+                    return Ok(());
+                }
+            }
         }
         let session = self
             .session
@@ -457,19 +550,31 @@ impl ChatService {
             .route("/api/chat/messages", get(get_messages))
             .route("/api/chat/send", post(send_message))
             .route("/api/chat/stream", get(stream_messages))
+            .route("/api/chat/attachment/:id", get(get_attachment))
             .layer(DefaultBodyLimit::max(MAX_HTTP_BODY_BYTES))
             .layer(lan_cors_layer())
             .with_state(AppState {
+                signer: Arc::clone(&self.signer),
                 local_messages: Arc::clone(&self.local_messages),
                 history_bytes: Arc::clone(&self.history_bytes),
                 message_tx: self.message_tx.clone(),
                 session: Arc::clone(&self.session),
                 rate_limiter: Arc::clone(&self.rate_limiter),
                 replay_guard: Arc::clone(&self.replay_guard),
+                attachments: Arc::clone(&self.attachments),
             });
-        let listener =
-            tokio::net::TcpListener::bind(SocketAddr::new(IpAddr::V4(ip), CHAT_SERVER_PORT))
-                .await?;
+        let address = SocketAddr::new(IpAddr::V4(ip), CHAT_SERVER_PORT);
+        // EasyTier reports its assigned IP before Windows finishes creating
+        // the TUN interface. Keep registration alive while that IP becomes bindable.
+        let listener = retry_chat_bind(
+            || std::future::ready(super::virtual_network::bind_service_listener(address)),
+            Duration::from_secs(5),
+        )
+        .await
+        .map_err(|error| {
+            log::error!("聊天服务绑定失败: address={}, error={}", address, error);
+            error
+        })?;
         let server_task = tokio::spawn(async move {
             if let Err(error) = axum::serve(
                 listener,
@@ -484,15 +589,24 @@ impl ChatService {
         Ok(())
     }
 
-    pub async fn stop_server(&self) {
+    /// Reset state for a lobby that has already reserved this signer as its
+    /// signaling identity. Unlike `stop_server`, this must not rotate the key
+    /// between the native lobby command and the renderer's registration.
+    pub async fn reset_for_lobby(&self) {
         if let Some(handle) = self.server_handle.write().take() {
             handle.abort();
         }
-        self.clear_session();
+        *self.session.write() = None;
         self.clear_local_messages();
+        self.clear_local_attachments();
         self.rate_limiter.lock().await.clear();
         self.replay_guard.lock().await.clear();
         *self.virtual_ip.write() = None;
+    }
+
+    pub async fn stop_server(&self) {
+        self.reset_for_lobby().await;
+        *self.signer.write() = None;
     }
 
     pub fn is_running(&self) -> bool {
@@ -520,6 +634,88 @@ impl ChatService {
     pub fn clear_local_messages(&self) {
         self.local_messages.write().clear();
         *self.history_bytes.write() = 0;
+    }
+
+    pub fn register_attachment(
+        &self,
+        meta: ChatAttachmentMeta,
+        path: PathBuf,
+        recipient_id: Option<String>,
+    ) -> Result<(), String> {
+        if !valid_attachment_meta(&meta) {
+            return Err("聊天附件元数据无效".to_string());
+        }
+        let metadata = std::fs::symlink_metadata(&path)
+            .map_err(|error| format!("读取聊天附件失败: {error}"))?;
+        if !metadata.is_file() || metadata.file_type().is_symlink() || metadata.len() != meta.size {
+            return Err("聊天附件不是可用的普通文件".to_string());
+        }
+        self.attachments.write().insert(
+            meta.id.clone(),
+            LocalChatAttachment {
+                meta,
+                path,
+                recipient_id,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn has_attachment(&self, id: &str, recipient_id: Option<&str>) -> bool {
+        self.attachments
+            .read()
+            .get(id)
+            .is_some_and(|attachment| attachment.recipient_id.as_deref() == recipient_id)
+    }
+
+    pub fn peer_by_player_id(&self, player_id: &str) -> Option<ChatPeerIdentity> {
+        self.session
+            .read()
+            .as_ref()?
+            .identities
+            .values()
+            .find(|identity| identity.player_id == player_id)
+            .cloned()
+    }
+
+    pub fn local_attachment_path(&self, meta: &ChatAttachmentMeta) -> Option<PathBuf> {
+        self.attachments
+            .read()
+            .get(&meta.id)
+            .and_then(|attachment| (attachment.meta == *meta).then(|| attachment.path.clone()))
+    }
+
+    fn clear_local_attachments(&self) {
+        let attachments = std::mem::take(&mut *self.attachments.write());
+        for attachment in attachments.into_values() {
+            let _ = std::fs::remove_file(attachment.path);
+        }
+    }
+}
+
+async fn retry_chat_bind<T, F, Fut>(mut bind: F, timeout: Duration) -> std::io::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::io::Result<T>>,
+{
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        match bind().await {
+            Ok(listener) => return Ok(listener),
+            Err(error) => {
+                if !matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::AddrNotAvailable
+                ) || tokio::time::Instant::now() >= deadline
+                {
+                    return Err(error);
+                }
+                tokio::time::sleep_until(
+                    deadline.min(tokio::time::Instant::now() + Duration::from_millis(100)),
+                )
+                .await;
+            }
+        }
     }
 }
 
@@ -833,6 +1029,16 @@ fn validate_request(
     identity: &ChatPeerIdentity,
     state: &AppState,
 ) -> Result<(), StatusCode> {
+    if let Some(recipient) = request.recipient_id.as_deref() {
+        let session = state.session.read();
+        if session
+            .as_ref()
+            .map(|session| session.local_identity.player_id.as_str())
+            != Some(recipient)
+        {
+            return Err(StatusCode::FORBIDDEN);
+        }
+    }
     if request
         .id
         .as_deref()
@@ -842,6 +1048,24 @@ fn validate_request(
     }
     let content_bytes = request.content.as_bytes().len();
     match request.message_type {
+        MessageType::Voice => {
+            if !valid_voice_payload(&request.content, request.image_data.as_deref()) {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+        }
+        MessageType::File => {
+            if content_bytes == 0
+                || content_bytes > MAX_FILE_CONTENT_BYTES
+                || request.image_data.is_some()
+            {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+            let meta = serde_json::from_str::<ChatAttachmentMeta>(&request.content)
+                .map_err(|_| StatusCode::BAD_REQUEST)?;
+            if !valid_attachment_meta(&meta) {
+                return Err(StatusCode::BAD_REQUEST);
+            }
+        }
         MessageType::Text => {
             if content_bytes == 0 || content_bytes > MAX_TEXT_BYTES || request.image_data.is_some()
             {
@@ -974,21 +1198,95 @@ async fn get_messages(
     State(state): State<AppState>,
     headers: HeaderMap,
     Query(params): Query<GetMessagesQuery>,
-) -> Result<Json<Vec<ChatMessage>>, StatusCode> {
+) -> Result<Json<serde_json::Value>, StatusCode> {
     // History reads are signed too: otherwise a member could spoof another
     // member's address and harvest the history attributed to them.
-    authorize_request(&headers, peer, &state, "GET", "/api/chat/messages", &[]).await?;
+    let requester =
+        authorize_request(&headers, peer, &state, "GET", "/api/chat/messages", &[]).await?;
     let messages = state.local_messages.read();
-    let result = messages
+    let result: Vec<ChatMessage> = messages
         .iter()
         .filter(|message| {
             params
                 .since
                 .is_none_or(|timestamp| message.timestamp > timestamp)
+                && (message.recipient_id.is_none()
+                    || message.recipient_id.as_deref() == Some(requester.player_id.as_str())
+                    || message.player_id == requester.player_id)
         })
         .cloned()
         .collect();
-    Ok(Json(result))
+    let signer = state
+        .signer
+        .read()
+        .clone()
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let token = state
+        .session
+        .read()
+        .as_ref()
+        .map(|s| s.token.clone())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let body = serde_json::to_vec(&result).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let encrypted = signer
+        .encrypt(
+            requester
+                .chat_public_key
+                .as_deref()
+                .ok_or(StatusCode::UNAUTHORIZED)?,
+            &token,
+            "/api/chat/messages",
+            &body,
+        )
+        .map_err(|_| StatusCode::UNAUTHORIZED)?;
+    Ok(Json(
+        serde_json::from_slice(&encrypted).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?,
+    ))
+}
+
+pub fn valid_voice_payload(content: &str, data: Option<&[u8]>) -> bool {
+    let Some(data) = data else {
+        return false;
+    };
+    if data.is_empty() || data.len() > 2 * 1024 * 1024 || content.len() > 128 {
+        return false;
+    }
+    let Ok(meta) = serde_json::from_str::<serde_json::Value>(content) else {
+        return false;
+    };
+    let duration = meta["duration"].as_f64().unwrap_or(0.0);
+    let mime = meta["mime"].as_str().unwrap_or("");
+    (0.5..=60.5).contains(&duration)
+        && match mime {
+            "audio/webm" => data.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]),
+            "audio/ogg" => data.starts_with(b"OggS"),
+            "audio/wav" => data.starts_with(b"RIFF") && data.get(8..12) == Some(b"WAVE"),
+            "audio/mp4" => data.get(4..8) == Some(b"ftyp"),
+            _ => false,
+        }
+}
+
+pub fn valid_attachment_meta(meta: &ChatAttachmentMeta) -> bool {
+    let valid_id = (12..=128).contains(&meta.id.len())
+        && meta
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_');
+    let valid_name = !meta.name.is_empty()
+        && meta.name.chars().count() <= 180
+        && !meta
+            .name
+            .chars()
+            .any(|ch| ch.is_control() || matches!(ch, '/' | '\\' | ':'))
+        && meta.name != "."
+        && meta.name != "..";
+    let valid_mime = !meta.mime.is_empty()
+        && meta.mime.len() <= 128
+        && meta
+            .mime
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'+' | b'-' | b'.'));
+    valid_id && valid_name && valid_mime && (1..=MAX_CHAT_ATTACHMENT_BYTES).contains(&meta.size)
 }
 
 async fn send_message(
@@ -996,12 +1294,34 @@ async fn send_message(
     State(state): State<AppState>,
     headers: HeaderMap,
     body: Bytes,
-) -> Result<Json<ChatMessage>, StatusCode> {
+) -> Result<Json<serde_json::Value>, StatusCode> {
     // The signature covers the exact body bytes, so attribution and content
     // are bound together: neither can be swapped without invalidating it.
     let identity =
         authorize_request(&headers, peer, &state, "POST", "/api/chat/send", &body).await?;
     require_json_body(&headers, &body)?;
+    let signer = state
+        .signer
+        .read()
+        .clone()
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let token = state
+        .session
+        .read()
+        .as_ref()
+        .map(|s| s.token.clone())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let body = signer
+        .decrypt(
+            identity
+                .chat_public_key
+                .as_deref()
+                .ok_or(StatusCode::UNAUTHORIZED)?,
+            &token,
+            "/api/chat/send",
+            &body,
+        )
+        .map_err(|_| StatusCode::BAD_REQUEST)?;
     let request =
         serde_json::from_slice::<SendMessageRequest>(&body).map_err(|_| StatusCode::BAD_REQUEST)?;
     validate_request(&request, &identity, &state)?;
@@ -1015,6 +1335,7 @@ async fn send_message(
         message_type: request.message_type,
         timestamp: unix_seconds(),
         image_data: request.image_data,
+        recipient_id: request.recipient_id,
     };
     if !store_message(
         &state.local_messages,
@@ -1024,7 +1345,72 @@ async fn send_message(
     ) {
         return Err(StatusCode::PAYLOAD_TOO_LARGE);
     }
-    Ok(Json(message))
+    Ok(Json(serde_json::json!({"accepted": true})))
+}
+
+async fn get_attachment(
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    headers: HeaderMap,
+) -> Result<Bytes, StatusCode> {
+    if id.len() > 128
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err(StatusCode::BAD_REQUEST);
+    }
+    let path = format!("/api/chat/attachment/{id}");
+    let requester = authorize_request(&headers, peer, &state, "GET", &path, &[]).await?;
+    let attachment = state
+        .attachments
+        .read()
+        .get(&id)
+        .cloned()
+        .ok_or(StatusCode::NOT_FOUND)?;
+    if attachment
+        .recipient_id
+        .as_deref()
+        .is_some_and(|recipient| recipient != requester.player_id)
+    {
+        return Err(StatusCode::FORBIDDEN);
+    }
+    let metadata = tokio::fs::metadata(&attachment.path)
+        .await
+        .map_err(|_| StatusCode::NOT_FOUND)?;
+    if !metadata.is_file()
+        || metadata.len() != attachment.meta.size
+        || metadata.len() > MAX_CHAT_ATTACHMENT_BYTES
+    {
+        return Err(StatusCode::GONE);
+    }
+    let plain = tokio::fs::read(&attachment.path)
+        .await
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    let signer = state
+        .signer
+        .read()
+        .clone()
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let token = state
+        .session
+        .read()
+        .as_ref()
+        .map(|session| session.token.clone())
+        .ok_or(StatusCode::UNAUTHORIZED)?;
+    let encrypted = signer
+        .encrypt(
+            requester
+                .chat_public_key
+                .as_deref()
+                .ok_or(StatusCode::UNAUTHORIZED)?,
+            &token,
+            &path,
+            &plain,
+        )
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Bytes::from(encrypted))
 }
 
 async fn stream_messages(
@@ -1067,6 +1453,205 @@ async fn stream_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn encrypted_http_send_and_history_keep_private_messages_confidential() {
+        let local = ChatSigner::generate().unwrap();
+        let remote = ChatSigner::generate().unwrap();
+        let service = ChatService::new();
+        *service.signer.write() = Some(Arc::new(local));
+        let local_identity = ChatPeerIdentity {
+            player_id: "local".into(),
+            player_name: "Local".into(),
+            virtual_ip: "10.126.126.1".into(),
+            chat_public_key: service.signing_public_key(),
+        };
+        let remote_identity = ChatPeerIdentity {
+            player_id: "remote".into(),
+            player_name: "Remote".into(),
+            virtual_ip: "10.126.126.2".into(),
+            chat_public_key: Some(remote.public_key_b64()),
+        };
+        let token = "a".repeat(64);
+        service.set_virtual_ip(local_identity.virtual_ip.clone());
+        service
+            .set_session(
+                token.clone(),
+                1,
+                local_identity.player_id.clone(),
+                local_identity.player_name.clone(),
+                Some("local".into()),
+                vec![remote_identity.clone()],
+            )
+            .unwrap();
+        let state = AppState {
+            signer: service.signer.clone(),
+            local_messages: service.local_messages.clone(),
+            history_bytes: service.history_bytes.clone(),
+            message_tx: service.message_tx.clone(),
+            session: service.session.clone(),
+            rate_limiter: service.rate_limiter.clone(),
+            replay_guard: service.replay_guard.clone(),
+            attachments: service.attachments.clone(),
+        };
+        let plain = serde_json::to_vec(&SendMessageRequest {
+            id: Some("msg-remote-1".into()),
+            player_id: "remote".into(),
+            player_name: "Remote".into(),
+            content: "private hello".into(),
+            message_type: MessageType::Text,
+            image_data: None,
+            recipient_id: Some("local".into()),
+        })
+        .unwrap();
+        let body = remote
+            .encrypt(
+                local_identity.chat_public_key.as_deref().unwrap(),
+                &token,
+                "/api/chat/send",
+                &plain,
+            )
+            .unwrap();
+        let headers_for = |method: &str, path: &str, body: &[u8]| {
+            let signed = remote.sign(
+                method,
+                path,
+                "10.126.126.1",
+                1,
+                unix_seconds(),
+                body,
+                &token,
+            );
+            let mut headers = HeaderMap::new();
+            headers.insert(CHAT_TOKEN_HEADER, token.parse().unwrap());
+            headers.insert(CHAT_KEY_ID_HEADER, signed.key_id.parse().unwrap());
+            headers.insert(CHAT_SIGNATURE_HEADER, signed.signature.parse().unwrap());
+            headers.insert(CHAT_TIMESTAMP_HEADER, signed.timestamp.parse().unwrap());
+            headers.insert(CHAT_NONCE_HEADER, signed.nonce.parse().unwrap());
+            headers.insert(header::CONTENT_TYPE, "application/json".parse().unwrap());
+            headers.insert(
+                header::CONTENT_LENGTH,
+                body.len().to_string().parse().unwrap(),
+            );
+            headers
+        };
+        let peer: SocketAddr = "10.126.126.2:12345".parse().unwrap();
+        assert!(send_message(
+            ConnectInfo(peer),
+            State(state.clone()),
+            headers_for("POST", "/api/chat/send", &plain),
+            Bytes::from(plain)
+        )
+        .await
+        .is_err());
+        let result = send_message(
+            ConnectInfo(peer),
+            State(state.clone()),
+            headers_for("POST", "/api/chat/send", &body),
+            Bytes::from(body),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.0["accepted"], true);
+        let history = get_messages(
+            ConnectInfo(peer),
+            State(state),
+            headers_for("GET", "/api/chat/messages", &[]),
+            Query(GetMessagesQuery { since: None }),
+        )
+        .await
+        .unwrap();
+        let ciphertext = serde_json::to_vec(&history.0).unwrap();
+        assert!(!String::from_utf8_lossy(&ciphertext).contains("private hello"));
+        let decoded = remote
+            .decrypt(
+                local_identity.chat_public_key.as_deref().unwrap(),
+                &token,
+                "/api/chat/messages",
+                &ciphertext,
+            )
+            .unwrap();
+        let messages: Vec<ChatMessage> = serde_json::from_slice(&decoded).unwrap();
+        assert_eq!(messages[0].content, "private hello");
+    }
+
+    #[tokio::test]
+    async fn chat_bind_waits_for_virtual_adapter_and_port_release() {
+        let mut attempts = 0;
+        let result = retry_chat_bind(
+            || {
+                attempts += 1;
+                std::future::ready(match attempts {
+                    1 => Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable)),
+                    2 => Err(std::io::Error::from(std::io::ErrorKind::AddrInUse)),
+                    _ => Ok("bound"),
+                })
+            },
+            Duration::from_secs(1),
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, "bound");
+        assert_eq!(attempts, 3);
+    }
+
+    #[tokio::test]
+    async fn chat_bind_is_bounded_and_does_not_retry_permission_errors() {
+        for kind in [
+            std::io::ErrorKind::PermissionDenied,
+            std::io::ErrorKind::AddrNotAvailable,
+        ] {
+            let mut attempts = 0;
+            let result = retry_chat_bind(
+                || {
+                    attempts += 1;
+                    std::future::ready(Err::<(), _>(std::io::Error::from(kind)))
+                },
+                Duration::from_millis(5),
+            )
+            .await;
+            assert_eq!(result.unwrap_err().kind(), kind);
+            if kind == std::io::ErrorKind::PermissionDenied {
+                assert_eq!(attempts, 1);
+            } else {
+                assert!(attempts <= 2);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_registration_can_revoke_auth_without_changing_identity() {
+        let service = ChatService::new();
+        let before = service.signaling_identity().unwrap();
+        service.set_virtual_ip("10.126.126.1".to_string());
+        service
+            .set_session(
+                "a".repeat(64),
+                1,
+                before.0.clone(),
+                "Local".to_string(),
+                Some(before.0.clone()),
+                vec![],
+            )
+            .unwrap();
+        service.reset_auth_baseline().await;
+        assert!(service.session.read().is_none());
+        assert_eq!(service.signaling_identity().unwrap(), before);
+        assert_eq!(service.get_virtual_ip().as_deref(), Some("10.126.126.1"));
+        service
+            .set_session(
+                "b".repeat(64),
+                1,
+                before.0.clone(),
+                "Local".to_string(),
+                Some(before.0.clone()),
+                vec![],
+            )
+            .unwrap();
+        service.stop_server().await;
+        assert_ne!(service.signaling_identity().unwrap(), before);
+        assert!(service.session.read().is_none());
+    }
 
     fn identity(ip: &str, id: &str) -> ChatPeerIdentity {
         ChatPeerIdentity {
@@ -1302,20 +1887,22 @@ mod tests {
         let messages = Arc::new(RwLock::new(VecDeque::new()));
         let bytes = Arc::new(RwLock::new(0));
         let (tx, _) = broadcast::channel(8);
-        for index in 0..20 {
+        let count = MAX_HISTORY_BYTES / 300_000 + 2;
+        for index in 0..count {
             let message = ChatMessage {
                 id: format!("{index}"),
                 player_id: "one".to_string(),
                 player_name: "one".to_string(),
                 content: "x".repeat(300_000),
                 message_type: MessageType::Text,
-                timestamp: index,
+                timestamp: index as u64,
                 image_data: None,
+                recipient_id: None,
             };
             assert!(store_message(&messages, &bytes, &tx, message));
         }
         assert!(*bytes.read() <= MAX_HISTORY_BYTES);
-        assert!(messages.read().len() < 20);
+        assert!(messages.read().len() < count);
     }
 
     #[test]
@@ -1331,6 +1918,7 @@ mod tests {
             message_type: MessageType::Text,
             timestamp: 1,
             image_data: None,
+            recipient_id: None,
         };
         assert!(store_message(&messages, &bytes, &tx, message.clone()));
         assert!(!store_message(&messages, &bytes, &tx, message));
@@ -1360,6 +1948,7 @@ mod tests {
             message_type: MessageType::Text,
             timestamp: 1,
             image_data: None,
+            recipient_id: None,
         }));
 
         service.stop_server().await;
@@ -1367,11 +1956,65 @@ mod tests {
         assert!(service.get_chat_token().is_none());
         assert!(service.get_virtual_ip().is_none());
         assert!(service.get_local_messages(None).is_empty());
+        assert!(service.signing_public_key().is_none());
+    }
+
+    #[tokio::test]
+    async fn lobby_reset_preserves_the_reserved_signaling_identity() {
+        let service = ChatService::new();
+        let before = service.signaling_identity().expect("signaling identity");
+        service.set_virtual_ip("10.126.126.1".to_string());
+
+        service.reset_for_lobby().await;
+
+        assert_eq!(service.signaling_identity().unwrap(), before);
+        assert!(service.get_chat_token().is_none());
+        assert!(service.get_virtual_ip().is_none());
+    }
+
+    #[tokio::test]
+    async fn auth_baseline_reset_allows_restarted_server_epoch() {
+        let service = ChatService::new();
+        service.set_virtual_ip("10.126.126.1".to_string());
+        let public_key = service.ensure_signing_key().expect("key generation");
+        service
+            .set_session(
+                "a".repeat(CHAT_TOKEN_HEX_BYTES),
+                7,
+                "local".to_string(),
+                "local".to_string(),
+                Some("local".to_string()),
+                Vec::new(),
+            )
+            .expect("old session");
+
+        service.reset_auth_baseline().await;
+        service
+            .set_session(
+                "b".repeat(CHAT_TOKEN_HEX_BYTES),
+                1,
+                "local".to_string(),
+                "local".to_string(),
+                Some("local".to_string()),
+                Vec::new(),
+            )
+            .expect("new server baseline");
+
+        let restarted_token = "b".repeat(CHAT_TOKEN_HEX_BYTES);
+        assert_eq!(
+            service.signing_public_key().as_deref(),
+            Some(public_key.as_str())
+        );
+        assert_eq!(
+            service.get_chat_token().as_deref(),
+            Some(restarted_token.as_str())
+        );
     }
 
     #[test]
     fn request_identity_fields_do_not_authorize_recall() {
         let state = AppState {
+            signer: Arc::new(RwLock::new(None)),
             local_messages: Arc::new(RwLock::new(VecDeque::from([ChatMessage {
                 id: "target".to_string(),
                 player_id: "owner".to_string(),
@@ -1380,6 +2023,7 @@ mod tests {
                 message_type: MessageType::Text,
                 timestamp: unix_seconds(),
                 image_data: None,
+                recipient_id: None,
             }]))),
             history_bytes: Arc::new(RwLock::new(0)),
             message_tx: broadcast::channel(8).0,
@@ -1393,6 +2037,7 @@ mod tests {
             }))),
             rate_limiter: Arc::new(Mutex::new(HashMap::new())),
             replay_guard: Arc::new(Mutex::new(ReplayGuard::new())),
+            attachments: Arc::new(RwLock::new(HashMap::new())),
         };
         let request = SendMessageRequest {
             id: None,
@@ -1401,7 +2046,31 @@ mod tests {
             content: "target".to_string(),
             message_type: MessageType::Recall,
             image_data: None,
+            recipient_id: None,
         };
         assert!(validate_request(&request, &identity("10.126.126.2", "attacker"), &state).is_err());
+    }
+
+    #[test]
+    fn attachment_metadata_is_bounded_and_rejects_path_syntax() {
+        let valid = ChatAttachmentMeta {
+            id: "att-123456789abc".to_string(),
+            name: "meeting.mp3".to_string(),
+            mime: "audio/mpeg".to_string(),
+            size: 4096,
+        };
+        assert!(valid_attachment_meta(&valid));
+        assert!(!valid_attachment_meta(&ChatAttachmentMeta {
+            name: "../secret.txt".into(),
+            ..valid.clone()
+        }));
+        assert!(!valid_attachment_meta(&ChatAttachmentMeta {
+            size: MAX_CHAT_ATTACHMENT_BYTES + 1,
+            ..valid.clone()
+        }));
+        assert!(!valid_attachment_meta(&ChatAttachmentMeta {
+            mime: "audio/mpeg; charset=utf-8".into(),
+            ..valid
+        }));
     }
 }

@@ -1,5 +1,6 @@
 package top.pmh13.mctier.network
 
+import top.pmh13.mctier.recording.RecordingMicrophone
 import android.annotation.SuppressLint
 import android.media.AudioAttributes
 import android.media.AudioFormat
@@ -39,7 +40,9 @@ object VoiceAuditioner {
             val frame = 1920 // 20ms @48k mono 16bit = 960 samples * 2 bytes
             var record: AudioRecord? = null
             var track: AudioTrack? = null
+            val microphoneOwner = Any()
             try {
+                RecordingMicrophone.acquirePriority(microphoneOwner)
                 record = AudioRecord(
                     MediaRecorder.AudioSource.VOICE_COMMUNICATION,
                     sampleRate, channelIn, enc,
@@ -92,6 +95,7 @@ object VoiceAuditioner {
                 runCatching { record?.release() }
                 runCatching { track?.stop() }
                 runCatching { track?.release() }
+                RecordingMicrophone.releasePriority(microphoneOwner)
             }
         }.also { it.isDaemon = true; it.start() }
     }

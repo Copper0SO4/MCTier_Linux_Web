@@ -120,3 +120,14 @@
   display: block;
   pointer-events: none;
 }
+
+.rc-game-mouse {
+  border: 1px solid #70c983;
+  border-radius: 6px;
+  background: #224a30;
+  color: #fff;
+  padding: 6px 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.rc-game-mouse[aria-pressed="true"] { background: #317644; }

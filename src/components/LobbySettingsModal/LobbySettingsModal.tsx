@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Modal, Form, Input, Switch, InputNumber, Select, message, Spin } from 'antd';
 import { invoke } from '@tauri-apps/api/core';
 import { VoiceDevicePanel } from '../VoiceSettings/VoiceSettings';
+import { NvidiaNoiseSetting } from '../VoiceSettings/NvidiaNoiseSetting';
 import { useAppStore } from '../../stores';
 import { p2pChatService } from '../../services/chat/P2PChatService';
 import { audioService } from '../../services/audio/AudioService';
@@ -192,6 +193,7 @@ export const LobbySettingsModal: React.FC<LobbySettingsModalProps> = ({
         <div className="lobby-voice-section">
           <div className="lobby-voice-section-title">{tl('语音设备', 'Audio Devices')}</div>
           <VoiceDevicePanel active={visible} />
+          <NvidiaNoiseSetting lobby />
         </div>
         <div className="lobby-voice-divider" />
 
@@ -522,11 +524,8 @@ export const LobbySettingsModal: React.FC<LobbySettingsModalProps> = ({
 
               {/* 加密和安全 */}
               <div className="config-section-title">{tl("加密和安全", "Encryption & Security")}</div>
-              <Form.Item name="disable_encryption" label={tl("禁用加密", "Disable encryption")} valuePropName="checked">
-                <Switch />
-              </Form.Item>
-              <Form.Item name="encryption_algorithm" label={tl("加密算法", "Encryption algorithm")}>
-                <Input placeholder="aes-gcm" />
+              <Form.Item label={tl("加密算法", "Encryption algorithm")}>
+                <Input value="AES-256-GCM" readOnly />
               </Form.Item>
 
               {/* 网络设备 */}

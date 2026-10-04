@@ -5,6 +5,11 @@ import java.net.URLEncoder
 import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.util.Locale
+import java.util.Base64
+import java.security.SecureRandom
+import javax.crypto.Cipher
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 data class LobbyInviteData(
     val name: String,
@@ -14,8 +19,43 @@ data class LobbyInviteData(
 )
 
 object LobbyInviteCodec {
+    private const val SecretPrefix = "mctier-invite-v3:"
+    private val InviteAad = "MCTier/invite/v3".toByteArray(Charsets.UTF_8)
+
+    private fun sealPassword(password: String): String {
+        if (password.isEmpty()) return ""
+        val random = SecureRandom()
+        val key = ByteArray(32).also(random::nextBytes)
+        val iv = ByteArray(12).also(random::nextBytes)
+        val encrypted = Cipher.getInstance("AES/GCM/NoPadding").apply {
+            init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, iv))
+            updateAAD(InviteAad)
+        }.doFinal(password.toByteArray(Charsets.UTF_8))
+        return SecretPrefix + Base64.getUrlEncoder().withoutPadding().encodeToString(key + iv + encrypted)
+    }
+
+    private fun openPassword(value: String): String {
+        if (value.isEmpty()) return ""
+        require(value.startsWith(SecretPrefix) && value.length <= 4096)
+        val bytes = Base64.getUrlDecoder().decode(value.removePrefix(SecretPrefix))
+        require(bytes.size >= 60)
+        return Cipher.getInstance("AES/GCM/NoPadding").apply {
+            init(Cipher.DECRYPT_MODE, SecretKeySpec(bytes.copyOfRange(0, 32), "AES"), GCMParameterSpec(128, bytes.copyOfRange(32, 44)))
+            updateAAD(InviteAad)
+        }.doFinal(bytes.copyOfRange(44, bytes.size)).toString(Charsets.UTF_8)
+    }
+
+    /** Resolve an invite envelope before applying the plaintext password policy. */
+    fun resolveLobbyPassword(value: String): String? = runCatching {
+        when {
+            value.isEmpty() -> ""
+            value.startsWith(SecretPrefix) -> openPassword(value)
+            value.startsWith("mctier-local-v1:") -> null // desktop keyring envelope is not portable
+            else -> value
+        }
+    }.getOrNull()
     private val EasyTierSchemes = setOf("tcp", "udp", "ws", "wss", "txt")
-    private val SignalingSchemes = setOf("ws", "wss")
+    private val SignalingSchemes = setOf("wss")
 
     /** Keep values safe before they reach the EasyTier TOML/config or WebSocket URL boundary. */
     fun isValidLobbyName(value: String): Boolean {
@@ -69,7 +109,6 @@ object LobbyInviteCodec {
                 "——————— Invitation to Join Lobby ———————",
                 "Copy everything, then open MCTier - Join Lobby (auto-detected)",
                 "Lobby Name: ${invite.name}",
-                "Password: ${invite.password}",
                 invite.serverNode?.takeIf { it.isNotBlank() }?.let { "Server Node: $it" },
                 invite.signalingServer?.takeIf { it.isNotBlank() }?.let { "Signaling Server: $it" },
                 "Invite Link: $link",
@@ -80,7 +119,6 @@ object LobbyInviteCodec {
                 "——————— 邀请您加入大厅 ———————",
                 "完整复制后打开 MCTier-加入大厅 界面（自动识别）",
                 "大厅名称：${invite.name}",
-                "密码：${invite.password}",
                 invite.serverNode?.takeIf { it.isNotBlank() }?.let { "服务器节点：$it" },
                 invite.signalingServer?.takeIf { it.isNotBlank() }?.let { "信令服务器：$it" },
                 "邀请链接：$link",
@@ -91,9 +129,9 @@ object LobbyInviteCodec {
 
     fun buildLink(invite: LobbyInviteData): String {
         val params = mutableListOf(
-            "v=2",
+            "v=3",
             "name=${encode(invite.name)}",
-            "pwd=${encode(invite.password)}",
+            "secret=${encode(sealPassword(invite.password))}",
         )
         invite.serverNode?.trim()?.takeIf { it.isNotEmpty() }?.let { params += "node=${encode(it)}" }
         invite.signalingServer?.trim()?.takeIf { it.isNotEmpty() }?.let { params += "signal=${encode(it)}" }
@@ -102,7 +140,7 @@ object LobbyInviteCodec {
 
     fun parse(text: String): LobbyInviteData? {
         val deepLink = Regex("(?i)mctier://join/?\\?[^\\s]+").find(text)?.value
-        if (deepLink != null) parseLink(deepLink)?.let { return it }
+        if (deepLink != null) return runCatching { parseLink(deepLink) }.getOrNull()
 
         val name = extract(text, listOf("大厅名称", "Lobby Name")) ?: return parseLegacy(text)
         return LobbyInviteData(
@@ -122,9 +160,13 @@ object LobbyInviteCodec {
         }.toMap()
         val name = params["name"]?.trim().orEmpty()
         if (name.isBlank()) return null
+        if (params["v"] != null && params["v"] !in setOf("1", "2", "3")) return null
+        val password = if (params["v"] == "3") openPassword(params["secret"].orEmpty()) else params["pwd"].orEmpty()
+        if (!isValidLobbyPassword(password)) return null
+        if (params["node"]?.let { !isValidEasyTierNode(it) } == true || params["signal"]?.let { !isValidSignalingServer(it) } == true) return null
         return LobbyInviteData(
             name = name,
-            password = params["pwd"].orEmpty(),
+            password = password,
             serverNode = params["node"].cleanOptional(),
             signalingServer = params["signal"].cleanOptional(),
         )

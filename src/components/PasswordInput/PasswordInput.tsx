@@ -4,6 +4,7 @@ import type { InputProps, InputRef } from 'antd';
 import { tl } from '../../i18n';
 import { avoidNativePasswordInput } from '../../utils/passwordInputPolicy';
 import { LockIcon } from '../icons';
+import { isProtectedPassword } from '../../security/lobbyPassword';
 import './PasswordInput.css';
 
 export type PasswordInputProps = Omit<InputProps, 'type'>;
@@ -22,6 +23,15 @@ export type PasswordInputProps = Omit<InputProps, 'type'>;
 export const PasswordInput = forwardRef<InputRef, PasswordInputProps>((props, ref) => {
   const { className = '', autoComplete, spellCheck, ...rest } = props;
   const [revealed, setRevealed] = useState(false);
+  const protectedValue = isProtectedPassword(rest.value);
+  const safeProps = {
+    ...rest,
+    value: protectedValue ? '********' : rest.value,
+    onChange: (event: React.ChangeEvent<HTMLInputElement>) => {
+      if (protectedValue) event.target.value = event.target.value.replace(/\*/g, '');
+      rest.onChange?.(event);
+    },
+  };
 
   // 平台判定只做一次：同一进程内 User-Agent 不会变。
   const [maskWithCss] = useState(avoidNativePasswordInput);
@@ -33,14 +43,15 @@ export const PasswordInput = forwardRef<InputRef, PasswordInputProps>((props, re
         className={className}
         autoComplete={autoComplete ?? 'new-password'}
         spellCheck={spellCheck ?? false}
-        {...rest}
+        {...safeProps}
+        visibilityToggle={protectedValue ? false : { visible: revealed, onVisibleChange: setRevealed }}
       />
     );
   }
 
   const maskedClassName = [
     'mctier-masked-password',
-    revealed ? 'mctier-masked-password-revealed' : '',
+    revealed && !protectedValue ? 'mctier-masked-password-revealed' : '',
     className,
   ]
     .filter(Boolean)
@@ -59,7 +70,7 @@ export const PasswordInput = forwardRef<InputRef, PasswordInputProps>((props, re
       autoCapitalize="off"
       data-mctier-masked="true"
       suffix={
-        <button
+        !protectedValue && <button
           type="button"
           className="mctier-masked-password-toggle"
           aria-label={revealed ? tl('隐藏密码', 'Hide password') : tl('显示密码', 'Show password')}
@@ -71,7 +82,7 @@ export const PasswordInput = forwardRef<InputRef, PasswordInputProps>((props, re
           <LockIcon open={revealed} size={15} />
         </button>
       }
-      {...rest}
+      {...safeProps}
     />
   );
 });

@@ -102,12 +102,18 @@ pub fn log_error_with_details(error: &AppError, context: &str, details: &str) {
 /// * `Err(E)` - 所有重试都失败后返回最后一次的错误
 ///
 /// # 示例
-/// ```rust
-/// let result = with_retry(
-///     || Box::pin(async { some_async_operation().await }),
+/// ```
+/// use mctier_lib::modules::error::with_retry;
+///
+/// # #[tokio::main]
+/// # async fn main() {
+/// let result: Result<(), String> = with_retry(
+///     || Box::pin(async { Ok(()) }),
 ///     3,
-///     1000
+///     1,
 /// ).await;
+/// assert!(result.is_ok());
+/// # }
 /// ```
 pub async fn with_retry<F, Fut, T, E>(
     mut operation: F,

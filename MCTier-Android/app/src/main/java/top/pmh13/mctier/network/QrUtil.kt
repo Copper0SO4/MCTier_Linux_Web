@@ -142,7 +142,7 @@ object QrUtil {
         }
         canvas.drawText(lobbyName, w / 2f, qy + qrSize + 96, name)
 
-        val pwdText = L("密码  ${password.ifBlank { "（无）" }}", "Password  ${password.ifBlank { "(none)" }}")
+        val pwdText = if (password.isEmpty()) L("无密码大厅", "Passwordless lobby") else L("加密邀请", "Encrypted invitation")
         val pwd = Paint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.parseColor("#7EE23F")
             textAlign = Paint.Align.CENTER

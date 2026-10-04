@@ -18,6 +18,7 @@ import { shouldSubmitOnEnter } from '../../utils/imeSubmitPolicy';
 import { countdownService } from '../../services/roomtools/countdownService';
 import type { ChatMessage } from '../../types';
 import './RoomTools.css';
+import { ScreenRecordingPanel } from './ScreenRecording';
 
 const { Text } = Typography;
 
@@ -36,6 +37,8 @@ const popupContainer = (triggerNode: HTMLElement) =>
 
 export const RoomTools: React.FC<RoomToolsProps> = ({ visible, onClose, onOpenWorlds, onOpenGameConnect, onOpenDiagnostic, hudOn, onToggleHud }) => {
   const { t } = useTranslation();
+  const [activeTab, setActiveTab] = useState('recording');
+  useEffect(() => { if (visible) setActiveTab('recording'); }, [visible]);
   const currentPlayerId = useAppStore((s) => s.currentPlayerId);
   const config = useAppStore((s) => s.config);
   const addChatMessage = useAppStore((s) => s.addChatMessage);
@@ -266,10 +269,13 @@ export const RoomTools: React.FC<RoomToolsProps> = ({ visible, onClose, onOpenWo
   return (
     <Modal title={t('roomTools.title')} open={visible} onCancel={onClose} footer={null} width={600} centered className="room-tools-modal">
       <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
         size="small"
         tabBarGutter={20}
         more={{ icon: null }}
         items={[
+          { key: 'recording', label: tl('屏幕录制', 'Screen recording'), children: <ScreenRecordingPanel /> },
           {
             key: 'net', label: tl('联机工具', 'Networking'), children: (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: '4px 0' }}>

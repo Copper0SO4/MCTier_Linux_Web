@@ -42,37 +42,12 @@
   pointer-events: none;
 }
 
-/* 定住后出现的操作按钮容器（位于弹幕下方） */
-.danmaku-actions {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  margin-top: 6px;
-  display: flex;
-  gap: 8px;
-}
-
-.danmaku-action-btn {
-  font-size: 13px;
-  font-weight: 700;
-  color: #fff;
-  background: rgba(124, 207, 0, 0.95);
-  border: none;
-  border-radius: 8px;
-  padding: 6px 14px;
-  cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
-  white-space: nowrap;
-  text-shadow: none;
-}
-
-.danmaku-action-btn:hover {
-  background: rgba(108, 184, 0, 1);
-}
-
-.danmaku-action-btn:active {
-  transform: scale(0.96);
-}
+.danmaku-visual { position: relative; display: inline-flex; }
+.danmaku-video-mark { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); color: #fff; filter: drop-shadow(0 1px 3px #000); }
+.danmaku-media-card { display: inline-flex; align-items: center; gap: .5em; padding: .12em .5em; border: 1px solid #a9e57b80; border-radius: .35em; background: #17251ded; color: #fff; font-size: .85em; }
+.danmaku-media-card > span:not(.anticon) { max-width: 22em; overflow: hidden; text-overflow: ellipsis; }
+.danmaku-media-card small { display: block; color: #d0dfc9; font-size: .6em; }
+.danmaku-wave { color: #95ec69; letter-spacing: .08em; }
 
 /* 操作结果轻提示 */
 .danmaku-toast {

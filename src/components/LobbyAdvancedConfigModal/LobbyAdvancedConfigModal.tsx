@@ -169,11 +169,8 @@ export const LobbyAdvancedConfigModal: React.FC<LobbyAdvancedConfigModalProps> =
 
                 {/* 加密和安全 */}
                 <Panel header={tl('加密和安全', 'Encryption & Security')} key="security">
-                  <Form.Item name="disable_encryption" label={tl('禁用加密', 'Disable Encryption')} valuePropName="checked">
-                    <Switch />
-                  </Form.Item>
-                  <Form.Item name="encryption_algorithm" label={tl('加密算法', 'Encryption Algorithm')}>
-                    <Input placeholder="aes-gcm" />
+                  <Form.Item label={tl('加密算法', 'Encryption Algorithm')}>
+                    <Input value="AES-256-GCM" readOnly />
                   </Form.Item>
                 </Panel>
 

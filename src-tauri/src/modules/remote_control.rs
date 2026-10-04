@@ -9,11 +9,24 @@
 //   无需提权。
 
 use serde::Deserialize;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
+
+const MAX_REMOTE_INPUT_EVENTS: usize = 128;
+const MAX_REMOTE_TEXT_CHARS: usize = 256;
+const MAX_REMOTE_TEXT_TOTAL_CHARS: usize = 1024;
+const MAX_REMOTE_KEY_NAME_LEN: usize = 32;
+const REMOTE_INPUT_GRANT_IDLE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 
 /// 单个远程输入事件（与前端协议一致）
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind")]
 pub enum RemoteInputEvent {
+    /// Relative game motion; never mapped to a desktop position.
+    #[serde(rename = "relative-move")]
+    RelativeMove { dx: i32, dy: i32 },
+    #[serde(rename = "relative-button")]
+    RelativeButton { button: u8, down: bool },
     /// 鼠标移动（归一化坐标）
     #[serde(rename = "move")]
     MouseMove { x: f64, y: f64 },
@@ -35,16 +48,194 @@ pub enum RemoteInputEvent {
     /// 文本输入（Unicode，逐字符注入，供手机端软键盘向电脑被控端打字）
     #[serde(rename = "text")]
     Text { text: String },
+    /// 手机端系统导航键的跨平台语义。
+    #[serde(rename = "key")]
+    NamedKey { key: String },
     /// 未知/对端专属事件(如手机的 home/recents)：电脑端忽略，避免整批解析失败
     #[serde(other)]
     Unknown,
 }
 
+#[derive(Clone, PartialEq, Eq)]
+struct RemoteInputGrant {
+    session_id: String,
+    controller_id: String,
+    expires_at: Instant,
+}
+
+#[derive(Default)]
+struct RemoteInputAuthorization {
+    grant: Option<RemoteInputGrant>,
+}
+
+impl RemoteInputAuthorization {
+    fn authorize(&mut self, session_id: &str, controller_id: &str) -> Result<(), String> {
+        validate_remote_identity(session_id, controller_id)?;
+        self.grant = Some(RemoteInputGrant {
+            session_id: session_id.to_owned(),
+            controller_id: controller_id.to_owned(),
+            expires_at: Instant::now() + REMOTE_INPUT_GRANT_IDLE_TIMEOUT,
+        });
+        Ok(())
+    }
+
+    fn consume(&mut self, session_id: &str, controller_id: &str) -> bool {
+        let now = Instant::now();
+        self.grant = self.grant.take().filter(|grant| grant.expires_at > now);
+        let authorized = self.grant.as_ref().is_some_and(|grant| {
+            grant.session_id == session_id && grant.controller_id == controller_id
+        });
+        if authorized {
+            if let Some(grant) = self.grant.as_mut() {
+                grant.expires_at = now + REMOTE_INPUT_GRANT_IDLE_TIMEOUT;
+            }
+        }
+        authorized
+    }
+
+    fn revoke(&mut self, session_id: &str, controller_id: &str) {
+        self.grant = self
+            .grant
+            .take()
+            .filter(|grant| grant.session_id != session_id || grant.controller_id != controller_id);
+    }
+}
+
+fn remote_input_authorization() -> &'static Mutex<RemoteInputAuthorization> {
+    static VALUE: OnceLock<Mutex<RemoteInputAuthorization>> = OnceLock::new();
+    VALUE.get_or_init(|| Mutex::new(RemoteInputAuthorization::default()))
+}
+
+fn ensure_main_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    if window.label() == "main" {
+        Ok(())
+    } else {
+        Err("远程控制输入仅允许主窗口操作".to_string())
+    }
+}
+
+fn validate_remote_identity(session_id: &str, controller_id: &str) -> Result<(), String> {
+    let valid = |value: &str, max_len: usize| {
+        !value.is_empty()
+            && value.len() <= max_len
+            && !value.chars().any(char::is_control)
+            && !value.chars().any(char::is_whitespace)
+    };
+    if !valid(session_id, 192) || !valid(controller_id, 128) {
+        return Err("远程控制会话身份无效".to_string());
+    }
+    Ok(())
+}
+
+fn validate_remote_input_events(events: &[RemoteInputEvent]) -> Result<(), String> {
+    if events.is_empty() || events.len() > MAX_REMOTE_INPUT_EVENTS {
+        return Err(format!(
+            "远程输入批次必须在 1 到 {} 个事件之间",
+            MAX_REMOTE_INPUT_EVENTS
+        ));
+    }
+
+    let mut total_text_chars = 0usize;
+    for event in events {
+        if matches!(event, RemoteInputEvent::RelativeMove { dx, dy }
+            if !(-32767..=32767).contains(dx) || !(-32767..=32767).contains(dy))
+        {
+            return Err("远程鼠标位移超出范围".to_string());
+        }
+        if matches!(event, RemoteInputEvent::RelativeButton { button, .. } if *button > 2) {
+            return Err("远程鼠标按键无效".to_string());
+        }
+        let coordinates = match event {
+            RemoteInputEvent::MouseMove { x, y }
+            | RemoteInputEvent::MouseDown { x, y, .. }
+            | RemoteInputEvent::MouseUp { x, y, .. } => Some((*x, *y)),
+            RemoteInputEvent::MouseWheel { dx, dy } => Some((*dx, *dy)),
+            _ => None,
+        };
+        if coordinates.is_some_and(|(x, y)| !x.is_finite() || !y.is_finite()) {
+            return Err("远程输入坐标无效".to_string());
+        }
+        if matches!(event, RemoteInputEvent::MouseDown { button, .. } if *button > 2)
+            || matches!(event, RemoteInputEvent::MouseUp { button, .. } if *button > 2)
+        {
+            return Err("远程鼠标按键无效".to_string());
+        }
+        if matches!(event, RemoteInputEvent::KeyDown { code, .. } if *code > u16::MAX as u32)
+            || matches!(event, RemoteInputEvent::KeyUp { code, .. } if *code > u16::MAX as u32)
+        {
+            return Err("远程键盘按键无效".to_string());
+        }
+        if let RemoteInputEvent::Text { text } = event {
+            let chars = text.chars().count();
+            if chars > MAX_REMOTE_TEXT_CHARS {
+                return Err("远程文本输入过长".to_string());
+            }
+            total_text_chars = total_text_chars.saturating_add(chars);
+            if total_text_chars > MAX_REMOTE_TEXT_TOTAL_CHARS {
+                return Err("远程文本总量超过限制".to_string());
+            }
+        }
+        if matches!(event, RemoteInputEvent::NamedKey { key } if key.len() > MAX_REMOTE_KEY_NAME_LEN)
+        {
+            return Err("远程按键名称无效".to_string());
+        }
+    }
+    Ok(())
+}
+
+/// Record the remote-control session accepted by the local user. The renderer
+/// must call this only from the acceptance flow; injection remains bound to
+/// this exact session and controller identity.
+#[tauri::command]
+pub fn authorize_remote_input(
+    window: tauri::WebviewWindow,
+    session_id: String,
+    controller_id: String,
+) -> Result<(), String> {
+    ensure_main_window(&window)?;
+    let mut authorization = remote_input_authorization()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    authorization.authorize(&session_id, &controller_id)
+}
+
+#[tauri::command]
+pub fn revoke_remote_input(
+    window: tauri::WebviewWindow,
+    session_id: String,
+    controller_id: String,
+) {
+    if ensure_main_window(&window).is_err() {
+        return;
+    }
+    let mut authorization = remote_input_authorization()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    authorization.revoke(&session_id, &controller_id);
+}
+
 /// 注入一批输入事件
 #[tauri::command]
-pub fn remote_inject_input(events: Vec<RemoteInputEvent>) -> Result<(), String> {
+pub fn remote_inject_input(
+    window: tauri::WebviewWindow,
+    session_id: String,
+    controller_id: String,
+    events: Vec<RemoteInputEvent>,
+) -> Result<(), String> {
+    ensure_main_window(&window)?;
+    validate_remote_identity(&session_id, &controller_id)?;
+    validate_remote_input_events(&events)?;
+    {
+        let mut authorization = remote_input_authorization()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if !authorization.consume(&session_id, &controller_id) {
+            return Err("远程控制会话未授权或已过期".to_string());
+        }
+    }
     #[cfg(target_os = "windows")]
     {
+        if !super::native_capture::remote_capture_active() { return Err("本地屏幕采集已停止，拒绝远程输入".into()); }
         platform::inject(&events)
     }
     #[cfg(target_os = "linux")]
@@ -55,6 +246,79 @@ pub fn remote_inject_input(events: Vec<RemoteInputEvent>) -> Result<(), String> 
     {
         let _ = events;
         Err("远程控制注入暂不支持当前平台".to_string())
+    }
+}
+
+#[cfg(test)]
+mod remote_input_security_tests {
+    use super::*;
+
+    fn text(value: &str) -> RemoteInputEvent {
+        RemoteInputEvent::Text {
+            text: value.to_owned(),
+        }
+    }
+
+    #[test]
+    fn grants_are_bound_to_one_session_and_controller() {
+        let mut authorization = RemoteInputAuthorization::default();
+        authorization
+            .authorize("rc-session", "controller-id")
+            .unwrap();
+        assert!(authorization.consume("rc-session", "controller-id"));
+        assert!(!authorization.consume("other-session", "controller-id"));
+        assert!(!authorization.consume("rc-session", "other-controller"));
+        authorization.revoke("rc-session", "controller-id");
+        assert!(!authorization.consume("rc-session", "controller-id"));
+    }
+
+    #[test]
+    fn grants_expire_after_idle() {
+        let mut authorization = RemoteInputAuthorization::default();
+        authorization.grant = Some(RemoteInputGrant {
+            session_id: "rc-session".to_owned(),
+            controller_id: "controller-id".to_owned(),
+            expires_at: Instant::now() - Duration::from_millis(1),
+        });
+        assert!(!authorization.consume("rc-session", "controller-id"));
+        assert!(authorization.grant.is_none());
+    }
+
+    #[test]
+    fn relative_input_is_typed_bounded_and_authorized_like_other_input() {
+        let events: Vec<RemoteInputEvent> = serde_json::from_str(r#"[
+            {"kind":"relative-move","dx":12,"dy":-9},
+            {"kind":"relative-button","button":0,"down":true}
+        ]"#).unwrap();
+        assert!(validate_remote_input_events(&events).is_ok());
+        assert!(serde_json::from_str::<RemoteInputEvent>(r#"{"kind":"relative-move","dx":1.5,"dy":0}"#).is_err());
+        assert!(validate_remote_input_events(&[RemoteInputEvent::RelativeMove { dx: i32::MAX, dy: 0 }]).is_err());
+        assert!(validate_remote_input_events(&[RemoteInputEvent::RelativeButton { button: 3, down: true }]).is_err());
+        let mut authorization = RemoteInputAuthorization::default();
+        assert!(!authorization.consume("session", "peer"));
+        authorization.authorize("session", "peer").unwrap();
+        assert!(!authorization.consume("session", "other-peer"));
+        assert!(authorization.consume("session", "peer"));
+    }
+
+    #[test]
+    fn input_batches_are_bounded_and_shape_checked() {
+        assert!(validate_remote_input_events(&[text("hello")]).is_ok());
+        let too_many = vec![text("x"); MAX_REMOTE_INPUT_EVENTS + 1];
+        assert!(validate_remote_input_events(&too_many).is_err());
+        assert!(validate_remote_input_events(&[]).is_err());
+        assert!(
+            validate_remote_input_events(&[text(&"x".repeat(MAX_REMOTE_TEXT_CHARS + 1))]).is_err()
+        );
+        let oversized_total = vec![text(&"x".repeat(MAX_REMOTE_TEXT_CHARS)); 5];
+        assert!(validate_remote_input_events(&oversized_total).is_err());
+        assert!(
+            validate_remote_input_events(&[RemoteInputEvent::MouseWheel {
+                dx: f64::NAN,
+                dy: 0.0,
+            }])
+            .is_err()
+        );
     }
 }
 
@@ -166,11 +430,17 @@ mod platform {
         }
     }
 
-    pub fn inject(events: &[RemoteInputEvent]) -> Result<(), String> {
+    fn build_inputs(events: &[RemoteInputEvent]) -> Vec<INPUT> {
         let mut inputs: Vec<INPUT> = Vec::with_capacity(events.len() + 4);
 
         for ev in events {
             match ev {
+                RemoteInputEvent::RelativeMove { dx, dy } => {
+                    inputs.push(mouse_input(*dx, *dy, 0, MOUSEEVENTF_MOVE));
+                }
+                RemoteInputEvent::RelativeButton { button, down } => {
+                    inputs.push(mouse_input(0, 0, 0, button_flags(*button, *down)));
+                }
                 RemoteInputEvent::MouseMove { x, y } => {
                     let (ax, ay) = to_abs(*x, *y);
                     inputs.push(mouse_input(
@@ -232,10 +502,77 @@ mod platform {
                         inputs.push(unicode_input(unit, true));
                     }
                 }
+                RemoteInputEvent::NamedKey { key } => match key.as_str() {
+                    "back" => {
+                        inputs.push(key_input(0x1B, KEYBD_EVENT_FLAGS(0)));
+                        inputs.push(key_input(0x1B, KEYEVENTF_KEYUP));
+                    }
+                    // Win+D: 显示桌面
+                    "home" => {
+                        inputs.push(key_input(0x5B, KEYBD_EVENT_FLAGS(0)));
+                        inputs.push(key_input(0x44, KEYBD_EVENT_FLAGS(0)));
+                        inputs.push(key_input(0x44, KEYEVENTF_KEYUP));
+                        inputs.push(key_input(0x5B, KEYEVENTF_KEYUP));
+                    }
+                    // Alt+Tab: 切换到最近窗口
+                    "recents" => {
+                        inputs.push(key_input(0x12, KEYBD_EVENT_FLAGS(0)));
+                        inputs.push(key_input(0x09, KEYBD_EVENT_FLAGS(0)));
+                        inputs.push(key_input(0x09, KEYEVENTF_KEYUP));
+                        inputs.push(key_input(0x12, KEYEVENTF_KEYUP));
+                    }
+                    "backspace" | "delete" => {
+                        inputs.push(key_input(0x08, KEYBD_EVENT_FLAGS(0)));
+                        inputs.push(key_input(0x08, KEYEVENTF_KEYUP));
+                    }
+                    _ => {}
+                },
                 RemoteInputEvent::Unknown => { /* 忽略对端专属事件 */ }
             }
         }
 
+        inputs
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn game_motion_and_clicks_never_reposition_the_cursor() {
+            let inputs = build_inputs(&[
+                RemoteInputEvent::RelativeMove { dx: 7, dy: -4 },
+                RemoteInputEvent::RelativeButton { button: 0, down: true },
+                RemoteInputEvent::RelativeMove { dx: -2, dy: 3 },
+                RemoteInputEvent::RelativeButton { button: 0, down: false },
+            ]);
+            assert_eq!(inputs.len(), 4);
+            unsafe {
+                for input in &inputs {
+                    assert_eq!(input.r#type, INPUT_MOUSE);
+                    assert_eq!((input.Anonymous.mi.dwFlags & MOUSEEVENTF_ABSOLUTE).0, 0);
+                }
+                assert_eq!((inputs[0].Anonymous.mi.dx, inputs[0].Anonymous.mi.dy), (7, -4));
+                assert_eq!(inputs[0].Anonymous.mi.dwFlags, MOUSEEVENTF_MOVE);
+                assert_eq!(inputs[1].Anonymous.mi.dwFlags, MOUSEEVENTF_LEFTDOWN);
+                assert_eq!(inputs[3].Anonymous.mi.dwFlags, MOUSEEVENTF_LEFTUP);
+            }
+        }
+
+        #[test]
+        fn desktop_click_still_moves_to_the_requested_position_first() {
+            let inputs = build_inputs(&[RemoteInputEvent::MouseDown { button: 2, x: 0.5, y: 0.25 }]);
+            assert_eq!(inputs.len(), 2);
+            unsafe {
+                assert_eq!(inputs[0].Anonymous.mi.dwFlags, MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE);
+                assert_eq!((inputs[0].Anonymous.mi.dx, inputs[0].Anonymous.mi.dy), (32768, 16384));
+                assert_eq!(inputs[1].Anonymous.mi.dwFlags, MOUSEEVENTF_RIGHTDOWN);
+            }
+        }
+    }
+
+    pub fn inject(events: &[RemoteInputEvent]) -> Result<(), String> {
+        let inputs = build_inputs(events);
         if inputs.is_empty() {
             return Ok(());
         }
@@ -789,6 +1126,15 @@ mod linux_uinput {
         with_state(|state| {
             for event in events {
                 match event {
+                    RemoteInputEvent::RelativeMove { dx, dy } => {
+                        emit(state.mouse_fd, EV_REL, REL_X, *dx);
+                        emit(state.mouse_fd, EV_REL, REL_Y, *dy);
+                        emit_syn(state.mouse_fd);
+                    }
+                    RemoteInputEvent::RelativeButton { button, down } => {
+                        emit(state.mouse_fd, EV_KEY, button_code(*button), i32::from(*down));
+                        emit_syn(state.mouse_fd);
+                    }
                     RemoteInputEvent::MouseMove { x, y } => {
                         if state.touch_contact_active {
                             // 拖拽中：保持接触并移动，松手前不能断开
@@ -873,6 +1219,9 @@ mod linux_uinput {
                         // uinput 工作在输入法之下，无法注入中文/emoji 等需要输入法
                         // 参与的文本。这里明确降级为忽略（而不是报错中断整批事件），
                         // 手机端软键盘的英文/数字仍可通过 KeyDown/KeyUp 生效。
+                    }
+                    RemoteInputEvent::NamedKey { .. } => {
+                        // 手机端系统导航语义只适用于 Android 被控端；桌面 Linux 忽略。
                     }
                     RemoteInputEvent::Unknown => {}
                 }

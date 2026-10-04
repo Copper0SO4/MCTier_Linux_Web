@@ -36,7 +36,7 @@ pub struct AutoLobbyConfig {
     /// 大厅名称
     pub lobby_name: Option<String>,
     /// 大厅密码
-    #[serde(default, skip_serializing)]
+    #[serde(default)]
     pub lobby_password: Option<String>,
     /// 玩家名称
     pub player_name: Option<String>,
@@ -396,6 +396,9 @@ pub struct UserConfig {
     pub lobby_easytier_advanced_config: Option<EasyTierAdvancedConfig>,
     /// 文件夹共享下载目录；为空时使用系统下载目录下的 MCTier 文件夹
     pub file_share_download_dir: Option<String>,
+    /// 屏幕录制保存目录；为空时使用用户 Videos/MCTier
+    pub recording_directory: Option<String>,
+    pub compliance_accepted: Option<bool>,
 }
 
 impl Default for UserConfig {
@@ -415,8 +418,8 @@ impl Default for UserConfig {
             auto_startup: Some(false),
             auto_lobby: Some(AutoLobbyConfig::default()),
             use_private_server: Some(false),
-            private_easytier_server: Some("udp://us01.225284.xyz:11010".to_string()),
-            private_signaling_server: Some("wss://test.pmhs.top".to_string()),
+            private_easytier_server: Some("tcp://easytier.weiai.org.cn:11010".to_string()),
+            private_signaling_server: Some("wss://mctier.pmhs.top/signaling".to_string()),
             always_on_top: Some(true),
             remember_window_position: Some(false),
             close_to_tray: Some(false),
@@ -428,6 +431,25 @@ impl Default for UserConfig {
             global_easytier_advanced_config: None,
             lobby_easytier_advanced_config: None,
             file_share_download_dir: None,
+            recording_directory: None,
+            compliance_accepted: None,
+        }
+    }
+}
+
+impl UserConfig {
+    fn migrate_legacy_signaling_server(&mut self) {
+        let legacy = self.private_signaling_server.as_deref().map(str::trim);
+        if matches!(
+            legacy.map(|url| url.trim_end_matches('/')),
+            Some(
+                "ws://test.pmhs.top"
+                    | "wss://test.pmhs.top"
+                    | "ws://test.pmhs.top/signaling"
+                    | "wss://test.pmhs.top/signaling"
+            )
+        ) {
+            self.private_signaling_server = Some("wss://mctier.pmhs.top/signaling".to_string());
         }
     }
 }
@@ -454,8 +476,6 @@ impl Default for ConfigManager {
 }
 
 impl ConfigManager {
-    /// 配置文件名
-    const CONFIG_FILE_NAME: &'static str = "mctier_config.json";
 
     /// 加载配置管理器（静态方法）
     ///
@@ -503,14 +523,8 @@ impl ConfigManager {
     /// * `Ok(PathBuf)` - 配置文件路径
     /// * `Err(AppError)` - 获取失败
     fn get_config_path() -> Result<PathBuf, AppError> {
-        // 获取用户配置目录
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| AppError::ConfigError("无法获取配置目录".to_string()))?;
-
-        // 创建应用配置目录
-        let app_config_dir = config_dir.join("mctier");
-
-        Ok(app_config_dir.join(Self::CONFIG_FILE_NAME))
+        super::app_paths::config_path()
+            .map_err(|e| AppError::ConfigError(format!("无法获取配置路径: {e}")))
     }
 
     /// 从文件加载配置
@@ -533,9 +547,9 @@ impl ConfigManager {
             .map_err(|e| AppError::ConfigError(format!("读取配置文件失败: {}", e)))?;
 
         // 解析 JSON
-        let config: UserConfig = serde_json::from_str(&content)
+        let mut config: UserConfig = serde_json::from_str(&content)
             .map_err(|e| AppError::ConfigError(format!("解析配置文件失败: {}", e)))?;
-
+        config.migrate_legacy_signaling_server();
         Ok(config)
     }
 
@@ -553,7 +567,16 @@ impl ConfigManager {
         }
 
         // 序列化配置为 JSON（格式化输出，便于阅读）
-        let json_content = serde_json::to_string_pretty(&self.config)
+        let mut stored = self.config.clone();
+        if let Some(auto) = stored.auto_lobby.as_mut() {
+            if let Some(password) = auto.lobby_password.take() {
+                auto.lobby_password = Some(
+                    super::secret_store::protect_lobby_password(password)
+                        .map_err(AppError::ConfigError)?,
+                );
+            }
+        }
+        let json_content = serde_json::to_string_pretty(&stored)
             .map_err(|e| AppError::ConfigError(format!("序列化配置失败: {}", e)))?;
 
         // 写入文件（使用临时文件 + 原子重命名，防止写入过程中断导致文件损坏）
@@ -609,20 +632,29 @@ impl ConfigManager {
     /// * `Err(AppError)` - 更新失败
     ///
     /// # 示例
-    /// ```rust
+    /// ```no_run
+    /// use mctier_lib::modules::config_manager::ConfigManager;
+    ///
+    /// # #[tokio::main]
+    /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut manager = ConfigManager::load().await?;
     /// manager.update_config(|config| {
     ///     config.player_name = Some("新玩家".to_string());
     /// }).await?;
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn update_config<F>(&mut self, updater: F) -> Result<(), AppError>
     where
         F: FnOnce(&mut UserConfig),
     {
-        // 应用更新
+        // Roll back memory as well if persistence fails (including consent and recording paths).
+        let previous = self.config.clone();
         updater(&mut self.config);
+        self.config.migrate_legacy_signaling_server();
 
         // 立即保存到文件
-        self.save().await?;
+        if let Err(error) = self.save().await { self.config = previous; return Err(error); }
 
         log::info!("配置已更新并保存");
 
@@ -884,8 +916,18 @@ impl ConfigManager {
     /// * `Ok(())` - 导出成功
     /// * `Err(AppError)` - 导出失败
     pub async fn export_config(&self, export_path: PathBuf) -> Result<(), AppError> {
-        // 序列化配置为 JSON（格式化输出）
-        let json_content = serde_json::to_string_pretty(&self.config)
+        // Export the same protected representation that is written to disk;
+        // the in-memory config may still contain a legacy plaintext value.
+        let mut stored = self.config.clone();
+        if let Some(auto) = stored.auto_lobby.as_mut() {
+            if let Some(password) = auto.lobby_password.take() {
+                auto.lobby_password = Some(
+                    super::secret_store::protect_lobby_password(password)
+                        .map_err(AppError::ConfigError)?,
+                );
+            }
+        }
+        let json_content = serde_json::to_string_pretty(&stored)
             .map_err(|e| AppError::ConfigError(format!("序列化配置失败: {}", e)))?;
 
         // 写入文件
@@ -932,6 +974,35 @@ impl ConfigManager {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn legacy_signaling_defaults_migrate_without_replacing_custom_endpoints() {
+        let mut config = UserConfig::default();
+        assert_eq!(
+            config.private_signaling_server.as_deref(),
+            Some("wss://mctier.pmhs.top/signaling")
+        );
+        for old in [
+            "wss://test.pmhs.top",
+            "ws://test.pmhs.top/",
+            "wss://test.pmhs.top/signaling",
+        ] {
+            config.private_signaling_server = Some(old.to_string());
+            config.migrate_legacy_signaling_server();
+            assert_eq!(
+                config.private_signaling_server.as_deref(),
+                Some("wss://mctier.pmhs.top/signaling")
+            );
+        }
+        for custom in [
+            "wss://signal.example.com/private",
+            "wss://test.pmhs.top/custom",
+        ] {
+            config.private_signaling_server = Some(custom.to_string());
+            config.migrate_legacy_signaling_server();
+            assert_eq!(config.private_signaling_server.as_deref(), Some(custom));
+        }
+    }
 
     /// 创建临时配置管理器用于测试
     async fn create_test_config_manager(temp_dir: &TempDir) -> ConfigManager {
@@ -990,6 +1061,35 @@ mod tests {
             loaded_config.preferred_server,
             Some("tcp://test:11010".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn recording_directory_and_consent_survive_reload_and_settings_updates() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = create_test_config_manager(&dir).await;
+        assert_ne!(manager.get_config().compliance_accepted, Some(true));
+        manager.update_config(|c| { c.recording_directory = Some("C:\\Users\\Player\\Videos\\Clips".into()); c.compliance_accepted = Some(true); }).await.unwrap();
+        manager.update_config(|c| c.player_name = Some("Renamed".into())).await.unwrap();
+        let loaded = ConfigManager::load_from_file(&manager.config_path).await.unwrap();
+        assert_eq!(loaded.recording_directory, manager.get_config().recording_directory);
+        assert_eq!(loaded.compliance_accepted, Some(true));
+    }
+
+    #[tokio::test]
+    async fn failed_consent_or_directory_save_keeps_previous_memory_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut manager = create_test_config_manager(&dir).await;
+        let previous = manager.get_config().clone();
+        // A file where the parent directory should be makes persistence fail deterministically.
+        let blocked = dir.path().join("blocked");
+        std::fs::write(&blocked, b"keep").unwrap();
+        manager.config_path = blocked.join("config.json");
+        assert!(manager.update_config(|c| {
+            c.compliance_accepted = Some(true);
+            c.recording_directory = Some("D:/Clips".into());
+        }).await.is_err());
+        assert_eq!(manager.get_config(), &previous);
+        assert_eq!(std::fs::read(blocked).unwrap(), b"keep");
     }
 
     #[tokio::test]

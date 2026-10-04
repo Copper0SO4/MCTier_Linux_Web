@@ -24,8 +24,8 @@ import java.util.Locale
  * carry another member's virtual IP, so a malicious member could be attributed
  * as anyone else in the same lobby.
  *
- * This takes the source IP out of the trust chain. Each member generates an
- * ephemeral P-256 key pair for the lifetime of a lobby session and publishes
+ * This takes the source IP out of the trust chain. Each member uses a
+ * Keystore-protected installation P-256 identity and publishes
  * only the public half over its own authenticated signaling WebSocket.
  * Signaling redistributes those public keys as part of the authoritative
  * roster, so a public key always arrives bound to a player id the sender could
@@ -246,15 +246,49 @@ object ChatAuth {
         }.getOrDefault(false)
     }
 
-    /** The local member's ephemeral signing identity. */
+    /** The local member's signing identity, protected at rest by the repository. */
     class ChatSigner private constructor(
         private val privateKey: PrivateKey,
         private val publicKeyDer: ByteArray,
         val keyId: String,
     ) {
+        private fun encryptionKey(peer: String, token: String): ByteArray {
+            val public = decodePublicKey(parsePublicKey(peer) ?: error("Invalid peer")) ?: error("Invalid peer key")
+            val agreement = javax.crypto.KeyAgreement.getInstance("ECDH")
+            agreement.init(privateKey)
+            agreement.doPhase(public, true)
+            val mac = javax.crypto.Mac.getInstance("HmacSHA256")
+            mac.init(javax.crypto.spec.SecretKeySpec(token.toByteArray(Charsets.UTF_8), "HmacSHA256"))
+            val prk = mac.doFinal(agreement.generateSecret())
+            mac.init(javax.crypto.spec.SecretKeySpec(prk, "HmacSHA256"))
+            return mac.doFinal("MCTier/chat-aead/v1".toByteArray(Charsets.UTF_8) + byteArrayOf(1))
+        }
+
+        fun encrypt(peer: String, token: String, path: String, body: ByteArray): ByteArray {
+            val iv = ByteArray(12).also(random::nextBytes)
+            val peerId = keyIdForPublicKey(parsePublicKey(peer) ?: error("Invalid peer"))
+            val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, javax.crypto.spec.SecretKeySpec(encryptionKey(peer, token), "AES"), javax.crypto.spec.GCMParameterSpec(128, iv))
+            cipher.updateAAD("MCTier/chat/v1\n$path\n$keyId\n$peerId".toByteArray(Charsets.UTF_8))
+            return org.json.JSONObject().put("v", 1).put("data", encodeBase64(iv + cipher.doFinal(body))).toString().toByteArray(Charsets.UTF_8)
+        }
+
+        fun decrypt(peer: String, token: String, path: String, body: ByteArray): ByteArray {
+            val envelope = org.json.JSONObject(body.toString(Charsets.UTF_8))
+            require(envelope.getInt("v") == 1)
+            val bytes = decodeBase64(envelope.getString("data")) ?: error("Invalid envelope")
+            require(bytes.size in 28..64 * 1024 * 1024 + 28)
+            val peerId = keyIdForPublicKey(parsePublicKey(peer) ?: error("Invalid peer"))
+            val cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding")
+            cipher.init(javax.crypto.Cipher.DECRYPT_MODE, javax.crypto.spec.SecretKeySpec(encryptionKey(peer, token), "AES"), javax.crypto.spec.GCMParameterSpec(128, bytes.copyOfRange(0, 12)))
+            cipher.updateAAD("MCTier/chat/v1\n$path\n$peerId\n$keyId".toByteArray(Charsets.UTF_8))
+            return cipher.doFinal(bytes.copyOfRange(12, bytes.size))
+        }
+
         fun publicKeyBase64(): String = encodeBase64(publicKeyDer)
 
         fun identityId(): String = identityIdForPublicKey(publicKeyDer)
+        fun privateKeyBase64(): String = encodeBase64(privateKey.encoded)
 
         /** Sign a one-time server challenge and its lobby/IP context. */
         fun signSignalingRegistration(
@@ -314,9 +348,19 @@ object ChatAuth {
         }
 
         companion object {
+            fun restore(privateKeyBase64: String, publicKeyBase64: String): ChatSigner? = runCatching {
+                val bytes = decodeBase64(privateKeyBase64) ?: return null
+                val publicDer = parsePublicKey(publicKeyBase64) ?: return null
+                val privateKey = KeyFactory.getInstance("EC").generatePrivate(java.security.spec.PKCS8EncodedKeySpec(bytes))
+                val signer = ChatSigner(privateKey, publicDer, keyIdForPublicKey(publicDer))
+                val challenge = "MCTier/identity-restore/v1".toByteArray(Charsets.UTF_8)
+                val signature = Signature.getInstance(SignatureAlgorithm).run { initSign(privateKey); update(challenge); sign() }
+                require(verifySignature(publicDer, encodeBase64(signature), challenge))
+                signer
+            }.getOrNull()
             /**
-             * Generate a fresh key pair. One is created per lobby session, so
-             * leaving a lobby permanently retires the credential.
+             * Generate a fresh identity. Production persists it through the
+             * Keystore-backed preference store; tests use isolated identities.
              */
             fun generate(): ChatSigner? = runCatching {
                 val generator = KeyPairGenerator.getInstance(KeyAlgorithm)

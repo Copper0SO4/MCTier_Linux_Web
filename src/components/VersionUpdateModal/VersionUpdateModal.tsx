@@ -52,6 +52,7 @@ export const VersionUpdateModal: React.FC<VersionUpdateModalProps> = ({
         </div>
       }
       open={visible}
+      zIndex={1100}
       onCancel={onClose}
       footer={null}
       centered

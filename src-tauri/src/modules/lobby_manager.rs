@@ -19,6 +19,10 @@ pub struct Lobby {
     pub created_at: DateTime<Utc>,
     /// 虚拟 IP 地址（当前玩家的）
     pub virtual_ip: String,
+    #[serde(default)]
+    pub automatic_virtual_ip: bool,
+    #[serde(default)]
+    pub address_attempt: u16,
     /// 创建者的虚拟 IP 地址（用于连接 WebSocket 信令服务器）
     pub creator_virtual_ip: String,
     /// 虚拟域名（如果启用了魔法DNS）
@@ -61,6 +65,8 @@ impl Lobby {
             password,
             created_at: Utc::now(),
             virtual_ip,
+            automatic_virtual_ip: false,
+            address_attempt: 0,
             creator_virtual_ip,
             virtual_domain,
             use_domain,
@@ -160,6 +166,71 @@ pub struct LobbyManager {
 }
 
 impl LobbyManager {
+    /// Start EasyTier with bounded recovery for transient resolver/socket
+    /// failures. EasyTier can terminate during startup when Windows briefly
+    /// exhausts UDP buffers (WSA 10055) or its DNS resolver races the virtual
+    /// adapter. The old call path surfaced that first failure directly, which
+    /// left auto-lobby in a half-connected state until the application was
+    /// restarted. A retry is safe here because NetworkService cleans the
+    /// failed child and virtual adapter before returning the error.
+    async fn start_easytier_with_retry(
+        network_service: &crate::modules::network_service::NetworkService,
+        network_name: String,
+        network_key: String,
+        server_node: String,
+        player_name: String,
+        app_handle: &tauri::AppHandle,
+        global_config: Option<Option<crate::modules::config_manager::EasyTierAdvancedConfig>>,
+        lobby_config: Option<Option<crate::modules::config_manager::EasyTierAdvancedConfig>>,
+    ) -> Result<String, AppError> {
+        const MAX_ATTEMPTS: usize = 3;
+        let mut last_error = None;
+        for attempt in 1..=MAX_ATTEMPTS {
+            match network_service
+                .start_easytier_with_config(
+                    network_name.clone(),
+                    network_key.clone(),
+                    server_node.clone(),
+                    player_name.clone(),
+                    app_handle,
+                    global_config.clone(),
+                    lobby_config.clone(),
+                )
+                .await
+            {
+                Ok(ip) => return Ok(ip),
+                Err(error) => {
+                    let text = error.to_string();
+                    let transient = text.contains("10055")
+                        || text.contains("缓冲区空间不足")
+                        || text.contains("DNS")
+                        || text.contains("dns")
+                        || text.contains("lookup")
+                        || text.contains("连接错误")
+                        || text.contains("connect to peer error");
+                    log::warn!(
+                        "EasyTier 启动失败 ({}/{}): {}{}",
+                        attempt,
+                        MAX_ATTEMPTS,
+                        text,
+                        if transient {
+                            "，判定为瞬时错误"
+                        } else {
+                            ""
+                        }
+                    );
+                    last_error = Some(error);
+                    if !transient || attempt == MAX_ATTEMPTS {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(1200 * attempt as u64))
+                        .await;
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| AppError::NetworkError("EasyTier 启动失败".to_string())))
+    }
+
     /// 创建新的大厅管理器实例
     ///
     /// # 返回
@@ -208,7 +279,7 @@ impl LobbyManager {
             || trimmed == "ws://test.pmhs.top"
             || trimmed == "wss://test.pmhs.top"
         {
-            return "udp://us01.225284.xyz:11010".to_string();
+            return "tcp://easytier.weiai.org.cn:11010".to_string();
         }
 
         if trimmed == "tcp://mctiers.pmhs.top" {
@@ -371,6 +442,7 @@ impl LobbyManager {
         app_handle: &tauri::AppHandle,
         global_config: Option<crate::modules::config_manager::EasyTierAdvancedConfig>,
         lobby_config: Option<crate::modules::config_manager::EasyTierAdvancedConfig>,
+        address_attempt: u16,
     ) -> Result<Lobby, LobbyError> {
         // 检查是否已经在大厅中
         if self.current_lobby.is_some() {
@@ -401,19 +473,28 @@ impl LobbyManager {
         let normalized_server_node = Self::normalize_server_node(&server_node);
         log::info!("使用服务器节点: {}", normalized_server_node);
 
+        let (address_config, automatic_virtual_ip) = crate::modules::lobby_address::configuration(
+            global_config.as_ref(),
+            lobby_config.as_ref(),
+            &name,
+            player_id,
+            address_attempt,
+        )
+        .map_err(LobbyError::InvalidInput)?;
+
         // 启动 EasyTier 服务（统一启用魔法DNS），传递配置参数
-        let virtual_ip = network_service
-            .start_easytier_with_config(
-                network_name,
-                network_key,
-                normalized_server_node,
-                player_name.clone(),
-                app_handle,
-                Some(global_config),
-                Some(lobby_config),
-            )
-            .await
-            .map_err(|e| LobbyError::NetworkError(e.to_string()))?;
+        let virtual_ip = Self::start_easytier_with_retry(
+            network_service,
+            network_name,
+            network_key,
+            normalized_server_node,
+            player_name.clone(),
+            app_handle,
+            Some(global_config),
+            Some(Some(address_config)),
+        )
+        .await
+        .map_err(|e| LobbyError::NetworkError(e.to_string()))?;
 
         log::info!("虚拟域名已派生为身份指纹前缀");
 
@@ -437,12 +518,11 @@ impl LobbyManager {
             self.hosts_manager = Some(hosts_manager);
         }
 
-        // 创建大厅实例
-        // 约定：所有节点都连接到 10.126.126.1:8445
-        // 在 EasyTier DHCP 模式下，第一个加入网络的节点通常会获得 10.126.126.1
-        let creator_virtual_ip = "10.126.126.1".to_string();
-        log::info!("约定的信令服务器地址: {}:8445", creator_virtual_ip);
-        let lobby = Lobby::new(
+        // EasyTier DHCP 地址可能在应用重启后发生变化；使用本次实际
+        // 分配的地址，避免对端继续访问已经失效的旧创建者地址。
+        let creator_virtual_ip = virtual_ip.clone();
+        log::info!("创建者 EasyTier 地址: {}", creator_virtual_ip);
+        let mut lobby = Lobby::new(
             name,
             Some(password),
             virtual_ip.clone(),
@@ -451,6 +531,9 @@ impl LobbyManager {
             Some(use_domain),
             Some(signaling_server),
         );
+
+        lobby.automatic_virtual_ip = automatic_virtual_ip;
+        lobby.address_attempt = address_attempt;
 
         // 创建当前玩家
         let player = Player::new(player_name, virtual_ip.clone());
@@ -558,8 +641,8 @@ impl LobbyManager {
         // 创建大厅实例
         // 约定：所有节点都连接到 10.126.126.1:8445
         // 在 EasyTier DHCP 模式下，第一个加入网络的节点通常会获得 10.126.126.1
-        let creator_virtual_ip = "10.126.126.1".to_string();
-        log::info!("约定的信令服务器地址: {}:8445", creator_virtual_ip);
+        let creator_virtual_ip = virtual_ip.clone();
+        log::info!("创建者 EasyTier 地址: {}", creator_virtual_ip);
         let lobby = Lobby::new(
             name,
             Some(password),
@@ -627,6 +710,7 @@ impl LobbyManager {
         app_handle: &tauri::AppHandle,
         global_config: Option<crate::modules::config_manager::EasyTierAdvancedConfig>,
         lobby_config: Option<crate::modules::config_manager::EasyTierAdvancedConfig>,
+        address_attempt: u16,
     ) -> Result<Lobby, LobbyError> {
         // 检查是否已经在大厅中
         if self.current_lobby.is_some() {
@@ -656,19 +740,28 @@ impl LobbyManager {
         let normalized_server_node = Self::normalize_server_node(&server_node);
         log::info!("使用服务器节点: {}", normalized_server_node);
 
+        let (address_config, automatic_virtual_ip) = crate::modules::lobby_address::configuration(
+            global_config.as_ref(),
+            lobby_config.as_ref(),
+            &name,
+            player_id,
+            address_attempt,
+        )
+        .map_err(LobbyError::InvalidInput)?;
+
         // 启动 EasyTier 服务（统一启用魔法DNS），传递配置参数
-        let virtual_ip = network_service
-            .start_easytier_with_config(
-                network_name,
-                network_key,
-                normalized_server_node,
-                player_name.clone(),
-                app_handle,
-                Some(global_config),
-                Some(lobby_config),
-            )
-            .await
-            .map_err(|e| LobbyError::NetworkError(e.to_string()))?;
+        let virtual_ip = Self::start_easytier_with_retry(
+            network_service,
+            network_name,
+            network_key,
+            normalized_server_node,
+            player_name.clone(),
+            app_handle,
+            Some(global_config),
+            Some(Some(address_config)),
+        )
+        .await
+        .map_err(|e| LobbyError::NetworkError(e.to_string()))?;
 
         log::info!("虚拟域名已派生为身份指纹前缀");
 
@@ -695,7 +788,7 @@ impl LobbyManager {
         // 创建大厅实例
         let creator_virtual_ip = "10.126.126.1".to_string();
         log::info!("约定的信令服务器地址: {}:8445", creator_virtual_ip);
-        let lobby = Lobby::new(
+        let mut lobby = Lobby::new(
             name,
             Some(password),
             virtual_ip.clone(),
@@ -704,6 +797,9 @@ impl LobbyManager {
             Some(use_domain),
             Some(signaling_server),
         );
+
+        lobby.automatic_virtual_ip = automatic_virtual_ip;
+        lobby.address_attempt = address_attempt;
 
         // 创建当前玩家
         let player = Player::new(player_name, virtual_ip.clone());
@@ -884,6 +980,15 @@ impl LobbyManager {
         log::info!("已成功退出大厅");
 
         Ok(())
+    }
+
+    /// Clear stale lobby state after an interrupted connection attempt.
+    /// This is intentionally separate from `leave_lobby`, which assumes a
+    /// live EasyTier service and therefore cannot be used by force cleanup.
+    pub fn force_clear_state(&mut self) {
+        self.current_lobby = None;
+        self.players.clear();
+        self.hosts_manager = None;
     }
 
     /// 添加玩家

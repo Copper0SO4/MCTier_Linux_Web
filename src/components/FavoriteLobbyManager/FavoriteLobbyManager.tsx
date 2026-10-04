@@ -4,11 +4,15 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import { tl } from '../../i18n';
 import { isSafeServerNode, isSafeSignalingServer, sanitizeUntrustedText } from '../../security/trustBoundary';
+import { savedLobbyPlayerName } from '../../services/lobby/savedLobbyIdentity';
+import { isProtectedPassword, protectLobbyPassword } from '../../security/lobbyPassword';
+import { PasswordInput } from '../PasswordInput/PasswordInput';
 import './FavoriteLobbyManager.css';
 
 export interface FavoriteLobby {
   id: string;
   name: string;
+  password?: string;
   playerName?: string;
   useDomain?: boolean;
   serverNode?: string;
@@ -36,7 +40,7 @@ function normalizeFavorite(value: unknown): FavoriteLobby | null {
   const name = sanitizeUntrustedText(item.name, 64).trim();
   const id = sanitizeUntrustedText(item.id, 128).trim();
   if (!name || !id) return null;
-  const playerName = sanitizeUntrustedText(item.playerName, 64).trim();
+  const playerName = savedLobbyPlayerName(item.playerName, item.password);
   const serverNode = typeof item.serverNode === 'string' && isSafeServerNode(item.serverNode) && item.serverNode !== 'custom'
     ? item.serverNode.trim()
     : undefined;
@@ -55,6 +59,7 @@ function normalizeFavorite(value: unknown): FavoriteLobby | null {
   return {
     id,
     name,
+    ...(isProtectedPassword(item.password) ? { password: item.password } : {}),
     ...(playerName ? { playerName } : {}),
     ...(item.useDomain === true ? { useDomain: true } : {}),
     ...(serverNode ? { serverNode } : {}),
@@ -81,24 +86,32 @@ export const FavoriteLobbyManager: React.FC<FavoriteLobbyManagerProps> = ({
   const [favorites, setFavorites] = useState<FavoriteLobby[]>([]);
   const [editingFavorite, setEditingFavorite] = useState<FavoriteLobby | null>(null);
   const [showAddForm, setShowAddForm] = useState(false);
-  const [form] = Form.useForm<{ name: string; playerName?: string; useDomain?: boolean }>();
+  const [form] = Form.useForm<{ name: string; password?: string; playerName?: string; useDomain?: boolean }>();
 
   // 从 localStorage 加载常用大厅列表
   useEffect(() => {
-    const loadFavorites = () => {
+    let disposed = false;
+    const loadFavorites = async () => {
       try {
         const saved = localStorage.getItem(STORAGE_KEY);
         if (saved) {
           const parsed = JSON.parse(saved);
+          if (Array.isArray(parsed)) {
+            for (const item of parsed) {
+              if (item && typeof item === 'object' && typeof item.password === 'string' && item.password) {
+                item.playerName = savedLobbyPlayerName(item.playerName, item.password);
+                item.password = await protectLobbyPassword(item.password);
+              }
+            }
+          }
           const normalized = Array.isArray(parsed)
             ? parsed.flatMap((item: unknown) => {
                 const favorite = normalizeFavorite(item);
                 return favorite ? [favorite] : [];
               })
             : [];
+          if (disposed) return;
           setFavorites(normalized);
-          // Rewrite legacy entries to remove persisted passwords and malformed
-          // fields immediately, even if the user never edits a favorite.
           localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
         }
       } catch (error) {
@@ -109,6 +122,7 @@ export const FavoriteLobbyManager: React.FC<FavoriteLobbyManagerProps> = ({
     if (visible) {
       loadFavorites();
     }
+    return () => { disposed = true; };
   }, [visible]);
 
   // 保存常用大厅列表到 localStorage
@@ -130,6 +144,7 @@ export const FavoriteLobbyManager: React.FC<FavoriteLobbyManagerProps> = ({
   const handleSaveFavorite = async () => {
     try {
       const values = await form.validateFields();
+      const password = await protectLobbyPassword(values.password || '');
       
       if (editingFavorite) {
         // 编辑现有项
@@ -138,6 +153,7 @@ export const FavoriteLobbyManager: React.FC<FavoriteLobbyManagerProps> = ({
           ? {
                 ...fav, 
                 name: values.name, 
+                password,
                 playerName: values.playerName,
                 useDomain: values.useDomain ?? false
               }
@@ -150,6 +166,7 @@ export const FavoriteLobbyManager: React.FC<FavoriteLobbyManagerProps> = ({
         const newFavorite: FavoriteLobby = {
           id: `fav_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
           name: values.name,
+          password,
           playerName: values.playerName,
           useDomain: values.useDomain ?? false,
           serverNode: defaultServerNode,
@@ -213,6 +230,7 @@ export const FavoriteLobbyManager: React.FC<FavoriteLobbyManagerProps> = ({
     setEditingFavorite(lobby);
     form.setFieldsValue({
       name: lobby.name,
+      password: lobby.password || '',
       playerName: lobby.playerName,
       useDomain: lobby.useDomain ?? false,
     });
@@ -247,7 +265,7 @@ export const FavoriteLobbyManager: React.FC<FavoriteLobbyManagerProps> = ({
               exit={{ height: 0, opacity: 0 }}
               transition={{ duration: 0.3 }}
             >
-              <Form form={form} layout="vertical">
+              <Form form={form} name="favorite-lobby" layout="vertical" autoComplete="off">
                 <Form.Item
                   label={tl('大厅名称', 'Lobby Name')}
                   name="name"
@@ -261,6 +279,7 @@ export const FavoriteLobbyManager: React.FC<FavoriteLobbyManagerProps> = ({
                   ]}
                 >
                   <Input 
+                    autoComplete="off"
                     placeholder={tl('输入大厅名称', 'Enter lobby name')} 
                     onChange={(e) => {
                       const value = e.target.value;
@@ -271,6 +290,9 @@ export const FavoriteLobbyManager: React.FC<FavoriteLobbyManagerProps> = ({
                     }}
                   />
                 </Form.Item>
+                <Form.Item name="password" label={tl('大厅密码', 'Lobby Password')}>
+                  <PasswordInput />
+                </Form.Item>
                 <Form.Item
                   label={tl('玩家名称', 'Player Name')}
                   name="playerName"
@@ -280,7 +302,7 @@ export const FavoriteLobbyManager: React.FC<FavoriteLobbyManagerProps> = ({
                     { min: 1, max: 8, message: tl('玩家名称长度为 1-8 个字', 'Player name must be 1-8 characters') },
                   ]}
                 >
-                  <Input placeholder={tl('输入玩家名称', 'Enter player name')} maxLength={8} />
+                  <Input placeholder={tl('输入玩家名称', 'Enter player name')} maxLength={8} autoComplete="off" />
                 </Form.Item>
                 <Form.Item
                   label={tl('开启虚拟域名', 'Enable virtual domain')}
@@ -348,7 +370,7 @@ export const FavoriteLobbyManager: React.FC<FavoriteLobbyManagerProps> = ({
                         <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
                         <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
                       </svg>
-                      <span>{tl('加入时需要重新输入密码', 'Password required when joining')}</span>
+                      <span>{item.password ? tl('密码已加密保存', 'Password saved securely') : tl('未保存密码', 'No saved password')}</span>
                     </div>
                     <div className="favorite-card-meta" style={{ fontSize: 11, color: 'rgba(255,255,255,0.45)', marginTop: 4, display: 'flex', gap: 12 }}>
                       <span>{tl('使用', 'Used')} {item.useCount ?? 0} {tl('次', 'x')}</span>
