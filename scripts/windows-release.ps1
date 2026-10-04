@@ -23,7 +23,8 @@ function Export-MctierWindowsRelease {
     param(
         [Parameter(Mandatory = $true)][string]$ReleaseDirectory,
         [Parameter(Mandatory = $true)][string]$OutputDirectory,
-        [Parameter(Mandatory = $true)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version
+        [Parameter(Mandatory = $true)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
+        $SigningConfiguration
     )
     $executable = Join-Path $ReleaseDirectory 'mctier.exe'
     $installerName = "MCTier_${Version}_x64-setup.exe"
@@ -37,6 +38,12 @@ function Export-MctierWindowsRelease {
     $actualVersion = (Get-Item -LiteralPath $executable).VersionInfo.ProductVersion
     if ($actualVersion -ne $Version) {
         throw "Windows executable version mismatch: expected $Version, actual '$actualVersion'."
+    }
+    if ($SigningConfiguration) {
+        . (Join-Path $PSScriptRoot 'release-signing.ps1')
+        foreach ($path in @($executable, $installer)) {
+            Assert-MctierWindowsSignature $path $SigningConfiguration.Windows.CertificateThumbprint $SigningConfiguration.Windows.Mode
+        }
     }
     New-Item -ItemType Directory -Path $OutputDirectory -Force | Out-Null
     $artifacts = @(

@@ -1167,16 +1167,9 @@ private fun PublicPlazaDialog(state: MctierUiState, repository: MctierRepository
                     state.publicLobbies.isEmpty() -> Text(L("暂无公开大厅", "No public lobbies"), color = TextPrimary.copy(alpha = 0.5f))
                     else -> LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         items(state.publicLobbies, key = { it.lobbyName + it.hostName }) { lobby ->
-                            Row(
-                                Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(PanelHigh)
-                                    .clickable { onFill(lobby.lobbyName, "", lobby.serverNode); onDismiss() }.padding(12.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(lobby.lobbyName, color = TextPrimary, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text(L("房主 ", "Host ") + "${lobby.hostName} · ${lobby.playerCount}${lobby.maxPlayers?.let { "/$it" } ?: ""} " + L("人", "players"), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.5f))
-                                }
-                                Text(L("填入", "Fill"), color = GrassGreen, fontSize = 13.sp)
+                            PublicLobbyCard(lobby) {
+                                onFill(lobby.lobbyName, "", lobby.serverNode)
+                                onDismiss()
                             }
                         }
                     }
@@ -1185,6 +1178,26 @@ private fun PublicPlazaDialog(state: MctierUiState, repository: MctierRepository
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text(L("关闭", "Close"), color = GrassGreen) } },
     )
+}
+
+@Composable
+internal fun PublicLobbyCard(lobby: top.pmh13.mctier.data.PublicLobbyWire, onSelect: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(PanelHigh)
+            .clickable(onClick = onSelect).padding(12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(lobby.lobbyName, color = TextPrimary, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(L("房主 ", "Host ") + "${lobby.hostName} · ${lobby.playerCount}${lobby.maxPlayers?.let { "/$it" } ?: ""} " + L("人", "players"), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.5f))
+            if (lobby.description.isNotBlank()) {
+                Spacer(Modifier.height(4.dp))
+                Text(lobby.description.trim(), fontSize = 12.sp, color = TextPrimary.copy(alpha = 0.75f))
+            }
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(L("填入", "Fill"), color = GrassGreen, fontSize = 13.sp)
+    }
 }
 
 @Composable
@@ -1720,7 +1733,7 @@ private fun LobbyCard(state: MctierUiState, repository: MctierRepository) {
 private fun AnnouncementBar(state: MctierUiState, repository: MctierRepository) {
     val text = state.announcement
     if (text.isBlank()) return
-    // 只读跑马灯：公告从右向左匀速滚动；房主在「大厅动态设置」中编辑
+    // 只读公告：宽度不足时才滚动；房主在「大厅动态设置」中编辑。
     Column {
         Row(
             Modifier.fillMaxWidth().clip(RoundedCornerShape(14.dp)).background(Color(0xFFFFD24A).copy(alpha = 0.14f))
@@ -1736,10 +1749,10 @@ private fun AnnouncementBar(state: MctierUiState, repository: MctierRepository) 
     }
 }
 
-/** 从右向左匀速循环滚动的跑马灯文本 */
+/** basicMarquee 仅在文字超出可用宽度时滚动，并在窗口宽度变化时重新测量。 */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MarqueeText(text: String, color: Color, modifier: Modifier = Modifier) {
+internal fun MarqueeText(text: String, color: Color, modifier: Modifier = Modifier) {
     Text(
         text,
         color = color,
@@ -2317,7 +2330,7 @@ private fun LobbySettingsCard(state: MctierUiState, repository: MctierRepository
     SectionCard {
         Text(L("大厅公告", "Lobby Announcement"), fontWeight = FontWeight.SemiBold, color = TextPrimary, fontSize = 14.sp)
         Spacer(Modifier.height(4.dp))
-        Text(L("公告会在所有成员的大厅顶部以滚动条形式展示，新加入者也会自动看到（玩法规则/服务器地址等）", "The announcement scrolls at the top for all members, including newcomers"), fontSize = 11.sp, color = TextPrimary.copy(alpha = 0.5f), lineHeight = 16.sp)
+        Text(L("公告展示在所有成员的大厅顶部，内容超出宽度时自动滚动，新加入者也会自动看到（玩法规则/服务器地址等）", "Announcements appear at the top for all members, including newcomers, and scroll only when too long to fit"), fontSize = 11.sp, color = TextPrimary.copy(alpha = 0.5f), lineHeight = 16.sp)
         Spacer(Modifier.height(8.dp))
         MctierField(announce, { announce = it.take(200) }, L("公告内容（留空并发布可清除）", "Announcement (publish empty to clear)"))
         Spacer(Modifier.height(8.dp))

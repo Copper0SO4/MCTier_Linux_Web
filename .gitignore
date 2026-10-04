@@ -123,4 +123,5 @@ __pycache__/
 *.jks
 *.keystore
 build-paths.local.json
+signing.local.json
 /public/pdfjs/

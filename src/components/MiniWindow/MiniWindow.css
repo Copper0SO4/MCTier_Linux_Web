@@ -1749,18 +1749,20 @@ html[data-theme='light'] .mini-vg-chip {
   overflow: hidden;
 }
 .mini-announce-icon { color: #FFD24A; display: inline-flex; flex-shrink: 0; }
-.mini-announce-viewport { flex: 1; overflow: hidden; white-space: nowrap; position: relative; }
+.mini-announce-viewport { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; position: relative; }
 .mini-announce-marquee {
   display: inline-block;
-  padding-left: 100%;
   font-size: 12.5px;
   color: rgba(255, 255, 255, 0.92);
-  animation: mctier-marquee 14s linear infinite;
+  transform: translateX(0);
+}
+.mini-announce-marquee.is-overflowing {
+  animation: mctier-marquee var(--announce-duration) linear infinite alternate;
 }
 .mini-announce-viewport:hover .mini-announce-marquee { animation-play-state: paused; }
 @keyframes mctier-marquee {
-  0% { transform: translateX(0); }
-  100% { transform: translateX(-100%); }
+  0%, 15% { transform: translateX(0); }
+  85%, 100% { transform: translateX(var(--announce-offset)); }
 }
 
 /* ==================== 语音小队 ==================== */

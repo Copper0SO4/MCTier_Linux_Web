@@ -126,14 +126,14 @@ test('suspended, rejected and timed out audio engines release capture instead of
 });
 test('queued PCM stays bounded until the audio thread consumes it', async () => {
   const f = setup(); await f.api.openMicrophone();
-  for (let i = 0; i < 3; i++) { f.reads[i].resolve(new ArrayBuffer(3840)); await flush(); }
-  assert.equal(f.reads.length, 3);
-  assert.equal(f.nodes[0].port.messages.length, 3);
+  for (let i = 0; i < 6; i++) { f.reads[i].resolve(new ArrayBuffer(3840)); await flush(); }
+  assert.equal(f.reads.length, 6);
+  assert.equal(f.nodes[0].port.messages.length, 6);
   f.nodes[0].port.onmessage(); await flush();
-  assert.equal(f.reads.length, 4);
+  assert.equal(f.reads.length, 7);
   f.window.dispatchEvent(new Event('beforeunload')); await flush();
-  f.reads[3].resolve(new ArrayBuffer(3840)); await flush();
-  assert.equal(f.nodes[0].port.messages.length, 3);
+  f.reads[6].resolve(new ArrayBuffer(3840)); await flush();
+  assert.equal(f.nodes[0].port.messages.length, 6);
   assert.equal(f.track.readyState, 'ended');
 });
 test('malformed packets or unplugging ends the track once and releases capture', async () => {
@@ -200,8 +200,55 @@ test('audio worklet renders PCM, sanitizes invalid samples, bounds latency and e
   const samples = new Float32Array(960).fill(0.25); samples[0] = NaN; samples[1] = 2;
   p.port.onmessage({ data: samples.buffer });
   const output = new Float32Array(960); p.process([], [[output]]);
+  assert.ok(output.every(value => value === 0));
+  p.port.onmessage({ data: new Float32Array(1920).fill(0.25).buffer });
+  p.process([], [[output]]);
   assert.equal(output[0], 0); assert.equal(output[1], 1); assert.equal(output[2], 0.25);
+  p.process([], [[output]]); p.process([], [[output]]);
   p.process([], [[output]]); assert.ok(output.every(value => value === 0));
+  p.port.onmessage({ data: samples.buffer }); p.process([], [[output]]);
+  assert.ok(output.every(value => value === 0), 'rebuffer after a stall rather than chop every arriving packet');
   for (let i = 0; i < 20; i++) p.port.onmessage({ data: samples.buffer });
-  assert.equal(p.length, 4800);
+  assert.equal(p.length, 9600);
+});
+
+test('voice accepts catch-up batches while bounding all queued PCM by duration', async () => {
+  const f = setup(); const stream = await f.api.openMicrophone();
+  try {
+    f.reads[0].resolve(new ArrayBuffer(19200)); await flush();
+    f.reads[1].resolve(new ArrayBuffer(19200)); await flush();
+    assert.equal(f.nodes[0].port.messages.length, 2);
+    assert.equal(f.reads.length, 2);
+    for (let i = 0; i < 4; i++) f.nodes[0].port.onmessage({ data: 'consumed' });
+    await flush(); assert.equal(f.reads.length, 2);
+    f.nodes[0].port.onmessage({ data: { underrun: 0, buffered: 5760 } });
+    await flush(); assert.equal(f.reads.length, 2);
+    f.nodes[0].port.onmessage({ data: 'consumed' });
+    await flush(); assert.equal(f.reads.length, 3);
+    assert.equal(f.track.readyState, 'live');
+  } finally { stream.getTracks()[0].stop(); }
+});
+
+test('voice PCM remains continuous under 40 ms screen-sharing IPC stalls', () => {
+  let Processor;
+  const messages = [];
+  class Base { port = { postMessage: message => messages.push(message) }; }
+  const context = vm.createContext({ AudioWorkletProcessor: Base, Float32Array, ArrayBuffer,
+    registerProcessor: (_, type) => { Processor = type; } });
+  vm.runInContext(fs.readFileSync('src/services/voice/nativeMicrophoneWorklet.js', 'utf8'), context);
+  const p = new Processor();
+  const source = Float32Array.from({ length: 2880 + 128 * 1500 }, (_, i) => Math.sin(i * 2 * Math.PI * 440 / 48000) * 0.4);
+  let sent = 2880;
+  p.port.onmessage({ data: source.slice(0, sent).buffer });
+  const output = new Float32Array(128);
+  for (let quantum = 0; quantum < 1500; quantum++) {
+    if (quantum > 0 && quantum % 15 === 0) {
+      // Main-thread IPC returns two 20 ms packets together after each 40 ms stall.
+      p.port.onmessage({ data: source.slice(sent, sent + 1920).buffer }); sent += 1920;
+    }
+    p.process([], [[output]]);
+    assert.deepEqual(output, source.slice(quantum * 128, (quantum + 1) * 128), `audio discontinuity at quantum ${quantum}`);
+  }
+  assert.ok(messages.filter(m => typeof m === 'object').every(m => m.underrun === 0));
+  assert.equal(messages.filter(m => m === 'consumed').length, 200);
 });

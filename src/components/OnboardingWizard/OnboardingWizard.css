@@ -9,14 +9,14 @@
 }
 
 .onboarding-text {
-  color: rgba(255, 255, 255, 0.75);
+  color: var(--mct-text-secondary, #bec4ce);
   font-size: 13px;
   line-height: 1.7;
   margin-bottom: 10px !important;
 }
 
 .onboarding-list {
-  color: rgba(255, 255, 255, 0.75);
+  color: var(--mct-text-secondary, #bec4ce);
   font-size: 13px;
   line-height: 1.65;
   padding-left: 18px;
@@ -46,4 +46,24 @@
   align-items: center;
   gap: 8px;
   margin-left: auto;
+}
+
+.onboarding-security-notice.ant-alert {
+  border: 2px solid #d89614;
+  border-radius: 10px;
+  padding: 16px;
+  background: rgba(250, 173, 20, 0.12);
+}
+
+.onboarding-security-notice .ant-alert-message {
+  color: var(--text-color);
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.5;
+}
+
+.onboarding-security-notice .ant-alert-description {
+  color: var(--text-color);
+  font-size: 13px;
+  line-height: 1.8;
 }

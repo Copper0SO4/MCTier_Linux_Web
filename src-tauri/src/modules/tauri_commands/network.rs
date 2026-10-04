@@ -276,45 +276,6 @@ pub async fn check_virtual_adapter() -> Result<bool, String> {
     }
 }
 
-/// 检查防火墙规则
-///
-/// # 返回
-/// * `Ok(bool)` - true 表示防火墙规则正常
-/// * `Err(String)` - 错误信息
-#[tauri::command]
-pub async fn check_firewall_rules() -> Result<bool, String> {
-    log::info!("检查防火墙规则...");
-
-    #[cfg(windows)]
-    {
-        let response = tokio::task::spawn_blocking(|| {
-            crate::modules::privileged_helper::run_one_shot(
-                crate::modules::privileged_helper::HelperRequest::CheckFirewall,
-            )
-        })
-        .await
-        .map_err(|e| format!("防火墙检查任务异常结束: {e}"))??;
-        let has_rules = response
-            .and_then(|value| value.parse::<bool>().ok())
-            .unwrap_or(false);
-
-        log::info!("防火墙规则检查结果: {}", has_rules);
-        Ok(has_rules)
-    }
-
-    #[cfg(target_os = "linux")]
-    {
-        let allowed = crate::modules::linux_platform::check_firewall_rules().await;
-        log::info!("防火墙规则检查结果: {}", allowed);
-        Ok(allowed)
-    }
-
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        Ok(true)
-    }
-}
-
 /// 查询当前是否以管理员身份运行
 #[tauri::command]
 pub async fn is_admin() -> bool {
@@ -347,40 +308,6 @@ pub async fn is_admin() -> bool {
     #[cfg(not(windows))]
     {
         true
-    }
-}
-
-/// 一键添加防火墙放行规则（按程序放行，覆盖该程序所有端口）
-///
-/// 为 MCTier 主程序与 easytier-core 添加入站/出站允许规则。
-#[tauri::command]
-pub async fn add_firewall_rules(app_handle: tauri::AppHandle) -> Result<String, String> {
-    #[cfg(windows)]
-    {
-        let easytier_path =
-            crate::modules::resource_manager::ResourceManager::get_easytier_path(&app_handle)
-                .map_err(|e| e.to_string())?;
-        let value = tokio::task::spawn_blocking(move || {
-            crate::modules::privileged_helper::run_one_shot(
-                crate::modules::privileged_helper::HelperRequest::AddFirewall {
-                    easytier_path: easytier_path.to_string_lossy().into_owned(),
-                },
-            )
-        })
-        .await
-        .map_err(|e| format!("防火墙配置任务异常结束: {e}"))??;
-        Ok(value.unwrap_or_else(|| "防火墙规则已更新".to_string()))
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = app_handle;
-        crate::modules::linux_platform::add_firewall_rules().await
-    }
-
-    #[cfg(not(any(windows, target_os = "linux")))]
-    {
-        let _ = app_handle;
-        Ok("当前平台无需配置防火墙".to_string())
     }
 }
 

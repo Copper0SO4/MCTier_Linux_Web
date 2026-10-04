@@ -154,7 +154,6 @@ data class MctierUiState(
     val todos: List<top.pmh13.mctier.data.TodoItem> = emptyList(),
     val countdownRemaining: Int = 0,
     val countdownRunning: Boolean = false,
-    val speakerphoneOn: Boolean = true,
     val downloadedFiles: List<String> = emptyList(),
     val downloadProgress: Map<String, Int> = emptyMap(), // 文件名 -> 下载进度(0~100)
     val playerLatencies: Map<String, Int> = emptyMap(), // playerId -> 延迟ms，-1=不可达
@@ -905,11 +904,6 @@ class MctierRepository(private val context: Context) {
         val newMuted = !_state.value.globalMuted
         rtcController.setGlobalMute(newMuted)
         _state.update { it.copy(globalMuted = newMuted) }
-    }
-
-    fun setSpeakerphone(on: Boolean) {
-        rtcController.setSpeakerphone(on)
-        _state.update { it.copy(speakerphoneOn = on) }
     }
 
     /**

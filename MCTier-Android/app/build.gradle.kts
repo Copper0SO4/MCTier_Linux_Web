@@ -21,8 +21,8 @@ android {
         testInstrumentationRunner = "top.pmh13.mctier.PeerUiInstrumentation"
         minSdk = 26
         targetSdk = 36
-        versionCode = 114
-        versionName = "3.9.0-android"
+        versionCode = 117
+        versionName = "3.9.5-android"
         ndk {
             // The bundled LocalVQE engine is currently built for the primary
             // Android ABI; unsupported ABIs retain the WebRTC hardware AEC/NS path.
@@ -30,13 +30,37 @@ android {
         }
     }
 
+    val signingFile = providers.environmentVariable("MCTIER_ANDROID_STORE_FILE").orNull
+    if (!signingFile.isNullOrBlank()) {
+        signingConfigs.create("distribution") {
+            storeFile = file(signingFile)
+            storePassword = providers.environmentVariable("MCTIER_ANDROID_STORE_PASSWORD").get()
+            keyAlias = providers.environmentVariable("MCTIER_ANDROID_KEY_ALIAS").get()
+            keyPassword = providers.environmentVariable("MCTIER_ANDROID_KEY_PASSWORD").get()
+            enableV1Signing = true
+            enableV2Signing = true
+            enableV3Signing = true
+        }
+    }
     buildTypes {
         release {
+            isDebuggable = false
+            if (!signingFile.isNullOrBlank()) signingConfig = signingConfigs.getByName("distribution")
             // 开启 R8：剥离未使用代码并混淆，缩小包体并提高逆向成本（见 issue #17 第 6 条）。
             // JNI 入口、kotlinx.serialization 的线协议字段等需要保名的部分见 proguard-rules.pro。
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
+        // Distribution keeps the established non-shrinking pipeline: the optional POI/AWT
+        // dependencies currently fail R8. Signing must not silently change runtime behavior.
+        create("signedRelease") {
+            initWith(getByName("release"))
+            isDebuggable = false
+            isMinifyEnabled = false
+            isShrinkResources = false
+            matchingFallbacks += "release"
+            signingConfig = if (!signingFile.isNullOrBlank()) signingConfigs.getByName("distribution") else null
         }
     }
 
@@ -108,6 +132,18 @@ tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.con
     dependsOn(syncLicenseAssets)
     dependsOn(prepareSpeechModel)
     dependsOn(prepareBuiltinEmojiAsset)
+}
+
+tasks.matching { it.name == "preSignedReleaseBuild" }.configureEach {
+    doFirst {
+        check(!providers.environmentVariable("MCTIER_ANDROID_STORE_FILE").orNull.isNullOrBlank()) {
+            "Use the signed packaging script: the persistent Android signing identity is required."
+        }
+    }
+}
+// Lint reads generated assets too; release builds must declare the same producers.
+tasks.matching { it.name.contains("LintVital") || it.name.startsWith("lintVital") }.configureEach {
+    dependsOn(syncLicenseAssets, prepareSpeechModel, prepareBuiltinEmojiAsset)
 }
 val buildFilePreview by tasks.registering(Exec::class) {
     workingDir(rootProject.projectDir.parentFile)

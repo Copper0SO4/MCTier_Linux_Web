@@ -1,15 +1,13 @@
 /**
  * 新手引导 / 连接向导
  * - 首次启动自动弹出，逐步检测运行环境，降低组网失败门槛
- * - 检测项：管理员权限、防火墙放行规则、安全软件拦截
- * - 提供一键修复：以管理员重启、自动添加防火墙规则
+ * - 提醒用户检查安全软件是否隔离或删除 EasyTier 内核
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Modal, Button, Steps, Spin, Alert, Typography, Space, message } from 'antd';
+import { Modal, Button, Steps, Spin, Alert, Typography, Space } from 'antd';
 import {
   CheckCircleOutlined,
-  CloseCircleOutlined,
   WarningOutlined,
   LoadingOutlined,
   SafetyCertificateOutlined,
@@ -45,11 +43,9 @@ interface OnboardingWizardProps {
   onClose: () => void;
 }
 
-type CheckState = 'idle' | 'checking' | 'ok' | 'warn' | 'fail';
+type CheckState = 'idle' | 'checking' | 'ok' | 'warn';
 
 interface EnvChecks {
-  admin: CheckState;
-  firewall: CheckState;
   security: CheckState;
   securityList: string[];
 }
@@ -58,29 +54,12 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ visible, onC
   useTranslation();
   const [step, setStep] = useState(0);
   const [checks, setChecks] = useState<EnvChecks>({
-    admin: 'idle',
-    firewall: 'idle',
     security: 'idle',
     securityList: [],
   });
-  const [fixing, setFixing] = useState(false);
 
   const runChecks = useCallback(async () => {
-    setChecks({ admin: 'checking', firewall: 'checking', security: 'checking', securityList: [] });
-
-    let admin: CheckState = 'warn';
-    try {
-      admin = (await invoke<boolean>('is_admin')) ? 'ok' : 'warn';
-    } catch {
-      admin = 'warn';
-    }
-
-    let firewall: CheckState = 'warn';
-    try {
-      firewall = (await invoke<boolean>('check_firewall_rules')) ? 'ok' : 'warn';
-    } catch {
-      firewall = 'warn';
-    }
+    setChecks({ security: 'checking', securityList: [] });
 
     let security: CheckState = 'ok';
     let securityList: string[] = [];
@@ -91,35 +70,15 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ visible, onC
       security = 'warn';
     }
 
-    setChecks({ admin, firewall, security, securityList });
+    setChecks({ security, securityList });
   }, []);
 
   useEffect(() => {
     if (visible && step === 1) {
-      void runChecks();
+      const timer = window.setTimeout(() => void runChecks(), 0);
+      return () => window.clearTimeout(timer);
     }
   }, [visible, step, runChecks]);
-
-  const handleAddFirewall = async () => {
-    setFixing(true);
-    try {
-      const msg = await invoke<string>('add_firewall_rules');
-      message.success(msg || tl('已添加防火墙放行规则', 'Firewall rules added'));
-      await runChecks();
-    } catch (error) {
-      message.error(`${tl('添加防火墙规则失败：', 'Failed to add firewall rules: ')}${error}${tl('。可尝试以管理员身份重启后重试', '. Try restarting as administrator.')}`);
-    } finally {
-      setFixing(false);
-    }
-  };
-
-  const handleRestartAdmin = async () => {
-    try {
-      await invoke('restart_as_admin');
-    } catch (error) {
-      message.error(`${tl('以管理员身份重启失败：', 'Failed to restart as administrator: ')}${error}`);
-    }
-  };
 
   const finish = () => {
     markOnboardingDone();
@@ -130,7 +89,6 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ visible, onC
     if (s === 'checking') return <Spin indicator={<LoadingOutlined spin />} />;
     if (s === 'ok') return <CheckCircleOutlined style={{ color: '#52c41a' }} />;
     if (s === 'warn') return <WarningOutlined style={{ color: '#faad14' }} />;
-    if (s === 'fail') return <CloseCircleOutlined style={{ color: '#ff4d4f' }} />;
     return null;
   };
 
@@ -150,7 +108,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ visible, onC
         <div style={{ fontWeight: 600 }}>
           {icon} {label}
         </div>
-        <div style={{ fontSize: 12, color: 'rgba(255,255,255,0.6)', marginTop: 2 }}>{desc}</div>
+        <div style={{ fontSize: 12, color: 'var(--mct-text-secondary, #aab0bc)', marginTop: 2 }}>{desc}</div>
       </div>
     </div>
   );
@@ -163,49 +121,32 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ visible, onC
         {tl('MCTier 帮助你和好友快速建立虚拟局域网，畅玩 Minecraft 等局域网联机游戏，并自带语音、聊天与文件共享。', 'MCTier helps you and your friends quickly build a virtual LAN to play Minecraft and other LAN games, with built-in voice, chat and file sharing.')}
       </Paragraph>
       <Paragraph className="onboarding-text">
-        {tl('为了让组网更顺畅，我们先用几秒钟检查一下运行环境。多数连接失败都源于权限不足、防火墙拦截或安全软件干扰。', 'For smoother networking, let us spend a few seconds checking your environment. Most connection failures come from insufficient permissions, firewall blocking or security software interference.')}
+        {tl('接下来检查常见安全软件。若创建或加入大厅失败，请优先查看安全软件的隔离区，确认 EasyTier 内核没有被误删。', 'Next, check for common security software. If creating or joining a lobby fails, first check its quarantine for the EasyTier core.')}
       </Paragraph>
-      <Alert
-        type="info"
-        showIcon
-        message={tl('建议以管理员身份运行 MCTier，可显著降低组网失败概率。', 'Running MCTier as administrator greatly reduces networking failures.')}
-      />
     </div>
   );
 
   // 步骤 1：环境检测
-  const allChecking =
-    checks.admin === 'checking' || checks.firewall === 'checking' || checks.security === 'checking';
-  const hasWarning =
-    checks.admin === 'warn' || checks.firewall === 'warn' || checks.security === 'warn';
+  const allChecking = checks.security === 'checking';
 
   const envStep = (
-    <div className="onboarding-step" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-      {checkRow(
-        <SafetyCertificateOutlined />,
-        tl('管理员权限', 'Administrator'),
-        checks.admin,
-        checks.admin === 'ok'
-          ? tl('已以管理员身份运行，网络配置权限充足。', 'Running as administrator with sufficient network permissions.')
-          : tl('当前非管理员身份，创建虚拟网卡/写入 hosts 可能失败，建议以管理员重启。', 'Not running as administrator; creating the virtual adapter or writing hosts may fail. Restart as administrator.')
-      )}
-      {checkRow(
-        <SafetyCertificateOutlined />,
-        tl('防火墙放行', 'Firewall'),
-        checks.firewall,
-        checks.firewall === 'ok'
-          ? tl('已检测到 MCTier 的防火墙放行规则。', 'MCTier firewall rules detected.')
-          : tl('未检测到放行规则，Windows 防火墙可能阻止联机，建议一键放行。', 'No firewall rules found; Windows Firewall may block connections. Add them with one click.')
-      )}
+    <div className="onboarding-step" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      <Alert
+        className="onboarding-security-notice"
+        type="warning"
+        showIcon
+        message={tl('大厅创建或加入失败？先检查 EasyTier 是否被误删', 'Cannot create or join a lobby? Check whether EasyTier was removed')}
+        description={tl('安全软件可能将 easytier-core.exe 误判并隔离或删除。请先查看隔离区或拦截记录，确认来自官方 MCTier 安装包后恢复该文件，并将 MCTier 安装目录加入信任列表，再重试。下方检测到安全软件不代表软件已被拦截，可以直接继续使用。', 'Security software may quarantine or delete easytier-core.exe. Check its quarantine or blocking history, restore the file after confirming it came from the official MCTier package, and trust the MCTier installation folder before retrying. Detecting security software below does not mean it has blocked MCTier; you can continue.')}
+      />
       {checkRow(
         <SafetyCertificateOutlined />,
         tl('安全软件', 'Security software'),
         checks.security,
         checks.security === 'ok'
-          ? tl('未检测到常见安全软件拦截。', 'No common security software interference detected.')
+          ? tl('未检测到常见安全软件；若无法组网，仍可检查系统安全软件的隔离记录。', 'No common security software detected. If networking fails, also check your system security quarantine.')
           : tl(
-              `检测到：${checks.securityList.join('、') || '未知安全软件'}。请将 MCTier 加入信任/白名单。`,
-              `Detected: ${checks.securityList.join(', ') || 'unknown security software'}. Please add MCTier to your trust/whitelist.`,
+              `检测到：${checks.securityList.join('、') || '检测暂不可用'}。仅表示检测结果，不代表 MCTier 已被拦截。`,
+              `Detected: ${checks.securityList.join(', ') || 'check unavailable'}. This does not mean MCTier has been blocked.`,
             )
       )}
 
@@ -213,29 +154,7 @@ export const OnboardingWizard: React.FC<OnboardingWizardProps> = ({ visible, onC
         <Button onClick={() => void runChecks()} disabled={allChecking}>
           {tl('重新检测', 'Re-check')}
         </Button>
-        {checks.firewall !== 'ok' && (
-          <Button type="primary" loading={fixing} disabled={allChecking} onClick={() => void handleAddFirewall()}>
-            {tl('一键放行防火墙', 'Allow through firewall')}
-          </Button>
-        )}
-        {checks.admin !== 'ok' && (
-          <Button danger disabled={allChecking} onClick={() => void handleRestartAdmin()}>
-            {tl('以管理员身份重启', 'Restart as admin')}
-          </Button>
-        )}
       </Space>
-
-      {!allChecking && hasWarning && (
-        <Alert
-          type="warning"
-          showIcon
-          message={tl('部分项目需要注意', 'Some items need attention')}
-          description={tl('存在警告项不影响继续使用，但若组网失败，建议先处理上述提示。', 'Warnings do not block usage, but if networking fails, address them first.')}
-        />
-      )}
-      {!allChecking && !hasWarning && (
-        <Alert type="success" showIcon message={tl('环境检查通过', 'Environment check passed')} description={tl('一切就绪，可以开始联机啦。', 'All set, you can start playing.')} />
-      )}
     </div>
   );
 

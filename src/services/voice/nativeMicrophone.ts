@@ -102,11 +102,11 @@ export async function openMicrophone(deviceId = '', systemProcessing = true, loo
       while (!stopped) {
         try {
           // Bound the MessagePort queue as well as the native and worklet ring buffers.
-          if (inFlight >= (recording ? 20 : 3)) await new Promise<void>(resolve => { wake = resolve; });
+          while (!stopped && inFlight >= (recording ? 20 : 6)) await new Promise<void>(resolve => { wake = resolve; });
           if (stopped) return;
           const bytes = await invoke<ArrayBuffer>('native_microphone_read', { id: info.id });
           if (stopped) return;
-          if (!(bytes instanceof ArrayBuffer) || bytes.byteLength < 3840 || bytes.byteLength % 3840 !== 0 || bytes.byteLength > (recording ? 38400 : 3840)) throw new Error('Invalid microphone packet');
+          if (!(bytes instanceof ArrayBuffer) || bytes.byteLength < 3840 || bytes.byteLength % 3840 !== 0 || bytes.byteLength > (recording ? 38400 : 19200)) throw new Error('Invalid microphone packet');
           nativeLevels.set(destination.stream, pcmRms(new Float32Array(bytes)));
           if (!acknowledged) { diagnostic('capture-ready', `input=${info.deviceId}, context=${context!.state}, sampleRate=${info.sampleRate}`); acknowledged = true; }
           inFlight += bytes.byteLength / 3840;

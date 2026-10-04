@@ -177,6 +177,7 @@ class PeerUiInstrumentation : Instrumentation() {
         }
     }
     override fun onStart() {
+        if (checkMode == "lobby-compatibility") { LobbyCompatibilityChecks(this).run(); return }
         if (checkMode == "quark-work") { QuarkWorkChecks(this).run(); return }
         if (checkMode?.startsWith("quark-upgrade-") == true) { QuarkUpgradeChecks(this).run(checkMode!!.removePrefix("quark-upgrade-")); return }
         if (checkMode == "ux") { QuarkMediaChecks(this).run(ux = true); return }

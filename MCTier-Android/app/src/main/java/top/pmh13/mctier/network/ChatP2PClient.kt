@@ -2,7 +2,12 @@ package top.pmh13.mctier.network
 
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.serialization.builtins.ListSerializer
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -59,6 +64,10 @@ class ChatP2PClient(
     @Volatile private var signer: ChatAuth.ChatSigner? = injectedSigner
     private val signerLock = Any()
     private var lastMessageTime = 0L
+    private var hostId: String? = null
+    private var announcementRecovery: Job? = null
+    private var announcementGeneration = 0L
+    private var announcementRevision = 0L
 
     @Synchronized
     private fun nextMessageId(): String {
@@ -91,17 +100,32 @@ class ChatP2PClient(
     fun identityId(): String? = signingSigner()?.identityId()
 
     /** Install the first session or a newer registration snapshot. */
+    @Synchronized
     fun configureSession(token: String, tokenEpoch: Long, playerName: String, hostId: String?): Boolean {
         localPlayerName = playerName
         val publicKey = ensureSigningKey() ?: return false
         val local = ChatPeerIdentity(playerId, playerName, bindIp, publicKey)
-        return server.configureSession(token, tokenEpoch, local, peerIdentities, hostId)
+        if (!server.configureSession(token, tokenEpoch, local, peerIdentities, hostId)) return false
+        this.hostId = hostId
+        restartAnnouncementRecovery()
+        return true
     }
 
     /** Apply a signaling-issued token rotation. Lower epochs are ignored. */
-    fun rotateToken(token: String, tokenEpoch: Long): Boolean = server.rotateToken(token, tokenEpoch)
+    @Synchronized
+    fun rotateToken(token: String, tokenEpoch: Long): Boolean {
+        if (!server.rotateToken(token, tokenEpoch)) return false
+        restartAnnouncementRecovery()
+        return true
+    }
 
-    fun updateHostId(hostId: String?): Boolean = server.updateHostId(hostId)
+    @Synchronized
+    fun updateHostId(hostId: String?): Boolean {
+        if (!server.updateHostId(hostId)) return false
+        this.hostId = hostId
+        restartAnnouncementRecovery()
+        return true
+    }
 
     fun isReady(): Boolean = server.hasSession()
 
@@ -112,6 +136,7 @@ class ChatP2PClient(
     }
 
     /** Start only after [configureSession] succeeds. */
+    @Synchronized
     fun start(): Boolean {
         if (!server.hasSession()) {
             Log.w(TAG, "Chat server start refused before authenticated session")
@@ -124,12 +149,16 @@ class ChatP2PClient(
             // ChatHttpServer constructor (14540).
             server.start(5_000, false)
             started = true
+            restartAnnouncementRecovery()
             true
         }.onFailure { Log.w(TAG, "Chat server start failed: ${it.message}") }.getOrDefault(false)
     }
 
+    @Synchronized
     fun stop() {
         started = false
+        restartAnnouncementRecovery()
+        hostId = null
         runCatching { server.stop() }
         server.clearSession()
         seen.clear()
@@ -139,9 +168,14 @@ class ChatP2PClient(
         synchronized(signerLock) { signer = null }
     }
 
-    fun resetAuthBaseline() = server.resetAuthBaseline()
+    @Synchronized
+    fun resetAuthBaseline() {
+        server.resetAuthBaseline()
+        restartAnnouncementRecovery()
+    }
 
     /** Update the authoritative peer IP-to-player map from signaling. */
+    @Synchronized
     fun setPeers(peers: List<ChatPeerIdentity>): Boolean {
         val normalized = peers
             .asSequence()
@@ -168,8 +202,73 @@ class ChatP2PClient(
             Log.w(TAG, "Rejected invalid chat peer identity snapshot")
             return false
         }
+        val previousHost = peerIdentities.firstOrNull { it.playerId == hostId }
         peerIdentities = normalized
+        if (previousHost != normalized.firstOrNull { it.playerId == hostId }) restartAnnouncementRecovery()
         return true
+    }
+
+    /** Recover pre-join state from the host, without relying on a timed broadcast. */
+    private fun restartAnnouncementRecovery() {
+        val generation = ++announcementGeneration
+        announcementRecovery?.cancel()
+        announcementRecovery = null
+        if (!started || !server.hasSession() || hostId == playerId) return
+        val host = peerIdentities.firstOrNull { it.playerId == hostId } ?: return
+        val token = server.currentToken() ?: return
+        val epoch = server.currentTokenEpoch()
+        val activeSigner = signingSigner() ?: return
+        val revision = announcementRevision
+        announcementRecovery = scope.launch(Dispatchers.IO) {
+            var attempt = 0
+            while (isActive) {
+                val history = fetchHostHistory(host, token, epoch, activeSigner)
+                synchronized(this@ChatP2PClient) {
+                    if (generation != announcementGeneration) return@launch
+                    // Live messages received during the GET always take precedence.
+                    if (revision != announcementRevision) return@launch
+                    if (history != null) {
+                        history.lastOrNull { server.isValidHostAnnouncement(it, host.playerId) }
+                            ?.let { accept(it) }
+                        return@launch
+                    }
+                }
+                delay(minOf(30_000L, 1_000L shl minOf(attempt++, 5)))
+            }
+        }
+    }
+
+    private fun fetchHostHistory(host: ChatPeerIdentity, token: String, epoch: Long, activeSigner: ChatAuth.ChatSigner): List<ChatWireMessage>? {
+        val key = host.chatPublicKey ?: return null
+        val path = "/api/chat/messages"
+        val signed = activeSigner.sign("GET", path, host.virtualIp, epoch, ChatAuth.unixSeconds(), ByteArray(0), token) ?: return null
+        val request = Request.Builder().url("http://${formatHost(host.virtualIp)}:14540$path")
+            .header(ChatTokenHeader, token).header(ChatAuth.KeyIdHeader, signed.keyId)
+            .header(ChatAuth.SignatureHeader, signed.signature).header(ChatAuth.TimestampHeader, signed.timestamp)
+            .header(ChatAuth.NonceHeader, signed.nonce).get().build()
+        return runCatching {
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return null
+                val body = response.body ?: return null
+                // Encryption uses base64; bound both declared and streamed response sizes.
+                val maxBytes = top.pmh13.mctier.data.ChatMaxHistoryBytes * 2L
+                if (body.contentLength() > maxBytes) return null
+                val output = ByteArrayOutputStream()
+                body.byteStream().use { input ->
+                    val buffer = ByteArray(16 * 1024)
+                    while (true) {
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        if (output.size() + count > maxBytes) return null
+                        output.write(buffer, 0, count)
+                    }
+                }
+                val plain = activeSigner.decrypt(key, token, path, output.toByteArray()) ?: return null
+                // The history byte budget excludes the surrounding JSON array/separators.
+                if (plain.size > top.pmh13.mctier.data.ChatMaxHistoryBytes + 64 * 1024) return null
+                MctierJson.decodeFromString(ListSerializer(ChatWireMessage.serializer()), plain.toString(Charsets.UTF_8))
+            }
+        }.getOrNull()
     }
 
     fun sendText(playerName: String, content: String, recipientId: String? = null): ChatWireMessage? =
@@ -266,11 +365,16 @@ class ChatP2PClient(
         return msg
     }
 
+    @Synchronized
     private fun accept(msg: ChatWireMessage) {
         if (!server.isKnownPeer(msg)) return
         if (msg.playerId == playerId) return
         if (msg.recipientId != null && msg.recipientId != playerId) return
         if (!remember(msg.id)) return
+        if (msg.messageType == "announce") {
+            if (!server.isValidHostAnnouncement(msg, hostId)) return
+            announcementRevision++
+        }
         onMessage(msg)
     }
 

@@ -28,6 +28,11 @@ exit 0
     const result = spawnSync('cmd.exe', ['/d', '/c', 'launch.bat'], { cwd: fixture, env, encoding: 'utf8', timeout: 20000, input: '\r\n' });
     assert.equal(result.status, 0, `${result.error ?? ''}\n${result.stdout}\n${result.stderr}`);
     assert.match(result.stdout, /PASS: Windows PowerShell hashing works through BAT/);
+    const child = path.join(fixture, 'source');
+    fs.mkdirSync(child);
+    const relative = spawnSync('cmd.exe', ['/d', '/c', 'call ..\\launch.bat'], { cwd: child, env, encoding: 'utf8', timeout: 20000, input: '\r\n' });
+    assert.equal(relative.status, 0, `${relative.error ?? ''}\n${relative.stdout}\n${relative.stderr}`);
+    assert.match(relative.stdout, /PASS: Windows PowerShell hashing works through BAT/);
     fs.writeFileSync(path.join(fixture, 'update_version.ps1'), 'exit 7\r\n');
     const failed = spawnSync('cmd.exe', ['/d', '/c', 'launch.bat'], { cwd: fixture, env, encoding: 'utf8', timeout: 20000, input: '\r\n' });
     assert.equal(failed.status, 1, `${failed.error ?? ''}\n${failed.stdout}\n${failed.stderr}`);
