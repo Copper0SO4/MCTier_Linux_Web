@@ -35,12 +35,14 @@ test('startup selects join and submits the saved encrypted password, including a
     let fields;
     let submits = 0;
     const pendingAutoConfig = { current: null };
-    vm.runInNewContext(formEffect, { ...context, mode, pendingAutoConfig, resolvedPreferredServer: 'udp://selected:11010',
+    const automaticEntry = { current: false };
+    vm.runInNewContext(formEffect, { ...context, mode, pendingAutoConfig, automaticEntry, resolvedPreferredServer: 'udp://selected:11010',
       form: { setFieldsValue(value) { fields = value; }, submit() { submits++; } } });
     timers.shift()();
     assert.equal(fields.password, password);
     assert.equal(fields.lobbyName, settings.lobbyName);
     assert.equal(submits, 1);
+    assert.equal(automaticEntry.current, true);
     assert.equal(window.__autoLobbyConfig, undefined);
     assert.equal(pendingAutoConfig.current, null);
   }

@@ -11,6 +11,7 @@ export type AppState = 'idle' | 'connecting' | 'in-lobby' | 'error';
  * 大厅信息
  */
 export interface Lobby {
+  entryMode?: 'create' | 'join' | 'auto';
   /** 大厅 ID */
   id: string;
   /** 大厅名称 */

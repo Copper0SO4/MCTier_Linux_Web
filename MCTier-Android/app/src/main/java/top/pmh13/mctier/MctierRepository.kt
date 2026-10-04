@@ -602,6 +602,7 @@ class MctierRepository(private val context: Context) {
         nodeOverride: String? = null,
         signalingOverride: String? = null,
         addressAttempt: Int = 0,
+        entryMode: String = "join",
     ) {
         val safeLobbyName = lobbyName.trim()
         val safePassword = LobbyInviteCodec.resolveLobbyPassword(password)?.trim()
@@ -765,6 +766,7 @@ class MctierRepository(private val context: Context) {
                                     virtualIp = lobby.virtualIp,
                                     signer = activeSigner,
                                     useDomain = lobby.useDomain,
+                                    entryMode = entryMode,
                                 ),
                             )
                             if (!isCurrentLobbyGeneration(generation)) throw CancellationException("Lobby session superseded")
@@ -872,7 +874,7 @@ class MctierRepository(private val context: Context) {
         leaveLobby()
         scope.launch {
             kotlinx.coroutines.delay(1200)
-            createOrJoinLobby(name, pw, lobby.serverNode, lobby.signalingServer)
+            createOrJoinLobby(name, pw, lobby.serverNode, lobby.signalingServer, entryMode = "auto")
         }
     }
 
@@ -1998,7 +2000,7 @@ class MctierRepository(private val context: Context) {
                 val detail = message.message ?: L("加入大厅失败", "Failed to join lobby")
                 val lobby = _state.value.lobby
                 if (detail == LobbyAddress.Conflict && lobby != null && lobby.addressAttempt < 253) {
-                    createOrJoinLobby(lobby.name, lobby.password, lobby.serverNode, lobby.signalingServer, lobby.addressAttempt + 1)
+                    createOrJoinLobby(lobby.name, lobby.password, lobby.serverNode, lobby.signalingServer, lobby.addressAttempt + 1, entryMode = "auto")
                 } else {
                     leaveLobby()
                     _state.update { it.copy(state = AppConnectionState.Error, error = detail) }
@@ -2638,7 +2640,7 @@ class MctierRepository(private val context: Context) {
             LobbyInviteCodec.isValidLobbyName(s.autoLobbyName) &&
             LobbyInviteCodec.isValidLobbyPassword(s.autoLobbyPassword)
         ) {
-            createOrJoinLobby(s.autoLobbyName, s.autoLobbyPassword)
+            createOrJoinLobby(s.autoLobbyName, s.autoLobbyPassword, entryMode = "auto")
         }
     }
 

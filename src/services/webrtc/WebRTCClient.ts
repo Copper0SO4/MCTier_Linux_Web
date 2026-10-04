@@ -122,6 +122,7 @@ export class WebRTCClient {
   private localPlayerName: string = '';
   private lobbyName: string = '';
   private lobbyPassword: string = '';
+  private entryMode: 'create' | 'join' | 'auto' = 'join';
   private heartbeatInterval: number | null = null;
   private websocket: WebSocket | null = null;
   private websocketHeartbeatInterval: number | null = null; // WebSocket 心跳定时器
@@ -284,7 +285,8 @@ export class WebRTCClient {
     _virtualDomain?: string,
     useDomain?: boolean,
     signalingServer?: string,
-    sessionTicket?: LobbySessionTicket
+    sessionTicket?: LobbySessionTicket,
+    entryMode: 'create' | 'join' | 'auto' = 'join',
   ): Promise<void> {
     const activeTicket =
       sessionTicket ?? lobbySessionCoordinator.current() ?? lobbySessionCoordinator.begin();
@@ -357,6 +359,7 @@ export class WebRTCClient {
       this.localPlayerName = safePlayerName;
       this.lobbyName = safeLobbyName;
       this.lobbyPassword = safeLobbyPassword;
+      this.entryMode = entryMode;
       this.virtualDomain = null;
       this.useDomain = useDomain === true;
 
@@ -638,6 +641,10 @@ export class WebRTCClient {
                 return;
               }
               challengeHandled = true;
+              if (message.lobbyEntryModes !== true) {
+                failRegistration(new RegistrationError('信令服务器尚未支持创建/加入校验，请联系服务器管理员升级', false));
+                return;
+              }
               phase = 'signing';
               void this.sendV3Registration(socket, message.challenge)
                 .then(() => {
@@ -797,6 +804,7 @@ export class WebRTCClient {
       virtualIp: this.virtualIp,
       lobbyName: this.lobbyName,
       lobbyPassword: this.lobbyPassword,
+      entryMode: this.entryMode,
       clientVersion: appVersion(),
       useDomain: this.useDomain,
       identityPublicKey: proof.identityPublicKey,
@@ -1279,6 +1287,9 @@ export class WebRTCClient {
             break;
           }
           this.acceptedRegistrationSockets.add(sourceSocket);
+          // The server has admitted us even if local chat setup needs a retry.
+          // Reconnects resume that admission instead of creating the same name again.
+          this.entryMode = 'auto';
           this.serverSessionGeneration = registeredSessionGeneration;
           this.virtualDomain = this.useDomain ? `${this.localPlayerId.slice(0, 32)}.mct.net` : null;
           const registeredHostId = isSafeIdentifier(message.hostId) ? message.hostId : undefined;

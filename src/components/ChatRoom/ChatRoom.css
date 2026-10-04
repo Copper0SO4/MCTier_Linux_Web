@@ -227,7 +227,7 @@
   color: var(--text-color, #f4f7fb);
 }
 .chat-message.own .chat-file-bubble,
-.file-audio-player.own { background: linear-gradient(135deg, #95ec69, #7cc856); color: #2c2c2c; }
+.file-audio-player.own { background: #45bd00; color: #2c2c2c; }
 .chat-message.other .chat-file-bubble,
 .file-audio-player.other { background: linear-gradient(135deg, rgba(80,80,90,.6), rgba(60,60,70,.6)); }
 .chat-file-bubble { border: 1px solid color-mix(in srgb, currentColor 15%, transparent); font: inherit; text-align: left; cursor: pointer; }
@@ -261,7 +261,7 @@
   box-sizing: border-box;
   color: #f7fff2;
 }
-.voice-message-bubble.own { background: linear-gradient(135deg, #95ec69, #7cc856); color: #2c2c2c; }
+.voice-message-bubble.own { background: #45bd00; color: #2c2c2c; }
 .voice-message-bubble.other { background: linear-gradient(135deg, rgba(80,80,90,.6), rgba(60,60,70,.6)); color: var(--text-color, #f4f7fb); }
 .voice-message-bubble audio { display: none; }
 .voice-message-play { width: 27px; height: 27px; flex: 0 0 27px; display: grid; place-items: center; border: 0; border-radius: 50%; background: rgba(255,255,255,.16); color: currentColor; cursor: pointer; padding: 0; }
@@ -283,7 +283,7 @@
 }
 
 .chat-message.own .message-content {
-  background: linear-gradient(135deg, #95ec69 0%, #7cc856 100%);
+  background: #45bd00;
   color: #2c2c2c;
   position: relative; /* 确保z-index生效 */
   z-index: 1; /* 消息框在上层 */
@@ -293,7 +293,7 @@
   top: 12px;
   right: -6px;
   border-width: 6px 0 6px 8px;
-  border-color: transparent transparent transparent #7cc856;
+  border-color: transparent transparent transparent #45bd00;
 }
 
 .chat-message.other .message-content {
@@ -1490,10 +1490,10 @@ html[data-theme='light'] .voice-recording-meter i { background: #2f7d12; }
 
 /* Light message fills use dark text consistently for text, voice and files. */
 html[data-theme='light'] .chat-message.own .message-content:not(.message-content-recalled) {
-  background: linear-gradient(135deg, #95ec69, #7cc856);
+  background: #45bd00;
   color: #182b16;
 }
-html[data-theme='light'] .chat-message.own .message-content::after { border-left-color: #7cc856; }
+html[data-theme='light'] .chat-message.own .message-content::after { border-left-color: #45bd00; }
 html[data-theme='light'] .chat-message.own .message-content :is(.chat-link,.chat-mention) { color: #183c13; }
 html[data-theme='light'] .chat-message.own .chat-quote { background: rgba(24,43,22,.08);color: #284126;border-left-color: #35602c; }
 html[data-theme='light'] .voice-message-play { background: rgba(24,32,43,.09); }

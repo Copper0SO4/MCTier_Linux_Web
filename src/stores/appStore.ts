@@ -335,10 +335,11 @@ export const useAppStore = create<AppStore>()(
 
       // ==================== 大厅信息操作 ====================
       setLobby: (lobby: Lobby | null) => {
-        set({ lobby, signalingStatus: lobby ? 'connecting' : 'disconnected', signalingError: null }, false, 'setLobby');
-        if (lobby) {
-          set({ appState: 'in-lobby' }, false, 'setAppState/in-lobby');
-        }
+        // A local adapter is not server admission. Keep the entry form visible
+        // until App finishes registration; an existing lobby may reconnect in place.
+        set({ lobby, signalingStatus: lobby ? 'connecting' : 'disconnected', signalingError: null,
+          ...(lobby && get().appState !== 'in-lobby' ? { appState: 'connecting' as const } : {}),
+        }, false, 'setLobby');
       },
 
       setSignalingStatus: (signalingStatus, error) => {
