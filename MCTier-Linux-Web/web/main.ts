@@ -1,4 +1,5 @@
 import { setupCommunity } from './community';
+import { setupNetworkPanel } from './networkPanel';
 import { builtinEmojiUrl } from './builtinEmoji';
 // Reuse upstream presentation without mounting its native-window lifecycle.
 import '../frontend-src/components/MainWindow/MainWindow.css';
@@ -44,6 +45,7 @@ function controlState(online: boolean) {
   composer.update();
 }
 let busy = false, online = false, leaving = false, serviceReady = false, localId = '', localName = '', hostId = '', lobbyPublic = false;
+let lobbyMaxPlayers: number | null = null;
 let ticket: LobbySessionTicket | null = null;
 let leaseTimer: number | null = null;
 let rosterSyncTimer: number | null = null;
@@ -98,8 +100,24 @@ const community = setupCommunity({
   },
   isHost:()=>online && hostId===localId, publicState:()=>lobbyPublic,
   publish:(enabled,description)=>webrtcClient.setLobbyOptions({isPublic:enabled,description,serverNode:input('server-node').trim()}),
+  maxPlayers:()=>lobbyMaxPlayers,
+  setMaxPlayers:(max)=>webrtcClient.setLobbyOptions({maxPlayers:max}),
+  announcement:()=>useAppStore.getState().announcement,
+  announce:async content=>{
+    if (!online || hostId !== localId) throw new Error('只有当前房主可以发布公告');
+    const current = ticket;
+    const receipt = await localInvoke<{delivered:number;total:number}>('send_p2p_chat_message', {
+      playerId:localId, playerName:'', content, messageType:'announce', imageData:null,
+      peerIps:[...players.values()].filter(player=>player.id!==localId).map(player=>player.virtualIp),
+    });
+    if (!online || ticket !== current || hostId !== localId) throw new Error('大厅已改变，公告结果已丢弃');
+    useAppStore.getState().setAnnouncement(content);
+    return receipt;
+  },
   text:(content)=>sendOutgoing({content,type:'text'},id=>p2pChatService.sendTextMessage(content,id)),
 });
+
+const networkPanel=setupNetworkPanel({online:()=>online,busy:()=>busy,players:()=>[...players.values()],status:notice});
 
 el('copy-ip').onclick = async () => {
   if (!online) return;
@@ -174,6 +192,10 @@ function renderMessages() {
 function renderMembers() {
   const members = el('members'); members.replaceChildren();
   text('member-count', String(players.size));
+  for (const action of document.querySelectorAll<HTMLButtonElement>('[data-feature="lobby-management"] .feature-action')) {
+    action.disabled = !online || hostId !== localId;
+    action.title = action.disabled ? '只有当前房主可以管理大厅' : '';
+  }
   const recipient = el<HTMLSelectElement>('recipient'); const selected = recipient.value;
   recipient.replaceChildren(new Option('所有成员', ''));
   for (const player of players.values()) {
@@ -190,7 +212,11 @@ function renderMembers() {
       recipient.append(new Option(player.name, player.id));
       if (hostId === localId) {
         const kick = document.createElement('button'); kick.textContent = '移出大厅';
-        kick.onclick = () => { if (window.confirm(`确认将 ${player.name} 移出大厅？`)) webrtcClient.kickPlayer(player.id); };
+        kick.onclick = () => {
+          if (!online || hostId !== localId) return;
+          if (window.confirm(`确认将 ${player.name} 移出大厅？`) && !webrtcClient.kickPlayer(player.id))
+            notice('移出请求未发送，请检查信令连接。', true);
+        };
         row.append(kick);
       }
     }
@@ -198,7 +224,17 @@ function renderMembers() {
   }
   recipient.value = [...recipient.options].some(option => option.value === selected) ? selected : '';
   if (!players.size) { const row = document.createElement('li'); row.className = 'empty'; row.textContent = '尚未进入大厅'; members.append(row); }
+  window.dispatchEvent(new Event('mctier-lobby-options'));
 }
+function renderAnnouncement() {
+  const banner = el('announcement');
+  const announcement = useAppStore.getState().announcement;
+  banner.textContent = announcement ? `📢 ${announcement}` : '';
+  banner.hidden = !announcement;
+}
+useAppStore.subscribe((state, previous) => {
+  if (state.announcement !== previous.announcement) renderAnnouncement();
+});
 
 webrtcClient.onPlayerJoined((id, name, virtualIp) => {
   const newcomer = online && !players.has(id), current = ticket;
@@ -208,7 +244,16 @@ webrtcClient.onPlayerJoined((id, name, virtualIp) => {
     if (rosterSyncTimer) clearTimeout(rosterSyncTimer);
     rosterSyncTimer = window.setTimeout(()=>{
       rosterSyncTimer=null;
-      if (online && ticket===current && players.has(id)) void community.syncCurrentTodos().catch(error=>{if(ticket===current && online)notice(`新成员待办同步失败：${label(error)}`,true);});
+      if (online && ticket===current && players.has(id)) {
+        void community.syncCurrentTodos().catch(error=>{if(ticket===current && online)notice(`新成员待办同步失败：${label(error)}`,true);});
+        const announcement = useAppStore.getState().announcement;
+        if (hostId===localId && announcement) {
+          const peerIps=[...players.values()].filter(player=>player.id!==localId).map(player=>player.virtualIp);
+          void localInvoke<{delivered:number;total:number}>('send_p2p_chat_message', {playerId:localId,playerName:'',content:announcement,messageType:'announce',imageData:null,peerIps})
+            .then(receipt=>{if(ticket===current && online && receipt.delivered<receipt.total)notice(`公告补发只送达 ${receipt.delivered}/${receipt.total}，请检查对端链路。`,true);})
+            .catch(error=>{if(ticket===current && online)notice(`公告补发失败：${label(error)}`,true);});
+        }
+      }
     },1600);
   }
 });
@@ -221,9 +266,18 @@ webrtcClient.onSignalingStatus((status, error) => {
   if (busy && status === 'connecting') notice('正在建立浏览器 WebSocket 信令连接；失败时会按原版策略有限重试，可点击取消。');
   if (error) notice(`信令：${error}`, true);
 });
-webrtcClient.onLobbyMeta(meta => { hostId = meta.hostId || ''; lobbyPublic = meta.isPublic === true; renderMembers(); });
-webrtcClient.onLobbyOptionsChanged((_max,isPublic)=>{lobbyPublic=isPublic;notice(isPublic?'信令服务已确认公开大厅。':'信令服务已确认撤销公开大厅。');});
-webrtcClient.onHostChanged(id => { hostId = id; renderMembers(); });
+webrtcClient.onLobbyMeta(meta => {
+  hostId = meta.hostId || ''; lobbyPublic = meta.isPublic === true; lobbyMaxPlayers = meta.maxPlayers ?? null;
+  const store = useAppStore.getState(); store.setHostId(hostId || null); store.setMaxPlayers(lobbyMaxPlayers); store.setIsPublicLobby(lobbyPublic);
+  renderMembers();
+});
+webrtcClient.onLobbyOptionsChanged((max,isPublic)=>{
+  lobbyMaxPlayers=max; lobbyPublic=isPublic;
+  const store=useAppStore.getState(); store.setMaxPlayers(max); store.setIsPublicLobby(isPublic);
+  window.dispatchEvent(new Event('mctier-lobby-options'));
+  notice(`信令服务已确认：人数上限 ${max ?? '不限'}，${isPublic ? '已公开' : '未公开'}。`);
+});
+webrtcClient.onHostChanged(id => { hostId = id; useAppStore.getState().setHostId(id); renderMembers(); });
 webrtcClient.onKicked(reason => { void leave().then(() => notice(`已离开大厅：${reason}`, true)); });
 webrtcClient.onVersionError((current, minimum) => notice(`版本不符合信令要求：当前 ${current}，至少需要 ${minimum}`, true));
 webrtcClient.onLocalStream(stream => {
@@ -239,6 +293,7 @@ async function startNetwork(attempt: number): Promise<Lobby> {
   const result = await localInvoke<{ name: string; virtual_ip: string; automatic_virtual_ip: boolean }>('connect_lobby', {
     name: input('lobby-name').trim(), password: input('lobby-password'), playerName: input('player-name').trim(),
     serverNode: input('server-node').trim(), signalingServer: input('signaling-server').trim(), addressAttempt: attempt,
+    networkSettings: networkPanel.settings(),
   });
   return { id: result.name, name: result.name, createdAt: new Date().toISOString(), virtualIp: result.virtual_ip,
     creatorVirtualIp: '', automaticVirtualIp: result.automatic_virtual_ip, addressAttempt: attempt,
@@ -304,7 +359,7 @@ async function leave() {
   } catch (error) { notice(`清理请求失败：${label(error)}。服务将在浏览器租约过期后停止自有进程。`, true); }
   finally {
     busy = false; leaving = false; controlState(false); useAppStore.getState().clearLobby();
-    players.clear(); messages.clear(); receipts.clear(); hostId = ''; lobbyPublic=false; renderMembers();
+    players.clear(); messages.clear(); receipts.clear(); hostId = ''; lobbyPublic=false; lobbyMaxPlayers=null; renderMembers();
     localShare = null; viewedShare = null;
     const video = el<HTMLVideoElement>('screen-video'); video.pause(); video.srcObject = null; video.hidden = true;
     text('room-name', '等待连接'); text('virtual-ip', '—'); text('signal-state', '未连接'); text('media-state', '未建立');
@@ -514,4 +569,5 @@ async function initialize() {
   } catch (error) { serviceReady = false; controlState(false); text('service-state', '本地服务不可达'); notice(`本地服务初始化失败：${label(error)}`, true); }
 }
 controlState(false);
+renderMembers();
 void initialize();

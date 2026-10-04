@@ -7,35 +7,70 @@ use tower::ServiceExt;
 
 #[tokio::test]
 async fn builtin_emoji_pack_is_embedded_and_served_as_gif() {
-    let manifest: Value = serde_json::from_str(include_str!("../../../shared/builtin-emoji/manifest.json")).unwrap();
+    let manifest: Value =
+        serde_json::from_str(include_str!("../../../shared/builtin-emoji/manifest.json")).unwrap();
     let ids = manifest["ids"].as_array().unwrap();
     assert_eq!(ids.len(), manifest["count"].as_u64().unwrap() as usize);
-    let embedded: Vec<_> = ASSETS.iter().filter(|(path, _)| path.starts_with("/builtin-emoji/") && path.ends_with(".gif")).collect();
+    let embedded: Vec<_> = ASSETS
+        .iter()
+        .filter(|(path, _)| path.starts_with("/builtin-emoji/") && path.ends_with(".gif"))
+        .collect();
     assert_eq!(embedded.len(), ids.len());
     for id in ids {
         let path = format!("/builtin-emoji/{}.gif", id.as_str().unwrap());
-        let (_, bytes) = ASSETS.iter().find(|(key, _)| *key == path).expect("all manifest GIFs must be embedded");
+        let (_, bytes) = ASSETS
+            .iter()
+            .find(|(key, _)| *key == path)
+            .expect("all manifest GIFs must be embedded");
         assert!(bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"));
     }
     let path = format!("/builtin-emoji/{}.gif", ids[0].as_str().unwrap());
-    let response = router(app()).oneshot(HttpRequest::builder().uri(path).header("host", "127.0.0.1:14700").body(Body::empty()).unwrap()).await.unwrap();
+    let response = router(app())
+        .oneshot(
+            HttpRequest::builder()
+                .uri(path)
+                .header("host", "127.0.0.1:14700")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(response.headers()[header::CONTENT_TYPE], "image/gif");
-    assert_eq!(response.headers()[header::X_CONTENT_TYPE_OPTIONS], "nosniff");
+    assert_eq!(
+        response.headers()[header::X_CONTENT_TYPE_OPTIONS],
+        "nosniff"
+    );
 }
 
 #[tokio::test]
 async fn browser_attachment_download_requires_origin_nonce_session_and_registered_metadata() {
     let app = app();
-    let meta = json!({"id":"attachment-123456", "name":"example.txt", "mime":"text/plain", "size":3});
-    let mut req = request(&app, "/api/chat/attachment", Some(json!({"ownerPlayerId":"any", "attachment":meta})));
+    let meta =
+        json!({"id":"attachment-123456", "name":"example.txt", "mime":"text/plain", "size":3});
+    let mut req = request(
+        &app,
+        "/api/chat/attachment",
+        Some(json!({"ownerPlayerId":"any", "attachment":meta})),
+    );
     req.headers_mut().remove("x-mctier-csrf");
-    assert_eq!(router(app.clone()).oneshot(req).await.unwrap().status(), StatusCode::FORBIDDEN);
+    assert_eq!(
+        router(app.clone()).oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
     let id = {
         let chat = app.chat.lock().await;
         chat.set_virtual_ip("10.126.126.2".into());
         let (id, _) = chat.signaling_identity().unwrap();
-        chat.set_session("a".repeat(64), 1, id.clone(), "Local".into(), Some(id.clone()), vec![]).unwrap();
+        chat.set_session(
+            "a".repeat(64),
+            1,
+            id.clone(),
+            "Local".into(),
+            Some(id.clone()),
+            vec![],
+        )
+        .unwrap();
         id
     };
     for body in [
@@ -44,21 +79,96 @@ async fn browser_attachment_download_requires_origin_nonce_session_and_registere
         json!({"ownerPlayerId":"unknown-peer", "attachment":meta}),
         json!({"ownerPlayerId":id, "attachment":meta}),
     ] {
-        let status = router(app.clone()).oneshot(request(&app, "/api/chat/attachment", Some(body))).await.unwrap().status();
-        assert!(matches!(status, StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY));
+        let status = router(app.clone())
+            .oneshot(request(&app, "/api/chat/attachment", Some(body)))
+            .await
+            .unwrap()
+            .status();
+        assert!(matches!(
+            status,
+            StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+        ));
     }
     let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("registered.txt"); tokio::fs::write(&path, b"abc").await.unwrap();
-    app.chat.lock().await.register_attachment(serde_json::from_value(meta.clone()).unwrap(), path, None).unwrap();
-    let response = router(app.clone()).oneshot(request(&app, "/api/chat/attachment", Some(json!({"ownerPlayerId":id, "attachment":meta})))).await.unwrap();
+    let path = dir.path().join("registered.txt");
+    tokio::fs::write(&path, b"abc").await.unwrap();
+    app.chat
+        .lock()
+        .await
+        .register_attachment(serde_json::from_value(meta.clone()).unwrap(), path, None)
+        .unwrap();
+    let response = router(app.clone())
+        .oneshot(request(
+            &app,
+            "/api/chat/attachment",
+            Some(json!({"ownerPlayerId":id, "attachment":meta})),
+        ))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers()[header::CONTENT_TYPE], "application/octet-stream");
-    assert_eq!(response.headers()[header::CONTENT_DISPOSITION], "attachment");
-    assert_eq!(&axum::body::to_bytes(response.into_body(), 10).await.unwrap()[..], b"abc");
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "application/octet-stream"
+    );
+    assert_eq!(
+        response.headers()[header::CONTENT_DISPOSITION],
+        "attachment"
+    );
+    assert_eq!(
+        &axum::body::to_bytes(response.into_body(), 10)
+            .await
+            .unwrap()[..],
+        b"abc"
+    );
 }
 
 fn app() -> Arc<App> {
     App::new(std::path::PathBuf::from("/missing-test-core"))
+}
+
+#[tokio::test]
+async fn network_privilege_operations_require_preview_nonce_and_active_room() {
+    let app = app();
+    for (command, args) in [
+        ("apply_network_operation", json!({"token":"invented"})),
+        (
+            "prepare_firewall_repair",
+            json!({"backend":"ufw","zone":"","ephemeralUdp":false}),
+        ),
+        ("prepare_magic_dns", json!({"remove":false})),
+        ("scan_minecraft_servers", json!({"port":25565})),
+        (
+            "validate_network_settings",
+            json!({"listeners":["tcp://0.0.0.0:14700"]}),
+        ),
+    ] {
+        let response = router(app.clone())
+            .oneshot(request(
+                &app,
+                "/api/invoke",
+                Some(json!({"command":command,"args":args})),
+            ))
+            .await
+            .unwrap();
+        assert!(
+            matches!(
+                response.status(),
+                StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY
+            ),
+            "{command}"
+        );
+    }
+    let mut req = request(
+        &app,
+        "/api/invoke",
+        Some(json!({"command":"apply_network_operation","args":{"token":"invented"}})),
+    );
+    req.headers_mut().remove("x-mctier-csrf");
+    assert_eq!(
+        router(app.clone()).oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
+    assert!(app.runtime.lock().await.session.is_none());
 }
 fn request(app: &App, uri: &str, body: Option<Value>) -> HttpRequest<Body> {
     let mut builder = HttpRequest::builder()
@@ -400,55 +510,137 @@ async fn upload_is_authenticated_bounded_and_session_scoped() {
     let chat = app.chat.lock().await;
     chat.set_virtual_ip("10.126.126.2".into());
     let (id, _) = chat.signaling_identity().unwrap();
-    chat.set_session("b".repeat(64), 1, id.clone(), "Local".into(), Some(id.clone()), vec![]).unwrap();
+    chat.set_session(
+        "b".repeat(64),
+        1,
+        id.clone(),
+        "Local".into(),
+        Some(id.clone()),
+        vec![],
+    )
+    .unwrap();
     drop(chat);
     let upload_req = |uri: &str, data: Vec<u8>| {
         let mut req = request(&app, uri, Some(json!({})));
-        req.headers_mut().insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
+        req.headers_mut().insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("application/octet-stream"),
+        );
         *req.body_mut() = Body::from(data);
         req
     };
     let uri = "/api/chat/upload?name=example.txt&mime=text%2Fplain";
-    let mut req = upload_req(uri, b"abc".to_vec()); req.headers_mut().remove("x-mctier-csrf");
-    assert_eq!(router(app.clone()).oneshot(req).await.unwrap().status(), StatusCode::FORBIDDEN);
+    let mut req = upload_req(uri, b"abc".to_vec());
+    req.headers_mut().remove("x-mctier-csrf");
+    assert_eq!(
+        router(app.clone()).oneshot(req).await.unwrap().status(),
+        StatusCode::FORBIDDEN
+    );
     for (uri, bytes) in [
-        ("/api/chat/upload?name=..%2Fsecret&mime=text%2Fplain", b"abc".to_vec()),
-        ("/api/chat/upload?name=a&mime=text%2Fplain&path=%2Fetc%2Fpasswd", b"abc".to_vec()),
-        ("/api/chat/upload?name=a&mime=text%2Fplain&recipientId=unknown", b"abc".to_vec()),
+        (
+            "/api/chat/upload?name=..%2Fsecret&mime=text%2Fplain",
+            b"abc".to_vec(),
+        ),
+        (
+            "/api/chat/upload?name=a&mime=text%2Fplain&path=%2Fetc%2Fpasswd",
+            b"abc".to_vec(),
+        ),
+        (
+            "/api/chat/upload?name=a&mime=text%2Fplain&recipientId=unknown",
+            b"abc".to_vec(),
+        ),
         (uri, vec![]),
     ] {
-        assert!(!router(app.clone()).oneshot(upload_req(uri, bytes)).await.unwrap().status().is_success());
+        assert!(!router(app.clone())
+            .oneshot(upload_req(uri, bytes))
+            .await
+            .unwrap()
+            .status()
+            .is_success());
     }
     // Raw upload is independent of the 16 MiB invoke JSON budget.
-    let response = router(app.clone()).oneshot(upload_req(uri, vec![7;17*1024*1024])).await.unwrap();
+    let response = router(app.clone())
+        .oneshot(upload_req(uri, vec![7; 17 * 1024 * 1024]))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let meta: modules::chat_service::ChatAttachmentMeta = serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 1024).await.unwrap()).unwrap();
+    let meta: modules::chat_service::ChatAttachmentMeta = serde_json::from_slice(
+        &axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     let path = app.chat.lock().await.local_attachment_path(&meta).unwrap();
     use std::os::unix::fs::PermissionsExt;
-    assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
     assert!(app.chat.lock().await.has_attachment(&meta.id, None));
-    assert!(!app.chat.lock().await.has_attachment(&meta.id, Some("other")));
-    let response = router(app.clone()).oneshot(request(&app, "/api/chat/attachment", Some(json!({"ownerPlayerId":id,"attachment":meta})))).await.unwrap();
+    assert!(!app
+        .chat
+        .lock()
+        .await
+        .has_attachment(&meta.id, Some("other")));
+    let response = router(app.clone())
+        .oneshot(request(
+            &app,
+            "/api/chat/attachment",
+            Some(json!({"ownerPlayerId":id,"attachment":meta})),
+        ))
+        .await
+        .unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(axum::body::to_bytes(response.into_body(), 18*1024*1024).await.unwrap().len(), 17*1024*1024);
-    assert!(!router(app.clone()).oneshot(upload_req(uri, vec![1;64*1024*1024+1])).await.unwrap().status().is_success());
+    assert_eq!(
+        axum::body::to_bytes(response.into_body(), 18 * 1024 * 1024)
+            .await
+            .unwrap()
+            .len(),
+        17 * 1024 * 1024
+    );
+    assert!(!router(app.clone())
+        .oneshot(upload_req(uri, vec![1; 64 * 1024 * 1024 + 1]))
+        .await
+        .unwrap()
+        .status()
+        .is_success());
     *app.upload_budget.lock().await = (0, 128);
-    assert!(!router(app.clone()).oneshot(upload_req(uri, vec![1])).await.unwrap().status().is_success());
+    assert!(!router(app.clone())
+        .oneshot(upload_req(uri, vec![1]))
+        .await
+        .unwrap()
+        .status()
+        .is_success());
     app.leave().await;
     assert!(!path.exists());
     assert_eq!(*app.upload_budget.lock().await, (0, 0));
-    assert!(!router(app.clone()).oneshot(upload_req(uri, vec![1])).await.unwrap().status().is_success());
+    assert!(!router(app.clone())
+        .oneshot(upload_req(uri, vec![1]))
+        .await
+        .unwrap()
+        .status()
+        .is_success());
 }
 
 #[test]
 fn browser_image_preparation_checks_format_and_inline_budget() {
     use base64::{engine::general_purpose::STANDARD, Engine};
-    for (bytes, mime) in [(b"\x89PNG\r\n\x1a\n".as_slice(), "image/png"), (b"GIF89a".as_slice(), "image/gif"), (&[0xff,0xd8,0xff],"image/jpeg"), (b"RIFFxxxxWEBP".as_slice(),"image/webp")] {
-        assert!(attachments::prepare_image(&STANDARD.encode(bytes)).unwrap()["imageDataUrl"].as_str().unwrap().starts_with(&format!("data:{mime};base64,")));
+    for (bytes, mime) in [
+        (b"\x89PNG\r\n\x1a\n".as_slice(), "image/png"),
+        (b"GIF89a".as_slice(), "image/gif"),
+        (&[0xff, 0xd8, 0xff], "image/jpeg"),
+        (b"RIFFxxxxWEBP".as_slice(), "image/webp"),
+    ] {
+        assert!(
+            attachments::prepare_image(&STANDARD.encode(bytes)).unwrap()["imageDataUrl"]
+                .as_str()
+                .unwrap()
+                .starts_with(&format!("data:{mime};base64,"))
+        );
     }
     assert!(attachments::prepare_image("bad encoding!").is_err());
     assert!(attachments::prepare_image(&STANDARD.encode(b"<svg></svg>")).is_err());
-    assert!(attachments::prepare_image(&STANDARD.encode(vec![1;2*1024*1024+1])).is_err());
+    assert!(attachments::prepare_image(&STANDARD.encode(vec![1; 2 * 1024 * 1024 + 1])).is_err());
 }
 
 #[tokio::test]
@@ -458,17 +650,29 @@ async fn delayed_upload_cannot_register_in_a_rejoined_room_with_the_same_token()
         let chat = app.chat.lock().await;
         chat.set_virtual_ip("10.126.126.2".into());
         let (id, _) = chat.signaling_identity().unwrap();
-        chat.set_session("c".repeat(64), 1, id.clone(), "Local".into(), Some(id.clone()), vec![]).unwrap();
+        chat.set_session(
+            "c".repeat(64),
+            1,
+            id.clone(),
+            "Local".into(),
+            Some(id.clone()),
+            vec![],
+        )
+        .unwrap();
         id
     };
-    let (began_tx,began_rx) = tokio::sync::oneshot::channel();
-    let (continue_tx,continue_rx) = tokio::sync::oneshot::channel();
+    let (began_tx, began_rx) = tokio::sync::oneshot::channel();
+    let (continue_tx, continue_rx) = tokio::sync::oneshot::channel();
     let body = Body::from_stream(async_stream::stream! {
         began_tx.send(()).unwrap();
         continue_rx.await.unwrap();
         yield Ok::<bytes::Bytes,Infallible>(bytes::Bytes::from_static(b"abc"));
     });
-    let mut req = request(&app,"/api/chat/upload?name=late.txt&mime=text%2Fplain",Some(json!({})));
+    let mut req = request(
+        &app,
+        "/api/chat/upload?name=late.txt&mime=text%2Fplain",
+        Some(json!({})),
+    );
     *req.body_mut() = body;
     let route = router(app.clone());
     let pending = tokio::spawn(async move { route.oneshot(req).await.unwrap() });
@@ -478,9 +682,17 @@ async fn delayed_upload_cannot_register_in_a_rejoined_room_with_the_same_token()
         let chat = app.chat.lock().await;
         chat.set_virtual_ip("10.126.126.2".into());
         chat.signaling_identity().unwrap();
-        chat.set_session("c".repeat(64), 1, id.clone(), "Local".into(), Some(id), vec![]).unwrap();
+        chat.set_session(
+            "c".repeat(64),
+            1,
+            id.clone(),
+            "Local".into(),
+            Some(id),
+            vec![],
+        )
+        .unwrap();
     }
     continue_tx.send(()).unwrap();
-    assert_eq!(pending.await.unwrap().status(),StatusCode::BAD_REQUEST);
-    assert_eq!(*app.upload_budget.lock().await,(0,0));
+    assert_eq!(pending.await.unwrap().status(), StatusCode::BAD_REQUEST);
+    assert_eq!(*app.upload_budget.lock().await, (0, 0));
 }

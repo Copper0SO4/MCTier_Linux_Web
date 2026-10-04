@@ -1,7 +1,11 @@
 mod attachments;
+mod firewall;
 mod folders;
 #[allow(dead_code)]
 mod modules;
+mod network_operations;
+mod network_settings;
+mod privileged;
 mod runtime;
 
 use axum::{
@@ -186,6 +190,24 @@ async fn invoke(
 ) -> Result<Json<Value>, ApiError> {
     owner(&app, &headers).await?;
     let result = match input.command.as_str() {
+        "get_network_settings" => json!(network_settings::NetworkSettings::default()),
+        "validate_network_settings" => {
+            let settings = value::<network_settings::NetworkSettings>(input.args)?;
+            settings.config()?;
+            json!(settings)
+        }
+        "get_magic_dns_status" => network_operations::dns_status(&app).await,
+        "prepare_magic_dns" => network_operations::prepare_dns(&app, value(input.args)?).await?,
+        "get_firewall_status" => network_operations::firewall_status().await?,
+        "prepare_firewall_repair" => {
+            network_operations::prepare_firewall(&app, value(input.args)?).await?
+        }
+        "cancel_network_operation" => {
+            app.network_operations.cancel().await;
+            json!(true)
+        }
+        "apply_network_operation" => network_operations::apply(&app, value(input.args)?).await?,
+        "scan_minecraft_servers" => network_operations::scan_mc(&app, value(input.args)?).await?,
         "connect_lobby" => {
             let mut args = value::<LobbyInput>(input.args)?;
             args.password = modules::secret_store::resolve(&args.password)?;
@@ -497,8 +519,14 @@ fn router(app: Arc<App>) -> Router {
         .with_state(app)
 }
 
+fn main() {
+    firewall::run_if_requested();
+    privileged::hosts_ready();
+    modules::unix_hosts_helper::run_if_requested();
+    run_service();
+}
 #[tokio::main]
-async fn main() {
+async fn run_service() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("warn")).init();
     if unsafe { libc::geteuid() } == 0 {
         eprintln!("Run the local service as a normal user.");

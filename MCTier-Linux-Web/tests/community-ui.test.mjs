@@ -42,6 +42,10 @@ class Element {
     this.value = '';
     this.files = [];
     this.open = false;
+    this.classList = {
+      add: value => { this.className = `${this.className || ''} ${value}`.trim(); },
+      remove: value => { this.className = (this.className || '').split(' ').filter(v => v !== value).join(' '); },
+    };
   }
   append(...children) {
     this.children.push(...children);
@@ -191,6 +195,14 @@ test('community controls render tools and folder actions without auto joining or
   assert.ok(f.find('掷骰子'));
   assert.ok(f.find('开始'));
   assert.ok(f.find('添加'));
+  const tabs=f.all(f.dialog).filter(n=>n['role']==='tab');
+  const panels=f.all(f.dialog).filter(n=>n['role']==='tabpanel');
+  assert.equal(tabs.length,3);
+  assert.deepEqual(panels.map(n=>n.hidden),[false,true,true]);
+  tabs[1].click();
+  assert.deepEqual(panels.map(n=>n.hidden),[true,false,true]);
+  tabs[2].click();
+  assert.deepEqual(panels.map(n=>n.hidden),[true,true,false]);
   assert.equal(globalThis.countdown, undefined);
   f.find('开始').click();
   await tick();

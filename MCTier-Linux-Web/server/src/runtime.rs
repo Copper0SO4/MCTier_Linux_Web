@@ -33,6 +33,8 @@ pub struct LobbyInput {
     pub signaling_server: String,
     #[serde(default)]
     pub address_attempt: u16,
+    #[serde(default)]
+    pub network_settings: crate::network_settings::NetworkSettings,
 }
 
 pub struct Session {
@@ -40,6 +42,7 @@ pub struct Session {
     pub player_id: String,
     pub virtual_ip: String,
     pub rpc_port: u16,
+    pub listener_port: u16,
     pub(crate) child: Child,
     readers: Vec<JoinHandle<()>>,
     config_dir: PathBuf,
@@ -70,6 +73,7 @@ pub struct App {
     pub folders: Mutex<crate::folders::Folders>,
     pub folder_transfers: tokio::sync::Semaphore,
     pub core: PathBuf,
+    pub network_operations: crate::network_operations::Operations,
 }
 
 impl App {
@@ -98,6 +102,7 @@ impl App {
             folders: Mutex::new(crate::folders::Folders::new()),
             folder_transfers: tokio::sync::Semaphore::new(2),
             core,
+            network_operations: crate::network_operations::Operations::new(),
         })
     }
 
@@ -124,6 +129,7 @@ impl App {
     }
 
     async fn stop_runtime(&self, runtime: &mut Runtime) {
+        self.network_operations.cancel().await;
         self.chat_generation
             .send_modify(|generation| *generation = generation.wrapping_add(1));
         let chat = self.chat.lock().await;
@@ -190,8 +196,9 @@ impl App {
         }
         verify_core(&self.core).await?;
         let (player_id, _) = self.chat.lock().await.signaling_identity()?;
+        let advanced = input.network_settings.config()?;
         let (config, automatic) = lobby_address::configuration(
-            None,
+            Some(&advanced),
             None,
             &input.name,
             &player_id,
@@ -212,12 +219,38 @@ impl App {
             .local_addr()
             .map_err(|_| "不能读取 RPC 端口")?
             .port();
-        let listener =
-            std::net::UdpSocket::bind("0.0.0.0:0").map_err(|_| "不能分配 EasyTier 监听端口")?;
-        let listener_port = listener
-            .local_addr()
-            .map_err(|_| "不能读取 EasyTier 端口")?
-            .port();
+        let ws = input.server_node.starts_with("ws://") || input.server_node.starts_with("wss://");
+        let quic_reservation = if input.network_settings.quic {
+            Some(
+                std::net::UdpSocket::bind(("0.0.0.0", input.network_settings.quic_port))
+                    .map_err(|_| "QUIC UDP 端口已占用")?,
+            )
+        } else {
+            None
+        };
+        let udp_listener = if ws {
+            None
+        } else {
+            Some(
+                std::net::UdpSocket::bind(("0.0.0.0", input.network_settings.listener_port))
+                    .map_err(|_| "EasyTier UDP 监听端口已占用")?,
+            )
+        };
+        let tcp_listener = if ws {
+            Some(
+                std::net::TcpListener::bind(("0.0.0.0", input.network_settings.listener_port))
+                    .map_err(|_| "EasyTier WebSocket TCP 监听端口已占用")?,
+            )
+        } else {
+            None
+        };
+        let listener_port = if let Some(s) = udp_listener.as_ref() {
+            s.local_addr()
+        } else {
+            tcp_listener.as_ref().unwrap().local_addr()
+        }
+        .map_err(|_| "不能读取 EasyTier 端口")?
+        .port();
         let dir = crate::modules::app_paths::data_root()
             .map_err(|_| "不能定位用户数据目录")?
             .join("linux-web")
@@ -239,7 +272,9 @@ impl App {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         drop(rpc_listener);
-        drop(listener);
+        drop(udp_listener);
+        drop(tcp_listener);
+        drop(quic_reservation);
         let mut child = match cmd.spawn() {
             Ok(child) => child,
             Err(_) => {
@@ -294,6 +329,7 @@ impl App {
             virtual_ip: virtual_ip.clone(),
             rpc_port,
             child,
+            listener_port,
             readers,
             config_dir: dir,
         });
@@ -435,6 +471,7 @@ async fn verify_core(path: &std::path::Path) -> Result<(), String> {
 }
 
 pub fn validate_input(input: &LobbyInput) -> Result<(), String> {
+    input.network_settings.config()?;
     let name = input.name.trim();
     if name != input.name
         || !(4..=32).contains(&name.chars().count())
@@ -492,6 +529,13 @@ pub fn build_command(
     config: &EasyTierAdvancedConfig,
 ) -> Command {
     let mut cmd = Command::new(core);
+    // Explicit UI/configured endpoints are authoritative, even when launched
+    // from a shell containing EasyTier ET_* environment overrides.
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("ET_") {
+            cmd.env_remove(key);
+        }
+    }
     let ws = input.server_node.starts_with("ws://") || input.server_node.starts_with("wss://");
     let listener = if ws {
         format!("ws://0.0.0.0:{listener}/")
@@ -535,6 +579,7 @@ mod tests {
             server_node: "tcp://node.example:11010".into(),
             signaling_server: "wss://signal.example/signaling".into(),
             address_attempt: 0,
+            network_settings: Default::default(),
         }
     }
     #[test]
@@ -609,6 +654,57 @@ mod tests {
         input.name = "../etc/passwd".into();
         assert!(validate_input(&input).is_err());
     }
+    #[test]
+    fn advanced_settings_use_original_arguments_without_opening_local_control_ports() {
+        let mut input = sample_input();
+        input.network_settings = crate::network_settings::NetworkSettings {
+            ipv4: "10.126.126.20".into(),
+            listener_port: 31111,
+            mtu: 1300,
+            multi_thread: false,
+            latency_first: false,
+            kcp: true,
+            quic: true,
+            quic_port: 31112,
+            p2p_mode: "relay".into(),
+            ..Default::default()
+        };
+        let global = input.network_settings.config().unwrap();
+        let (config, automatic) =
+            lobby_address::configuration(Some(&global), None, &input.name, &"a".repeat(64), 0)
+                .unwrap();
+        assert!(!automatic);
+        assert_eq!(config.ipv4.as_deref(), Some("10.126.126.20/24"));
+        let cmd = build_command(
+            std::path::Path::new("core"),
+            std::path::Path::new("private-instance"),
+            &input,
+            &"a".repeat(64),
+            15889,
+            31111,
+            &config,
+        );
+        let args = cmd
+            .as_std()
+            .get_args()
+            .map(|s| s.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        for flag in ["--enable-kcp-proxy", "--enable-quic-proxy", "--disable-p2p"] {
+            assert!(args.iter().any(|s| s == flag));
+        }
+        assert!(!args.iter().any(|s| s == "--multi-thread"
+            || s == "--latency-first"
+            || s == "--accept-dns"
+            || s == "--disable-encryption"));
+        assert_eq!(
+            args[args.iter().position(|s| s == "--quic-listen-port").unwrap() + 1],
+            "31112"
+        );
+        assert_eq!(
+            args[args.iter().position(|s| s == "--rpc-portal").unwrap() + 1],
+            "127.0.0.1:15889"
+        );
+    }
     #[tokio::test]
     async fn stop_terminates_only_its_owned_child_and_cleans_its_instance_directory() {
         let app = App::new(PathBuf::from("/unused-test-core"));
@@ -631,6 +727,7 @@ mod tests {
             player_id: "a".repeat(64),
             virtual_ip: "10.126.126.2".into(),
             rpc_port: 15889,
+            listener_port: 15890,
             child,
             readers: vec![],
             config_dir: owned.clone(),

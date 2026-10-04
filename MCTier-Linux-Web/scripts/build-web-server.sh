@@ -10,6 +10,7 @@ case "${1:-}" in
 esac
 node MCTier-Linux-Web/scripts/prepare-frontend.mjs
 node MCTier-Linux-Web/scripts/prepare-secrets.mjs
+node MCTier-Linux-Web/scripts/prepare-network.mjs
 npx tsc --project MCTier-Linux-Web/tsconfig.web.json
 npx vite build --config MCTier-Linux-Web/vite.config.ts
 if [[ "$PROFILE" == debug ]]; then

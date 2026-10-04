@@ -28,6 +28,10 @@ type Context = {
   isHost: () => boolean;
   publicState: () => boolean;
   publish: (enabled: boolean, description: string) => boolean;
+  maxPlayers: () => number | null;
+  setMaxPlayers: (max: number) => boolean;
+  announcement: () => string;
+  announce: (text: string) => Promise<{ delivered: number; total: number }>;
 };
 const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string) => {
   const n = document.createElement(tag);
@@ -59,8 +63,11 @@ export function setupCommunity(ctx: Context) {
   const heading = node('h2'),
     body = node('div'),
     close = button('关闭', () => dialog.close());
+  const header = node('div');
+  header.className = 'community-header';
   body.className = 'community-body';
-  dialog.append(heading, close, body);
+  header.append(heading, close);
+  dialog.append(header, body);
   let unsubscribe: (() => void) | null = null,
     generation = 0,
     controller: AbortController | null = null;
@@ -78,6 +85,7 @@ export function setupCommunity(ctx: Context) {
   dialog.addEventListener('close', dispose);
   const open = (title: string) => {
     dispose();
+    dialog.classList.remove('tool-dialog');
     heading.textContent = title;
     if (!dialog.open) dialog.showModal();
   };
@@ -170,29 +178,7 @@ export function setupCommunity(ctx: Context) {
       hint('仅查询公开大厅；填入后还需手动加入虚拟网络。查询不会更换当前服务器。'),
       button('刷新', () => plaza())
     );
-    if (ctx.isHost()) {
-      const description = field('公开简介', 'text', '', 200),
-        enabled = ctx.publicState();
-      const publish = button(enabled ? '撤销公开' : '发布当前大厅', () =>
-        run(async () => {
-          active();
-          if (!ctx.isHost()) throw new Error('只有房主可以修改公开状态');
-          if (!enabled && ctx.invite().password) throw new Error('原版公开广场只支持无密码大厅');
-          if (!enabled && !window.confirm('公开后陌生人可以加入此大厅及虚拟网络。确认发布？'))
-            return;
-          if (!ctx.publish(!enabled, description.input.value))
-            throw new Error('信令未连接，未发送发布请求');
-          ctx.status('公开状态请求已发送，请等待信令服务确认。');
-          dialog.close();
-        })
-      );
-      publish.disabled = !enabled && !!ctx.invite().password;
-      append(
-        description.label,
-        publish,
-        hint('发布/撤销沿用原版 set-lobby-options，状态以信令服务确认结果为准。密码大厅不能发布。')
-      );
-    }
+    if (ctx.isHost()) append(button('房主管理 / 发布设置', hostPanel));
     const state = node('p', '查询中…');
     append(state);
     try {
@@ -228,6 +214,64 @@ export function setupCommunity(ctx: Context) {
     } catch (error) {
       if (current === generation) state.textContent = `查询失败：${message(error)}`;
     }
+  }
+  function hostPanel() {
+    active();
+    if (!ctx.isHost()) throw new Error('只有当前房主可以管理大厅');
+    open('房主管理');
+    const max = field('人数上限（0 为不限）', 'number', String(ctx.maxPlayers() ?? 0), 6);
+    max.input.min = '0'; max.input.max = '64'; max.input.step = '1';
+    const maxStatus = hint(`当前 ${ctx.players().length} 人 · 信令确认上限 ${ctx.maxPlayers() ?? '不限'}`);
+    const descriptionKey = `mctier_lobby_description_${ctx.invite().name}`;
+    let savedDescription = '';
+    try { savedDescription = localStorage.getItem(descriptionKey) || ''; } catch { /* 浏览器可能禁用本地存储 */ }
+    const publicDescription = field('公开简介（最多 100 字）', 'text', savedDescription, 100);
+    const announceDraft = node('textarea');
+    announceDraft.value = ctx.announcement();
+    announceDraft.maxLength = 200;
+    announceDraft.rows = 3;
+    const publicStatus = hint(ctx.publicState() ? '当前已在公开广场' : '当前未公开');
+    const publicButton = button(ctx.publicState() ? '撤销公开' : '发布当前大厅', () => run(async () => {
+      active(); if (!ctx.isHost()) throw new Error('房主身份已变更');
+      const enabled = !ctx.publicState();
+      if (enabled && ctx.invite().password) throw new Error('原版公开广场只支持无密码大厅');
+      if (enabled && !window.confirm('公开后陌生人可以加入此大厅及虚拟网络。确认发布？')) return;
+      if (!ctx.publish(enabled, publicDescription.input.value)) throw new Error('信令未连接，公开状态请求未发送');
+      try { localStorage.setItem(descriptionKey, publicDescription.input.value); } catch { /* 仅影响表单预填 */ }
+      ctx.status('公开状态请求已发送，等待信令服务确认。');
+    }));
+    const refreshState = () => {
+      maxStatus.textContent = `当前 ${ctx.players().length} 人 · 信令确认上限 ${ctx.maxPlayers() ?? '不限'}`;
+      publicStatus.textContent = ctx.publicState() ? '当前已在公开广场' : '当前未公开';
+      publicButton.textContent = ctx.publicState() ? '撤销公开' : '发布当前大厅';
+      publicButton.disabled = !ctx.isHost();
+    };
+    window.addEventListener('mctier-lobby-options', refreshState);
+    unsubscribe = () => window.removeEventListener('mctier-lobby-options', refreshState);
+    append(
+      node('h3', '人数限制'), max.label, maxStatus,
+      button('应用人数上限', () => run(async () => {
+        active(); if (!ctx.isHost()) throw new Error('房主身份已变更');
+        const value = max.input.value.trim() === '' ? NaN : Number(max.input.value);
+        if (!Number.isInteger(value) || value < 0 || value > 64) throw new Error('人数上限须为 0–64');
+        if (value !== 0 && value < ctx.players().length) throw new Error('人数上限不能低于当前在线人数');
+        if (!ctx.setMaxPlayers(value)) throw new Error('信令未连接，人数上限请求未发送');
+        ctx.status('人数上限请求已发送，等待信令服务确认。');
+      })),
+      node('h3', '公开广场'), publicDescription.label, publicStatus,
+      publicButton,
+      hint('人数限制和公开状态均使用原版 set-lobby-options；以信令服务回报的状态为准。密码大厅不能公开。'),
+      node('h3', '大厅公告'),
+      hint('公告经 EasyTier 聊天数据链路发送，新成员加入时房主补发。留空发布可清除公告。'),
+      announceDraft,
+      button('发布公告', () => run(async () => {
+        active(); if (!ctx.isHost()) throw new Error('房主身份已变更');
+        const receipt = await ctx.announce(announceDraft.value.trim());
+        ctx.status(receipt.total && receipt.delivered < receipt.total
+          ? `公告只送达 ${receipt.delivered}/${receipt.total}，请检查 EasyTier 对端链路。`
+          : '公告已发出；对端显示仍需实际确认。', receipt.delivered < receipt.total);
+      }))
+    );
   }
   function importInvite() {
     open('导入大厅邀请');
@@ -338,7 +382,50 @@ export function setupCommunity(ctx: Context) {
   };
   function tools() {
     open('房间工具');
-    append(node('h3', '掷骰子'));
+    dialog.classList.add('tool-dialog');
+    const tabs = node('div');
+    tabs.className = 'tool-tabs';
+    tabs.setAttribute('role', 'tablist');
+    tabs.setAttribute('aria-label', '房间工具');
+    append(tabs);
+    const panels: HTMLElement[] = [], tabButtons: HTMLButtonElement[] = [];
+    const selectTab = (index: number) => {
+      panels.forEach((panel, i) => { panel.hidden = i !== index; });
+      tabButtons.forEach((tab, i) => {
+        tab.setAttribute('aria-selected', String(i === index));
+        tab.tabIndex = i === index ? 0 : -1;
+      });
+    };
+    tabs.onkeydown = event => {
+      let index = tabButtons.indexOf(document.activeElement as HTMLButtonElement);
+      if (index < 0) return;
+      if (event.key === 'ArrowRight') index = (index + 1) % tabButtons.length;
+      else if (event.key === 'ArrowLeft') index = (index + tabButtons.length - 1) % tabButtons.length;
+      else if (event.key === 'Home') index = 0;
+      else if (event.key === 'End') index = tabButtons.length - 1;
+      else return;
+      event.preventDefault(); selectTab(index); tabButtons[index].focus();
+    };
+    const section = (title: string) => {
+      const index = panels.length;
+      const card = node('section');
+      card.className = 'community-tool-section';
+      card.id = `room-tool-panel-${index}`;
+      card.hidden = index !== 0;
+      card.setAttribute('role', 'tabpanel');
+      card.setAttribute('aria-labelledby', `room-tool-tab-${index}`);
+      const tab = button(title, () => selectTab(index));
+      tab.id = `room-tool-tab-${index}`;
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-controls', card.id);
+      tab.setAttribute('aria-selected', String(index === 0));
+      tab.tabIndex = index === 0 ? 0 : -1;
+      panels.push(card); tabButtons.push(tab); tabs.append(tab);
+      card.append(node('h3', title));
+      append(card);
+      return card;
+    };
+    const dice = section('掷骰子');
     const count = field('数量', 'number', '1'),
       sides = field('面数', 'number', '6'),
       broadcast = node('input');
@@ -350,9 +437,13 @@ export function setupCommunity(ctx: Context) {
     const share = node('label', '发送到大厅');
     share.append(broadcast);
     const result = node('p');
-    append(
-      count.label,
-      sides.label,
+    result.className = 'community-result';
+    const diceFields = node('div');
+    diceFields.className = 'community-tool-grid';
+    diceFields.append(count.label, sides.label);
+    const diceActions = node('div');
+    diceActions.className = 'community-tool-actions';
+    diceActions.append(
       share,
       button('掷骰子', () =>
         run(async () => {
@@ -370,16 +461,18 @@ export function setupCommunity(ctx: Context) {
             );
           }
         })
-      ),
-      result,
-      node('h3', '本地倒计时')
+      )
     );
+    dice.append(diceFields, diceActions, result);
+    const timer = section('本地倒计时');
     const seconds = field('秒数', 'number', '300');
     seconds.input.min = '1';
     seconds.input.max = '604800';
     const remaining = node('output');
-    append(
-      seconds.label,
+    remaining.className = 'community-result';
+    const timerActions = node('div');
+    timerActions.className = 'community-tool-actions';
+    timerActions.append(
       button('开始', () =>
         run(async () => {
           const total = Number(seconds.input.value);
@@ -389,16 +482,17 @@ export function setupCommunity(ctx: Context) {
         })
       ),
       button('停止', () => countdownService.stop()),
-      remaining,
-      hint('倒计时只在本页面运行，关闭工具面板后继续；退出大厅时停止。'),
-      node('h3', '协同待办')
     );
+    timer.append(seconds.label, timerActions, remaining,
+      hint('倒计时只在本页面运行，关闭工具面板后继续；退出大厅时停止。'));
     const unsubTimer = countdownService.subscribe((n) => {
       remaining.textContent =
         n === null ? '未计时' : `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}`;
     });
     const todo = field('待办内容', 'text', '', 200),
       list = node('div');
+    const todos = section('协同待办');
+    list.className = 'community-todo-list';
     const sync = synchronizeTodos;
     const render = () => {
       list.replaceChildren();
@@ -427,8 +521,9 @@ export function setupCommunity(ctx: Context) {
         list.append(row);
       }
     };
-    append(
-      todo.label,
+    const todoActions = node('div');
+    todoActions.className = 'community-tool-actions';
+    todoActions.append(
       button('添加', () =>
         run(async () => {
           const value = todo.input.value.trim();
@@ -449,10 +544,12 @@ export function setupCommunity(ctx: Context) {
       ),
       button('清除已完成', () =>
         run(() => sync(useAppStore.getState().todos.filter((v) => !v.done)))
-      ),
-      list,
+      )
+    );
+    todos.append(
+      todo.label, todoActions, list,
       hint(
-        '待办沿用原版“后写覆盖”协议；同时修改可能覆盖，不保证离线补发。屏幕录制、游戏快连和 HUD 仍未开放。'
+        '待办沿用原版“后写覆盖”协议；同时修改可能覆盖，不保证离线补发。倒计时只在本机运行。'
       )
     );
     const unsubStore = useAppStore.subscribe(render);
@@ -697,12 +794,13 @@ export function setupCommunity(ctx: Context) {
     }
   }
   for (const [id, name, action] of [
+    ['lobby-management', '打开房主管理', hostPanel],
     ['lobby-history', '常用大厅 / 最近大厅', saved],
     ['invite', '生成大厅邀请', exportInvite],
     ['room-tools', '打开房间工具', tools],
     ['folder-share', '打开文件夹共享', folderPanel],
   ] as const) {
-    for (const placeholder of document.querySelectorAll(`[data-feature="${id}"]`)) {
+    for (const placeholder of document.querySelectorAll(`[data-feature="${id}"], #feature-matrix [data-feature-id="${id}"]`)) {
       const card = placeholder.querySelector('.feature-card') ?? placeholder;
       const actionButton = button(name, () =>
         run(async () => {

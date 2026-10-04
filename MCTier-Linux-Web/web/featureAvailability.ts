@@ -43,7 +43,7 @@ export const FEATURES = [
     id: 'remote-control',
     name: '远程操控',
     state: 'blocked',
-    reason: '远程输入授权与 Linux 输入注入尚未实现；仅开放屏幕观看。',
+    reason: 'Linux Web 产品范围明确不支持远程输入操控；可以观看和共享屏幕。',
   },
   { id: 'send-file', name: '发送文件', state: 'experimental', reason: '用户已实测文件收发正常；沿用原版附件协议，单文件上限 64 MiB。' },
   {
@@ -73,8 +73,8 @@ export const FEATURES = [
   {
     id: 'lobby-management',
     name: '房主管理',
-    state: 'blocked',
-    reason: '公告、人数限制及完整房主管理尚未迁移；公开发布/撤销和移出成员操作已接入。',
+    state: 'experimental',
+    reason: '已接入公告、人数上限、公开发布/撤销和移出成员；跨端与服务端结果仍待真实大厅验收。',
   },
   {
     id: 'invite',
@@ -91,20 +91,20 @@ export const FEATURES = [
   {
     id: 'magic-dns',
     name: 'Magic DNS',
-    state: 'blocked',
-    reason: '虚拟域名和 DNS 安装尚未迁移；请使用虚拟 IP。',
+    state: 'experimental',
+    reason: '原版身份域名映射已接入；预览确认后通过 pkexec 更新/清理 hosts。成员变更需手动更新，实际解析待验收。',
   },
   {
     id: 'advanced-network',
     name: '高级网络 / 游戏增强',
-    state: 'blocked',
-    reason: '高级参数、出口节点、端口转发和游戏发现界面尚未接入。',
+    state: 'experimental',
+    reason: '已接入性能/P2P/KCP/QUIC、私有子网/出口客户端、回环端口转发、游戏快连和 Minecraft 查询。SOCKS5、提供出口和 LAN 广播桥未开放；新参数待验收。',
   },
   {
     id: 'network-fix',
     name: '一键修复网络',
-    state: 'blocked',
-    reason: '防火墙修改与网络修复尚未迁移；只开放现有诊断。',
+    state: 'experimental',
+    reason: '按实际 EasyTier 监听端口预览 ufw/firewalld 规则，确认后一次性 pkexec 授权并复核，可撤销。不能保证 NAT/P2P；系统授权与真实链路待验收。',
   },
   {
     id: 'desktop-integration',

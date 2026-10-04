@@ -110,6 +110,13 @@ html[data-theme='light'] .message.me .text {
 html[data-theme='light'] .community-row {
   border-color: var(--border);
 }
+html[data-theme='light'] .community-header,
+html[data-theme='light'] .community-tool-section,
+html[data-theme='light'] .community-result {
+  color: var(--web-text);
+  background: var(--web-soft);
+  border-color: var(--border);
+}
 html[data-theme='light'] :is(button, a, summary):focus-visible {
   outline-color: #428a24;
 }

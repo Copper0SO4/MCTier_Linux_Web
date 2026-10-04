@@ -106,6 +106,8 @@ export function setupShell() {
   for (const placeholder of document.querySelectorAll<HTMLElement>('[data-feature]'))
     placeholder.replaceChildren(featureCard(placeholder.dataset.feature!));
   for (const feature of FEATURES) element('feature-matrix').append(featureCard(feature.id));
+  for (const [index, card] of [...element('feature-matrix').children].entries())
+    (card as HTMLElement).dataset.featureId = FEATURES[index].id;
   element('browser-warning').hidden = browser.canJoin;
   element('browser-warning').textContent = browser.canJoin
     ? ''
