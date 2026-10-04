@@ -16,7 +16,7 @@
 - `gradlew.bat :app:testDebugUnitTest :app:assembleDebug --no-daemon`: APK built. The repository disables the standard Android unit-test task and invokes JUnit through `jvmSecurityHardeningTest`; all 5 JVM tests pass, including the added chat ordering test.
 - `scripts/verify-media-browser.mjs`: real Chromium PeerConnections decode a 640x360 canvas video, pass a nonblack-pixel check, close/reopen successfully, and receive audio RTP after muted-entry negotiation. This is browser-to-browser media transport, not a physical Android-device test.
 - The same browser script mounts the actual ScreenShareManager with a controlled service fixture: connecting, failure, retry and cancellation pass at 430px and 1280px. The download layout has 21px measured margins at 320px, 430px and 1280px. Fixtures isolate these components; they are not screenshots of a live lobby.
-- Browser results and screenshots are in `verification-20260910/`.
+- Run `scripts/verify-media-browser.mjs` to generate browser results and screenshots locally in `.artifacts/verification-20260910/`; generated output is not committed.
 - `adb devices` returned no connected devices. Physical microphone playback, Android hardware video codecs and the user's current cloud/VPN path remain unverified.
 
 ## Packaging

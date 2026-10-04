@@ -12,7 +12,7 @@
 
 - Windows `npm run tauri build -- --bundles nsis --ci` succeeded; the EXE and installer are in `../MCTier-屏幕共享修复-20260910/` alongside the new APK and signaling source archive.
 - Desktop test suite passed (103 tests before adding the new fallback test); the updated media regression file passed all 6 cases, including legacy compatibility and Android health validation.
-- Chromium used actual PeerConnections with ICE delivery delayed for seven seconds. It decoded 640x360 moving video, all 3072 inspected RGB values were nonblack, issued zero legacy offers, and reopened the viewer successfully. Results are in `verification-20260910/results.json`.
+- Chromium used actual PeerConnections with ICE delivery delayed for seven seconds. It decoded 640x360 moving video, all 3072 inspected RGB values were nonblack, issued zero legacy offers, and reopened the viewer successfully. Running `scripts/verify-media-browser.mjs` writes results locally to `.artifacts/verification-20260910/results.json`; generated output is not committed.
 - Android `:app:testDebugUnitTest :app:assembleDebug --no-daemon` succeeded; the configured JUnit runner executed 5 tests. APK output: `MCTier-Android/app/build/outputs/apk/debug/app-debug.apk`.
 - Signaling `cargo test`: 49 passed. Added serialization and authenticated WebSocket forwarding tests for Android-shaped health messages, including `limited: false` and session metadata.
 - No device was attached to ADB during this work. Chromium tests do not exercise Android's native codec, MediaProjection, the user's VPN/network, or the deployed cloud server.

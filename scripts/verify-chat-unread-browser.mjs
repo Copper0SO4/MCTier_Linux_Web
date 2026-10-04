@@ -26,7 +26,7 @@ const compiled = await build({
   } }],
 });
 const browser = await chromium.launch({ headless: true, executablePath: process.argv[3] });
-const output = path.join(root, 'docs/verification-chat-unread-20260910');
+const output = path.join(root, '.artifacts', 'verification-chat-unread-20260910');
 await fs.mkdir(output, { recursive: true });
 try {
   const page = await browser.newPage();

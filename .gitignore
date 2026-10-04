@@ -125,3 +125,9 @@ __pycache__/
 build-paths.local.json
 signing.local.json
 /public/pdfjs/
+
+# Local verification output and unused source duplicates.
+/docs/verification-*/
+/public/tauri.svg
+/MCTier-Android/wx.png
+/MCTier-Android/zfb.jpg

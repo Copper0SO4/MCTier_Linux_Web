@@ -26,7 +26,7 @@ For actual model inference: set `MCTIER_SPEECH_TEST_CACHE` to an explicit cache 
 
 ## Local Disk
 
-Generated Rust release/native-library/incremental caches (about 9.5 GiB) were moved from E: to `C:/Users/pmh13/AppData/Local/MCTierBuildCache/20260914`, with directory junctions preserving build paths. Source files and user data were not deleted. These local junctions are not repository dependencies.
+Generated Rust release/native-library/incremental caches (about 9.5 GiB) were moved to a local build-cache directory, with directory junctions preserving build paths. Source files and user data were not deleted. These local junctions are not repository dependencies.
 
 ## Verified Results
 
