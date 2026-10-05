@@ -268,7 +268,7 @@ npm run tauri build -- --bundles nsis --ci
 
 ### 质量检查
 
-GitHub Actions 自动执行前端、Rust、Linux、Android、许可证和依赖供应链检查；部分历史 lint、格式、审计及平台环境问题会以可见结果报告。CI 不负责签名、打包发布或部署服务器。
+GitHub Actions 自动执行前端构建与回归测试、指定 Rust 模块格式检查、Android 构建文件存在性检查、许可证文件检查和 Rust 依赖审计。历史 lint 和依赖审计暂不阻断，需单独查看结果；Rust/Android/Linux 完整构建和真实媒体测试仍需本地验证。CI 不负责签名、打包发布或部署服务器。
 
 `.github` 中经审核的 Issue/PR 模板、Dependabot 和 CI 配置允许提交；其他点开头的目录、缓存、密钥和构建产物仍排除。Dependabot 每月分组检查小版本更新，需要人工审查后合并。
 

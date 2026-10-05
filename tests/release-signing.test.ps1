@@ -14,7 +14,9 @@ $overlayPath = Join-Path $FixtureDirectory 'tauri config.json'
 New-MctierTauriSigningConfig $configPath $overlayPath
 $overlay = [IO.File]::ReadAllText($overlayPath) | ConvertFrom-Json
 $arguments = @($overlay.bundle.windows.signCommand.args)
-if ($arguments[-1] -ne '%1' -or $arguments -notcontains $configPath) { throw 'Signing arguments lost path boundaries.' }
+# Windows PowerShell expands runner paths such as RUNNER~1 during GetFullPath.
+# Compare the same canonical form that the signing configuration promises.
+if ($arguments[-1] -ne '%1' -or $arguments -notcontains [IO.Path]::GetFullPath($configPath)) { throw 'Signing arguments lost path boundaries.' }
 Write-Output 'PASS: Tauri signing preserves paths with spaces and placeholder'
 $exe = Join-Path $FixtureDirectory 'unsigned.exe'
 Add-Type -TypeDefinition 'public class SigningFixture { public static int Main(string[] args) { System.Console.WriteLine("native output"); System.Console.Error.WriteLine("certificate export notice"); return args.Length == 0 ? 0 : 7; } }' -OutputAssembly $exe -OutputType ConsoleApplication

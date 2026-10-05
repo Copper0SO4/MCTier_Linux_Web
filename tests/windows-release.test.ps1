@@ -56,7 +56,8 @@ $newCache = Join-Path $FixtureDirectory 'fresh-cache'
 $settings = @{ CargoTargetDirectory = $newCache; ReleaseRoot = $output; TemporaryDirectory = (Join-Path $FixtureDirectory 'temp') }
 [IO.File]::WriteAllText($localConfig, ($settings | ConvertTo-Json))
 $configured = Read-MctierBuildPaths -ConfigurationPath $localConfig
-if ($configured.CargoTargetDirectory -ne $newCache -or $configured.ReleaseRoot -ne $output) { throw 'Physical cache and export roots were not preserved.' }
+# The production reader normalizes short Windows paths (for example RUNNER~1).
+if ($configured.CargoTargetDirectory -ne [IO.Path]::GetFullPath($newCache) -or $configured.ReleaseRoot -ne [IO.Path]::GetFullPath($output)) { throw 'Physical cache and export roots were not preserved.' }
 if (Test-Path -LiteralPath $newCache) { throw 'Reading configuration must not create cache directories.' }
 Write-Output 'PASS: explicit physical paths without filesystem mutation'
 
