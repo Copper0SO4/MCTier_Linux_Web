@@ -268,7 +268,7 @@ npm run tauri build -- --bundles nsis --ci
 
 ### 质量检查
 
-GitHub Actions 自动执行前端构建、类型检查和 Node 回归测试；历史 lint 问题单独报告，暂不阻断。原生 Windows/Linux、Android、真实媒体和 EasyTier 测试仍需按本地步骤运行，CI 不负责打包或发布应用。
+GitHub Actions 自动执行前端、Rust、Linux、Android、许可证和依赖供应链检查；部分历史 lint、格式、审计及平台环境问题会以可见结果报告。CI 不负责签名、打包发布或部署服务器。
 
 `.github` 中经审核的 Issue/PR 模板、Dependabot 和 CI 配置允许提交；其他点开头的目录、缓存、密钥和构建产物仍排除。Dependabot 每月分组检查小版本更新，需要人工审查后合并。
 
