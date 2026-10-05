@@ -71,7 +71,7 @@ STORE_TEST_REPORT.md
 VOICE_DEBUG_GUIDE.md
 
 # Editor directories and files
-# Keep all dot-prefixed directories local at every depth.
+# Keep dot-prefixed directories local except the reviewed allowlist below.
 **/.*/
 .idea
 .DS_Store
@@ -131,3 +131,19 @@ signing.local.json
 /public/tauri.svg
 /MCTier-Android/wx.png
 /MCTier-Android/zfb.jpg
+
+
+# Reviewed GitHub configuration is the only dot-directory exception.
+!/.github/
+/.github/*
+!/.github/ISSUE_TEMPLATE/
+/.github/ISSUE_TEMPLATE/*
+!/.github/workflows/
+/.github/workflows/*
+!/.github/dependabot.yml
+!/.github/pull_request_template.md
+!/.github/ISSUE_TEMPLATE/bug_report.yml
+!/.github/ISSUE_TEMPLATE/compliance_audit.yml
+!/.github/ISSUE_TEMPLATE/config.yml
+!/.github/ISSUE_TEMPLATE/feature_request.yml
+!/.github/workflows/ci.yml

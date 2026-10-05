@@ -268,7 +268,11 @@ npm run tauri build -- --bundles nsis --ci
 
 ### 质量检查
 
-提交前可以在本地运行以下前端检查（仓库不提交以点开头的目录，包括 `.github`）：
+GitHub Actions 自动执行前端构建、类型检查和 Node 回归测试；历史 lint 问题单独报告，暂不阻断。原生 Windows/Linux、Android、真实媒体和 EasyTier 测试仍需按本地步骤运行，CI 不负责打包或发布应用。
+
+`.github` 中经审核的 Issue/PR 模板、Dependabot 和 CI 配置允许提交；其他点开头的目录、缓存、密钥和构建产物仍排除。Dependabot 每月分组检查小版本更新，需要人工审查后合并。
+
+提交前可以在本地运行以下前端检查：
 
 ```bash
 npm ci
