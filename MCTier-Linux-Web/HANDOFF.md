@@ -418,3 +418,4 @@ ZIP SHA-256：88c8d119acf7ef56823bb7db2d62047c3077e3c605c9ec05e27100d2635c60e8�
 - 用户总体反馈与专项测试分开记录。最近120前端/123 Rust通过属于历史基线；本轮未重跑全套自动化，新增高级参数及自动启动生命周期仍需针对性测试。Firefox封锁、远程输入不支持及未实现桌面功能保持现状，不把总体验收推广为全部能力已验证。
 - 本次发行不停止或替换正在运行的开发服务，不触发pkexec、不另外接入真实大厅。构建、包体校验和发布结果随后追加。
 - 发行校验结果：TypeScript/Vite/Rust release 构建通过（Rust 1.90.0）；ZIP CRC、7个必需文件、可执行权限及包内服务与构建产物一致性通过；源码空白及启动/打包脚本语法检查通过。ELF最高GLIBC符号为2.39，链接OpenSSL 3和D-Bus；中文运行要求据此保持glibc>=2.39。ZIP SHA-256：`8d3b41a37131879099b2bfd0b4b4a50a4c3f5e6905c68f0081dbad80f9d74a40`。
+- 发布完成：2026-10-06 20:52（Asia/Shanghai），代码提交`66ca4c021d3f827f028eae44dcff2eff9830f100`和标签`3.9.0`已推送origin/master；GitHub正式Release已发布并标记Latest，ZIP和SHA-256附件上传完成。页面：https://github.com/Copper0SO4/MCTier_Linux_Web/releases/tag/3.9.0 。此后只补充发布记录，不移动发行标签或重打包。
