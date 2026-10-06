@@ -13,7 +13,7 @@ cd mctier-linux-web-linux-x86_64-3.9.0
 ./mctier-linux-web
 ```
 
-启动器以普通用户启动本地服务，在服务就绪后尝试打开系统默认浏览器。请用 **Chrome/Chromium** 访问 `http://127.0.0.1:14700`，保持终端运行；Ctrl+C 停止服务。服务只监听回环地址，默认由用户手动加入大厅和开启麦克风/屏幕共享；可在软件设置中明确开启启动自动组网，详见下文。
+启动器以普通用户启动本地服务，在服务就绪后尝试打开系统默认浏览器。请用 **Chrome/Chromium** 访问 `http://127.0.0.1:14700`，保持启动命令在前台运行并按 Ctrl+C 停止服务。Arch 包也支持在另一终端运行 `mctier --stop`。若 14700 已被占用，启动器会明确报错，不会把其他实例的健康响应误认为本次启动成功。服务只监听回环地址，默认由用户手动加入大厅和开启麦克风/屏幕共享；可在软件设置中明确开启启动自动组网，详见下文。
 
 只有随包 EasyTier 核心缺少 `cap_net_admin,cap_net_raw=ep` 时，启动器才申请 `pkexec setcap` 系统授权并复核。不要用 sudo/pkexec 以 root 启动整个应用或 EasyTier。
 
@@ -67,7 +67,7 @@ sudo apt install curl xdg-utils libcap2-bin policykit-1 libdbus-1-3 libsystemd0 
 
 ## Arch Linux 安装
 
-Arch打包仓库：[mctier-linux-web-git](https://github.com/Copper0SO4/mctier-linux-web-git)。使用普通用户构建，安装后在终端使用 **`mctier`** 启动，按 Ctrl+C 停止服务；不提供桌面菜单入口：
+Arch打包仓库：[mctier-linux-web-git](https://github.com/Copper0SO4/mctier-linux-web-git)。使用普通用户构建，安装后在终端使用 **`mctier`** 启动，按 Ctrl+C 或运行 `mctier --stop` 停止服务；不提供桌面菜单入口：
 
 ```bash
 sudo pacman -S --needed base-devel git rust nodejs npm
