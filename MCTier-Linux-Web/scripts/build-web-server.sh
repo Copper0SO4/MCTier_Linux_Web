@@ -8,6 +8,7 @@ case "${1:-}" in
   --debug) PROFILE=debug ;;
   *) echo "Usage: $0 [--debug]" >&2; exit 2 ;;
 esac
+node MCTier-Linux-Web/scripts/check-upstream.mjs
 node MCTier-Linux-Web/scripts/prepare-frontend.mjs
 node MCTier-Linux-Web/scripts/prepare-secrets.mjs
 node MCTier-Linux-Web/scripts/prepare-network.mjs

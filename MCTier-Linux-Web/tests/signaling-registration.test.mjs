@@ -19,7 +19,8 @@ const bundle = await build({ entryPoints: [entry], bundle: true, format: 'esm', 
     return { path: args.path, namespace: 'fixture' };
   });
   b.onLoad({ filter: /.*/, namespace: 'fixture' }, args => ({ loader: 'js', contents:
-    args.path.endsWith('signalingIdentity') ? 'export const isServerChallenge=x=>/^[a-f0-9]{64}$/.test(x); export const prepareSignalingIdentity=async()=>globalThis.registrationTestIdentity; export const signSignalingRegistration=async()=>({});'
+    args.path.endsWith('signalingIdentity') ? 'export const isServerChallenge=x=>/^[a-f0-9]{64}$/.test(x); export const prepareSignalingIdentity=async()=>globalThis.registrationTestIdentity; export const signSignalingRegistration=async()=>({...globalThis.registrationTestIdentity,challengeSignature:"fixture-signature"});'
+    : args.path.endsWith('version/appVersion') ? 'export const appVersion=()=>"3.10.0"; export const loadAppVersion=async()=>"3.10.0";'
     : args.path.endsWith('P2PChatService') ? 'export const p2pChatService={setChatToken(token){globalThis.registrationTestPublishedToken?.(token)},reset(){},initialize(){}};'
     : args.path.endsWith('LobbySessionCoordinator') ? 'export const lobbySessionCoordinator={assertCurrent(ticket){if(ticket?.signal?.aborted) throw new DOMException("cancelled", "AbortError");},isCurrent(ticket){return !ticket?.signal?.aborted;}};'
     : args.path === '@tauri-apps/api/core' ? 'export const invoke=async(...args)=>globalThis.registrationTestInvoke?.(...args);'
@@ -69,7 +70,7 @@ function fixture() {
   client.configureChatSession = async () => {};
   const success = { type: 'register-success', clientId: client.localPlayerId, sessionGeneration: 1234567890123456,
     chatToken: 'a'.repeat(64), chatTokenEpoch: 1 };
-  const challenge = { type: 'server-challenge', protocolVersion: 3, challenge: 'a'.repeat(64) };
+  const challenge = { type: 'server-challenge', protocolVersion: 3, lobbyEntryModes: true, challenge: 'a'.repeat(64) };
   return { client, success, challenge, timers, async dispose() {
     client.isIntentionalDisconnect = true;
     client.cancelPendingRegistration?.();
@@ -80,6 +81,43 @@ function fixture() {
     globalThis.registrationTestIdentity = oldIdentity;
   } };
 }
+
+test('an old server cannot silently treat join as create', async () => {
+  const f = fixture();
+  try {
+    const pending = f.client.connectToSignalingServer();
+    const rejection = assert.rejects(pending, /管理员升级/);
+    const socket = f.client.websocket;
+    socket.open();
+    socket.receive({ ...f.challenge, lobbyEntryModes: undefined });
+    await rejection;
+    assert.equal(socket.sent.length, 0);
+  } finally { await f.dispose(); }
+});
+
+test('desktop registration sends the selected entry mode and only switches to resume after acceptance', async () => {
+  for (const mode of ['create', 'join', 'auto']) {
+    const f = fixture();
+    try {
+      delete f.client.sendV3Registration;
+      f.client.lobbySessionTicket = {};
+      f.client.virtualIp = '10.126.126.2';
+      f.client.chatPublicKey = 'prepared-key';
+      f.client.entryMode = mode;
+      const pending = f.client.connectToSignalingServer();
+      const socket = f.client.websocket;
+      socket.open();
+      socket.receive(f.challenge);
+      await flush();
+      assert.equal(socket.sent[0].type, 'register-v3');
+      assert.equal(socket.sent[0].entryMode, mode);
+      assert.equal(f.client.entryMode, mode);
+      socket.receive(f.success);
+      await pending;
+      assert.equal(f.client.entryMode, 'auto');
+    } finally { await f.dispose(); }
+  }
+});
 
 test('business traffic waits for registration and local auth; reconnect revokes the old readiness', async () => {
   const f = fixture();

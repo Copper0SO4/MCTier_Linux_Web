@@ -1,0 +1,30 @@
+{
+  "upstreamVersion": "3.10.0",
+  "upstreamCommit": "d6af338e793941e15b777ec8abf6c9109d9591b1",
+  "manualAdapters": [
+    {
+      "adapter": "server/shared/chat_service.rs",
+      "source": "src-tauri/src/modules/chat_service.rs",
+      "sourceSha256": "7dbfe2ae7e14f9defa061bb15445d0b49094fa8f73110415243bc60486be8623",
+      "reason": "Linux chat listener/attachment lifetime adapter"
+    },
+    {
+      "adapter": "server/shared/chat_transport.rs",
+      "source": "src-tauri/src/modules/tauri_commands/chat.rs",
+      "sourceSha256": "baf39d349a1463e5ca04953e651222f64bfa5305defe575f9071858de5a3d80b",
+      "reason": "Extracted chat transport; Linux overlay_http policy"
+    },
+    {
+      "adapter": "server/shared/config_types.rs",
+      "source": "src-tauri/src/modules/config_manager.rs",
+      "sourceSha256": "dac8b0459e6cbbd8a01c25ae0721a77f4f6876cae5f7ba3cb21363f6af5f7097",
+      "reason": "Data-only config types"
+    },
+    {
+      "adapter": "server/shared/network_arguments.rs",
+      "source": "src-tauri/src/modules/network_service.rs",
+      "sourceSha256": "75ab7137ceff9b2279d7c8b4d4325533cefc10b7d76f46cc820c5cee96619377",
+      "reason": "Extracted EasyTier advanced argument mapping"
+    }
+  ]
+}

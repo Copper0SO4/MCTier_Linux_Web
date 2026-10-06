@@ -1,3 +1,5 @@
+import { savedReportedVersion, saveReportedVersion, validateReportedVersion, resetReportedVersion, defaultReportedVersion, reportedVersionIsCustom } from './clientVersion';
+import { refreshReportedDefault, versionDetectionStatus } from './versionUpdater';
 import { localInvoke } from '../frontend-src/services/platform/localWeb';
 import type { Player } from '../frontend-src/types';
 
@@ -55,6 +57,8 @@ const hint = (text: string) => {
   return n;
 };
 const err = (e: unknown) => (e instanceof Error ? e.message : String(e));
+type OperationResult = { report: string[]; restart?: { state: 'restarted' | 'failed' | 'skipped' | 'not-requested'; error?: string; reason?: string } };
+const partialFailure = (result: OperationResult) => result.restart?.state === 'failed';
 type Preview = {
   token: string;
   confirmationText: string;
@@ -203,6 +207,7 @@ export function setupNetworkPanel(ctx: Context) {
     const names = [
       ['settings', '高级网络'],
       ['games', '游戏快连'],
+      ['dns', 'Magic DNS'],
       ['repair', '网络修复'],
     ] as const;
     const buttons = names.map(([key, title]) => {
@@ -260,6 +265,17 @@ export function setupNetworkPanel(ctx: Context) {
       grid = make('div');
     grid.className = 'network-grid';
     controls.append(grid);
+    const reportVersion = field('客户端上报版本', savedReportedVersion());
+    reportVersion.input.maxLength = 24; reportVersion.input.id = 'reported-version-input';
+    reportVersion.input.oninput = () => reportVersion.input.setAttribute('data-edited', 'true');
+    grid.append(reportVersion.label);
+    const versionStatus = hint(versionDetectionStatus()); versionStatus.id = 'reported-version-status';
+    controls.append(versionStatus, hint('默认值跟随原版版本检测；手填值优先。只改变信令上报，下次加入生效，不升级程序或协议。'), button('检测上游版本', () => run(async () => {
+      const before = savedReportedVersion();
+      versionStatus.textContent = '正在查询原版 Gitee 版本接口…';
+      try { versionStatus.textContent = await refreshReportedDefault(); if (reportVersion.input.value === before && !reportVersion.input.hasAttribute('data-edited')) reportVersion.input.value = savedReportedVersion(); }
+      catch (error) { versionStatus.textContent = err(error); }
+    })), button('跟随上游默认版本', () => run(async () => { resetReportedVersion(); reportVersion.input.value = savedReportedVersion(); reportVersion.input.removeAttribute('data-edited'); ctx.status('已恢复跟随上游默认上报版本，下次加入生效。'); })));
     const listener = field(
         'EasyTier 监听端口（0 为每次随机）',
         String(settings.listenerPort),
@@ -400,6 +416,7 @@ export function setupNetworkPanel(ctx: Context) {
     const current = generation;
     const save = button('保存，下次加入生效', () =>
       run(async () => {
+        const report = validateReportedVersion(reportVersion.input.value);
         const candidate: NetworkSettings = {
           ...settings,
           listenerPort: Number(listener.input.value),
@@ -427,6 +444,7 @@ export function setupNetworkPanel(ctx: Context) {
           );
           if (current !== generation) return;
           localStorage.setItem(KEY, JSON.stringify(validated));
+          if (report === defaultReportedVersion() && !reportedVersionIsCustom() && !reportVersion.input.hasAttribute('data-edited')) resetReportedVersion(); else saveReportedVersion(report);
           settings = validated;
           savedError = '';
           ctx.status('网络设置已保存；请在下次手动加入时使用。');
@@ -442,6 +460,7 @@ export function setupNetworkPanel(ctx: Context) {
       button('恢复默认设置', () =>
         run(async () => {
           localStorage.removeItem(KEY);
+          resetReportedVersion();
           settings = defaults();
           savedError = '';
           open('settings');
@@ -606,6 +625,7 @@ export function setupNetworkPanel(ctx: Context) {
       button('预览清理域名', () => run(() => prepare('prepare_magic_dns', { remove: true }))),
       button('刷新映射状态', () => open('dns'))
     );
+
     pane.append(
       actions,
       hint(
@@ -728,11 +748,6 @@ export function setupNetworkPanel(ctx: Context) {
     const outgoing = checkbox('额外放行 UFW 出站（本机限制出站时使用）', false);
     outgoing.input.disabled = backend.input.value !== 'ufw';
     const oldBackendChange = backend.input.onchange;
-    backend.input.onchange = event => {
-      oldBackendChange?.call(backend.input, event);
-      outgoing.input.disabled = backend.input.value !== 'ufw';
-      if (outgoing.input.disabled) outgoing.input.checked = false;
-    };
     punching.append(outgoing.label, hint('出站规则限定本地源端口与虚拟网段，对端打洞目标端口由 NAT 决定。它仍影响匹配端口的其它程序。firewalld 出站策略暂不自动修改。'));
     const preview = button('预览本次网络修复' , () =>
       run(() =>
@@ -785,8 +800,10 @@ export function setupNetworkPanel(ctx: Context) {
       pause
     );
     pause.disabled = !backend.input.value;
-    backend.input.onchange = () => {
-      refreshBackend();
+    backend.input.onchange = event => {
+      oldBackendChange?.call(backend.input, event);
+      outgoing.input.disabled = backend.input.value !== 'ufw';
+      if (outgoing.input.disabled) outgoing.input.checked = false;
       pause.disabled = !backend.input.value;
     };
     pane.append(pausePanel, make('h3', '已记录更改 / 撤销'));
@@ -826,11 +843,11 @@ export function setupNetworkPanel(ctx: Context) {
     });
     authorizing = true;
     try {
-      const result = await localInvoke<{ report: string[] }>('apply_network_operation', {
+      const result = await localInvoke<OperationResult>('apply_network_operation', {
         token: preview.token,
         confirmationText: '',
       });
-      ctx.status(result.report.join('；'));
+      ctx.status(result.report.join('；'), partialFailure(result));
     } finally {
       authorizing = false;
     }
@@ -965,12 +982,12 @@ export function setupNetworkPanel(ctx: Context) {
         cancel.textContent = '取消系统操作';
         output.textContent = '等待系统授权，请处理认证窗口…';
         try {
-          const r = await localInvoke<{ report: string[] }>('apply_network_operation', {
+          const r = await localInvoke<OperationResult>('apply_network_operation', {
             token: preview.token,
             confirmationText: confirmation.input.value,
           });
           output.textContent = r.report.join('\n');
-          ctx.status('系统操作已完成并复核；实际组网、解析和 P2P 仍需验证。');
+          ctx.status(partialFailure(r) ? '防火墙已变更，但 EasyTier 重连未完成，请检查会话并重新加入。' : '系统操作已完成并复核；实际组网、解析和 P2P 仍需验证。', partialFailure(r));
         } catch (e) {
           output.textContent = err(e);
           throw e;
@@ -1005,6 +1022,7 @@ export function setupNetworkPanel(ctx: Context) {
   for (const [id, title, tab] of [
     ['advanced-network', '高级网络 / 游戏快连', 'settings'],
     ['network-fix', '预览网络修复', 'repair'],
+    ['magic-dns', '管理成员域名', 'dns'],
   ] as const) {
     for (const p of document.querySelectorAll(
       `[data-feature="${id}"], #feature-matrix [data-feature-id="${id}"]`

@@ -301,10 +301,7 @@ pub async fn send_p2p_chat_message(
     let total = authoritative_peers.len();
 
     // 【优化】使用并发发送，提高图片传输速度
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10)) // 设置超时
-        .connect_timeout(std::time::Duration::from_secs(3))
-        .redirect(reqwest::redirect::Policy::none())
+    let client = crate::overlay_http::client(std::time::Duration::from_secs(10), std::time::Duration::from_secs(3))
         .build()
         .map_err(|e| format!("创建HTTP客户端失败: {}", e))?;
 
@@ -520,10 +517,7 @@ pub async fn get_p2p_chat_messages(
         authoritative_peers.len()
     );
 
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .connect_timeout(std::time::Duration::from_millis(800))
-        .redirect(reqwest::redirect::Policy::none())
+    let client = crate::overlay_http::client(std::time::Duration::from_secs(3), std::time::Duration::from_millis(800))
         .build()
         .map_err(|e| format!("创建HTTP客户端失败: {}", e))?;
 

@@ -26,6 +26,7 @@ export function probeSignaling(address: string, timeoutMs = 8000): Promise<strin
           if (typeof event.data !== 'string' || event.data.length > 4096) return finish('信令握手响应无效');
           const frame = JSON.parse(event.data);
           if (frame.type !== 'server-challenge' || frame.protocolVersion !== 3 || !/^[a-f0-9]{64}$/.test(frame.challenge)) return finish('信令未返回预期的协议 v3 challenge');
+          if (frame.lobbyEntryModes !== true) return finish('信令服务器尚未支持创建/加入校验，请联系服务器管理员升级');
           finish();
         } catch { finish('信令握手响应不是有效 JSON'); }
       };

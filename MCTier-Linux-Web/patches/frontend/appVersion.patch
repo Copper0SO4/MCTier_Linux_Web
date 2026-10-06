@@ -1,0 +1,19 @@
+--- a/services/version/appVersion.ts
++++ b/services/version/appVersion.ts
+@@ -8,6 +8,7 @@
+  * 因此这里在连接前预取并缓存，回调中同步读取缓存值。
+  */
+ import { getVersion } from '@tauri-apps/api/app';
++import { isLocalWeb } from '../platform/localWeb';
+ 
+ /** 无法从 Tauri 读取版本时使用的占位值。 */
+ export const UNKNOWN_APP_VERSION = 'unknown';
+@@ -16,7 +17,7 @@
+ 
+ /** 读取并缓存应用版本号。 */
+ export async function loadAppVersion(): Promise<string> {
+-  if (cachedVersion !== null) return cachedVersion;
++  if (cachedVersion !== null && !isLocalWeb()) return cachedVersion;
+   try {
+     cachedVersion = await getVersion();
+   } catch (error) {

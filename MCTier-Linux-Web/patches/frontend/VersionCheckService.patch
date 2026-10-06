@@ -1,0 +1,31 @@
+--- a/services/version/VersionCheckService.ts
++++ b/services/version/VersionCheckService.ts
+@@ -5,6 +5,8 @@
+ 
+ import { compareVersions, isReleaseVersion, newestVersionTag, normalizeReleaseVersion } from './versionPolicy';
+ import { getVersion } from '@tauri-apps/api/app';
++import { isLocalWeb, localInvoke } from '../platform/localWeb';
++import { UPSTREAM_VERSION } from '../platform/linuxWebVersion';
+ 
+ interface GiteeTag {
+   name: string;
+@@ -132,7 +134,9 @@
+       console.log('🔍 [VersionCheckService] 开始检查版本更新...');
+       console.log('📡 [VersionCheckService] 请求 Gitee API:', this.GITEE_API_URL);
+ 
+-      const response = await fetch(this.GITEE_API_URL, {
++      const response = isLocalWeb()
++        ? new Response(await localInvoke<string>('get_upstream_version_tags'), { headers: { 'content-type': 'application/json' } })
++        : await fetch(this.GITEE_API_URL, {
+         method: 'GET',
+         headers: {
+           'Accept': 'application/json',
+@@ -172,7 +176,7 @@
+       if (!latestTag) return null;
+       const latestVersion = normalizeReleaseVersion(latestTag.name);
+       if (!latestVersion) return null;
+-      const currentVersion = await getVersion();
++      const currentVersion = isLocalWeb() ? UPSTREAM_VERSION : await getVersion();
+       if (!normalizeReleaseVersion(currentVersion)) {
+         console.error('❌ [VersionCheckService] 当前版本号无效，停止更新提示');
+         return null;

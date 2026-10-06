@@ -39,6 +39,7 @@ export const FEATURES = [
     state: 'experimental',
     reason: '目录快照已接入原版 HTTP 共享；单文件 64 MiB，总量 256 MiB。跨端访问和凭据轮换待验收。',
   },
+  { id: 'magic-dns', name: 'Magic DNS 成员域名', state: 'experimental', reason: '按原版身份派生 .mct.net 域名；预览并确认后通过系统授权更新 hosts。成员变化需手动更新，退出可清理；实际解析待验收。' },
   {
     id: 'remote-control',
     name: '远程操控',
@@ -74,7 +75,7 @@ export const FEATURES = [
     id: 'lobby-management',
     name: '房主管理',
     state: 'experimental',
-    reason: '已接入公告、人数上限、公开发布/撤销和移出成员；跨端与服务端结果仍待真实大厅验收。',
+    reason: '已接入公告、人数上限、公开发布/撤销、移出、房主转让与语音禁言；跨端与服务端结果仍待真实大厅验收。',
   },
   {
     id: 'invite',
@@ -114,9 +115,9 @@ export const FEATURES = [
   },
   {
     id: 'avatar',
-    name: '个人头像 / 本地统计',
-    state: 'blocked',
-    reason: '头像上传、个人资料和统计页面尚未接入。',
+    name: '个人资料 / 头像 / 本地统计',
+    state: 'experimental',
+    reason: '昵称与头像保存于本浏览器，头像沿用原版加密控制消息同步；提供本次会话消息和语音传输统计，跨端待验收。',
   },
   {
     id: 'auto-lobby',

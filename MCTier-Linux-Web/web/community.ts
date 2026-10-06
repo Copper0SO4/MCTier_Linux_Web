@@ -1,3 +1,4 @@
+import { boundedBlob, TransferScope } from './boundedResponse';
 import QRCode from 'qrcode';
 import {
   buildLobbyInviteLink,
@@ -28,6 +29,8 @@ type Context = {
   isHost: () => boolean;
   publicState: () => boolean;
   publish: (enabled: boolean, description: string) => boolean;
+  mute: (id: string, muted: boolean) => boolean;
+  transfer: (id: string) => boolean;
   maxPlayers: () => number | null;
   setMaxPlayers: (max: number) => boolean;
   announcement: () => string;
@@ -69,13 +72,12 @@ export function setupCommunity(ctx: Context) {
   header.append(heading, close);
   dialog.append(header, body);
   let unsubscribe: (() => void) | null = null,
-    generation = 0,
-    controller: AbortController | null = null;
+    generation = 0;
+  const transfers = new TransferScope();
   const urls = new Set<string>();
   function dispose() {
     generation++;
-    controller?.abort();
-    controller = null;
+    transfers.cancel();
     unsubscribe?.();
     unsubscribe = null;
     for (const url of urls) URL.revokeObjectURL(url);
@@ -169,8 +171,7 @@ export function setupCommunity(ctx: Context) {
   }
   async function plaza() {
     open('公开广场');
-    controller = new AbortController();
-    const abort = controller,
+    const abort = transfers.begin(),
       current = generation,
       signal = ctx.invite().signalingServer;
     append(
@@ -213,6 +214,8 @@ export function setupCommunity(ctx: Context) {
       }
     } catch (error) {
       if (current === generation) state.textContent = `查询失败：${message(error)}`;
+    } finally {
+      transfers.finish(abort);
     }
   }
   function hostPanel() {
@@ -272,6 +275,35 @@ export function setupCommunity(ctx: Context) {
           : '公告已发出；对端显示仍需实际确认。', receipt.delivered < receipt.total);
       }))
     );
+    append(node('h3', '成员管理'), hint('语音禁言会关闭目标麦克风，不能禁止文字消息；房主身份和禁言以信令回报为准。'));
+    const list = node('div'); list.className = 'host-members'; append(list);
+    const memberSession = ctx.session();
+    const canManageMember = (id: string) => ctx.session() === memberSession && ctx.online() && ctx.isHost() && ctx.players().some(p => p.id === id);
+    function updateMemberList() {
+      const owner = ctx.isHost(); list.replaceChildren();
+      for (const player of ctx.players().filter(p => p.id !== ctx.playerId())) {
+        const row = node('div'); row.className = 'community-row';
+        row.append(node('strong', player.name), hint(player.virtualIp || '地址尚未同步'));
+        const muted = useAppStore.getState().hostMutedPlayers.has(player.id);
+        const mute = button(muted ? '解除语音禁言' : '语音禁言', () => {
+          if (!canManageMember(player.id)) return;
+          ctx.status(ctx.mute(player.id, !useAppStore.getState().hostMutedPlayers.has(player.id)) ? '禁言请求已发送，等待信令确认。' : '禁言请求未发送。');
+        });
+        const transfer = button('转让房主', () => {
+          if (!canManageMember(player.id) || !window.confirm(`将房主转让给 ${player.name}？你将失去管理权限。`)) return;
+          if (!canManageMember(player.id)) return;
+          ctx.status(ctx.transfer(player.id) ? '转让请求已发送，等待信令确认。' : '转让请求未发送。');
+        });
+        mute.disabled = transfer.disabled = !owner;
+        row.append(mute, transfer); list.append(row);
+      }
+      if (!owner) list.prepend(hint('房主身份已变更，成员管理已禁用。'));
+    }
+    const refreshMembers = () => updateMemberList();
+    window.addEventListener('mctier-lobby-options', refreshMembers);
+    const priorUnsubscribe = unsubscribe;
+    unsubscribe = () => { priorUnsubscribe?.(); window.removeEventListener('mctier-lobby-options', refreshMembers); };
+    updateMemberList();
   }
   function importInvite() {
     open('导入大厅邀请');
@@ -582,7 +614,7 @@ export function setupCommunity(ctx: Context) {
     const progress = node('p');
     let pending: string | null = null;
     const cancel = button('取消上传', () => {
-      controller?.abort();
+      transfers.cancel();
       if (pending) void run(() => localInvoke('remove_shared_folder', { id: pending }));
     });
     append(password.label, expiry.label, publish, cancel, progress);
@@ -604,8 +636,7 @@ export function setupCommunity(ctx: Context) {
         const root = files[0].webkitRelativePath.split('/')[0];
         if (!root || files.some((f) => !f.webkitRelativePath.startsWith(root + '/')))
           throw new Error('请只选择一个目录');
-        controller = new AbortController();
-        const abort = controller;
+        const abort = transfers.begin();
         publish.disabled = true;
         try {
           const created = await localInvoke<{ id: string }>('create_folder_snapshot', {
@@ -648,6 +679,7 @@ export function setupCommunity(ctx: Context) {
           }
           if (!abort.signal.aborted) throw error;
         } finally {
+          transfers.finish(abort);
           if (current === generation) publish.disabled = !ctx.online();
           chooser.value = '';
         }
@@ -749,8 +781,7 @@ export function setupCommunity(ctx: Context) {
             : run(async () => {
                 active();
                 action.disabled = true;
-                controller = new AbortController();
-                const abort = controller;
+                const abort = transfers.begin();
                 try {
                   const response = await fetch('/api/folders/download', {
                     method: 'POST',
@@ -769,10 +800,11 @@ export function setupCommunity(ctx: Context) {
                       (await response.json().catch(() => null))?.error ||
                         `下载失败 HTTP ${response.status}`
                     );
-                  const blob = await response.blob();
+                  const blob = await boundedBlob(response, 64 * 1024 * 1024, file.size);
                   if (current !== generation || abort.signal.aborted) return;
                   const url = URL.createObjectURL(blob);
                   urls.add(url);
+                  window.setTimeout(() => { URL.revokeObjectURL(url); urls.delete(url); }, 60000);
                   const link = node('a');
                   link.href = url;
                   link.download = String(file.name).replace(/[\\/\u0000-\u001f]/g, '_');
@@ -781,6 +813,7 @@ export function setupCommunity(ctx: Context) {
                   link.remove();
                   ctx.status('已交给浏览器保存。');
                 } finally {
+                  transfers.finish(abort);
                   action.disabled = false;
                 }
               })

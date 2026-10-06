@@ -23,6 +23,14 @@ fn collect(dir: &Path, root: &Path, output: &mut String) {
 }
 
 fn main() {
+    let package = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../package.json");
+    println!("cargo:rerun-if-changed={}", package.display());
+    let source = fs::read_to_string(package).expect("read upstream package version");
+    let version = source.lines().find_map(|line| {
+        line.trim().strip_prefix("\"version\": \"").and_then(|rest| rest.split('"').next())
+    }).expect("upstream package.json version");
+    assert!(version.chars().all(|c| c.is_ascii_digit() || c == '.'), "invalid upstream version");
+    println!("cargo:rustc-env=MCTIER_UPSTREAM_VERSION={version}");
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../web-dist");
     println!("cargo:rerun-if-changed={}", root.display());
     assert!(

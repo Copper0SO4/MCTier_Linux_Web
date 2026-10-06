@@ -212,6 +212,7 @@ small,
 .lobby-form-title {
   margin: 20px 0 !important;
 }
+.lobby-entry-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
 .connect-submit {
   width: 100%;
   height: 44px;
@@ -1084,3 +1085,27 @@ button:active:enabled { transform: translateY(1px); }
 html[data-theme='light'] .network-dialog .tool-tabs { background: #fff; }
 .firewall-danger { border-color: rgba(211, 144, 68, .5); }
 .firewall-danger > summary { color: #dba762; }
+.members .mini-player-item { flex-wrap: wrap; align-items: flex-start; gap: .65rem; }
+.members .mini-player-info { flex: 1 1 180px; min-width: 0; }
+.members .player-avatar { flex-shrink: 0; overflow: hidden; }
+.members .player-avatar img { width: 100%; height: 100%; object-fit: cover; }
+.members .member-controls { width: 100%; border-top: 1px solid var(--border-color, #444); padding-top: .4rem; }
+.member-controls summary { cursor: pointer; font-size: .85rem; }
+.member-controls label { display: grid; grid-template-columns: auto minmax(80px, 1fr) 3rem; align-items: center; gap: .5rem; margin: .65rem 0; }
+.member-controls input[type="range"] { min-width: 0; width: 100%; }
+.member-actions { display: flex; flex-wrap: wrap; gap: .4rem; }
+.members .member-actions button { position: static; margin: 0; font-size: .8rem; padding: .4rem .6rem; }
+.profile-avatar { width: 96px; height: 96px; object-fit: cover; border-radius: 18px; }
+.profile-identity { overflow-wrap: anywhere; white-space: pre-wrap; }
+#profile-panel { display: grid; gap: .8rem; scroll-margin-top: 1rem; }
+#profile-panel label { display: grid; gap: .4rem; }
+.statistics-grid { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(90px, 1fr); gap: .7rem 1rem; margin: 1rem 0; }
+.statistics-grid dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
+.host-members { display: grid; gap: .6rem; }
+.host-members .community-row { display: flex; flex-wrap: wrap; gap: .6rem; align-items: center; }
+.host-members .community-row strong { flex: 1 1 140px; }
+@media (max-width: 700px) { .statistics-grid { grid-template-columns: minmax(120px, 1fr) auto; } }
+
+.settings-basic { display: grid; gap: 1rem; }
+.settings-tabs { margin: 1rem 0; }
+#profile-panel[hidden], #statistics-panel[hidden], .settings-basic[hidden] { display: none; }

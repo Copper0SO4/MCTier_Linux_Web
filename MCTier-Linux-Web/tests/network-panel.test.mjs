@@ -13,7 +13,7 @@ const bundled = await build({
       setup(b) {
         b.onResolve({ filter: /localWeb$/ }, () => ({ path: 'local', namespace: 'mock' }));
         b.onLoad({ filter: /.*/, namespace: 'mock' }, () => ({
-          contents: 'export const localInvoke=(...args)=>globalThis.networkApi(...args)',
+          contents: 'export const localInvoke=(...args)=>globalThis.networkApi(...args); export const isLocalWeb=()=>true;',
         }));
       },
     },
@@ -45,6 +45,8 @@ class Element {
   setAttribute(key, value) {
     this[key] = value;
   }
+  hasAttribute(key) { return Object.hasOwn(this, key); }
+  removeAttribute(key) { delete this[key]; }
   addEventListener(name, fn) {
     this.events.set(name, fn);
   }
@@ -155,12 +157,17 @@ function fixture(saved, tools = {}, savedRules = [], restartNetwork) {
     body,
   };
 }
-test('Magic DNS has no settings action or tab and opening network settings performs no DNS operation', () => {
+test('Magic DNS has a dedicated tab and requires preview before any write', async () => {
   const f = fixture();
-  assert.equal(f.cards.get('magic-dns').children[0].children.length, 0);
   f.cards.get('advanced-network').children[0].children.at(-1).click();
-  assert.equal(f.find('Magic DNS'), undefined);
+  assert.ok(f.find('Magic DNS'));
   assert.equal(f.calls.length, 0);
+  f.find('Magic DNS').click(); await tick();
+  assert.equal(f.calls.at(-1)[0], 'get_magic_dns_status');
+  assert.equal(f.calls.some(([command]) => command === 'apply_network_operation'), false);
+  f.find('预览更新域名').click(); await tick();
+  assert.equal(f.calls.at(-1)[0], 'prepare_magic_dns');
+  assert.equal(f.calls.some(([command]) => command === 'apply_network_operation'), false);
 });
 test('firewall defaults to narrow rules, broad UDP is explicitly opt-in and cancellation makes no apply call', async () => {
   const f = fixture();
@@ -372,7 +379,7 @@ test('pausing the whole firewall still requires the exact separate confirmation'
     'prepare_firewall_repair',
     { backend: 'ufw', zone: '', ephemeralUdp: false, pause: true },
   ]);
-  assert.equal(f.find('确认并申请系统授权').disabled, true);
+  assert.equal(f.calls.some(([command]) => command === 'apply_network_operation'), false);
 });
 
 test('forced room cleanup closes a pending leave choice instead of leaving a stale modal', async () => {
@@ -405,4 +412,59 @@ test('UFW egress repair is opt-in and never offered as firewalld ingress', async
   const fw = fixture(undefined, {ufw: false, firewalld: true, firewalldState: 'running', zones: ['public'], defaultZone: 'public', overlayZone: 'public'});
   fw.cards.get('network-fix').children[0].children.at(-1).click(); await tick();
   assert.equal(all(fw.dialog).filter(n => n.tag === 'input' && n.type === 'checkbox')[1].disabled, true);
+});
+
+test('switching firewall backends resets outgoing state and restores UFW controls', async () => {
+  const f = fixture(undefined, { firewalld: true, firewalldState: 'running', zones: ['public'], defaultZone: 'public', overlayZone: 'trusted' });
+  f.cards.get('network-fix').children[0].children.at(-1).click(); await tick();
+  const backend = all(f.dialog).find(n => n.tag === 'select');
+  const outgoing = all(f.dialog).filter(n => n.tag === 'input' && n.type === 'checkbox')[1];
+  backend.value = 'ufw'; backend.onchange();
+  assert.equal(outgoing.disabled, false);
+  outgoing.checked = true;
+  backend.value = 'firewalld'; backend.onchange();
+  assert.equal(outgoing.disabled, true);
+  assert.equal(outgoing.checked, false);
+  backend.value = 'ufw'; backend.onchange();
+  assert.equal(outgoing.disabled, false);
+  assert.equal(outgoing.checked, false);
+});
+
+test('advanced reported version is validated locally and never sent as an EasyTier option', async () => {
+  const f = fixture();
+  f.cards.get('advanced-network').children[0].children.at(-1).click();
+  const version = all(f.dialog).find(n => n.tag === 'input' && n.parent.textContent === '客户端上报版本');
+  assert.equal(version.value, '3.10.0');
+  version.value = '<invalid>';
+  f.find('保存，下次加入生效').click(); await tick();
+  assert.equal(f.calls.length, 0);
+  assert.ok(f.notices.some(n => /数字版本/.test(n[0])));
+  version.value = '3.10';
+  f.find('保存，下次加入生效').click(); await tick();
+  assert.equal(f.calls[0][0], 'validate_network_settings');
+  assert.equal('reportVersion' in f.calls[0][1], false);
+  assert.equal(localStorage.getItem('mctier-linux-web-reported-version-v1'), '3.10');
+});
+
+test('firewall success with failed core restart is shown as partial failure', async () => {
+  const f = fixture();
+  const original = globalThis.networkApi;
+  globalThis.networkApi = async (command, args) => command === 'apply_network_operation'
+    ? {report:['规则已应用','原会话重连失败'],restart:{state:'failed',error:'会话已改变'}} : original(command,args);
+  f.cards.get('network-fix').children[0].children.at(-1).click(); await tick();
+  f.find('预览本次网络修复').click(); await tick();
+  confirm(f,'我确认修改本机防火墙');
+  f.find('确认并申请系统授权').click(); await tick();
+  assert.ok(f.notices.some(([message,error])=>error===true && /重连未完成/.test(message)));
+});
+
+
+test('explicitly typing the default still saves an intentional override; follow-default removes it', async () => {
+  const f = fixture();
+  f.cards.get('advanced-network').children[0].children.at(-1).click();
+  const input = all(f.dialog).find(n => n.id === 'reported-version-input');
+  input.oninput(); f.find('保存，下次加入生效').click(); await tick();
+  assert.equal(localStorage.getItem('mctier-linux-web-reported-version-v1'), '3.10.0');
+  f.find('跟随上游默认版本').click(); await tick();
+  assert.equal(localStorage.getItem('mctier-linux-web-reported-version-v1'), null);
 });

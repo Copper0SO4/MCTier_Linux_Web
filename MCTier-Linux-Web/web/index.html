@@ -108,11 +108,16 @@
                 <button id="signal-probe" type="button">检查信令握手</button>
               </details>
               <p class="hint">使用原版名称与密码连接大厅。房主身份以信令服务返回的成员信息为准。</p>
-              <button id="join" class="primary connect-submit" type="submit">加入大厅</button>
+              <div class="lobby-entry-actions">
+                <button id="join" class="primary connect-submit" type="submit">加入大厅</button>
+                <button id="create" class="connect-submit" type="submit">创建大厅</button>
+              </div>
+              <p class="hint">加入只进入已有大厅；创建要求名称未被占用。两者由信令服务校验。</p>
             </form>
             <div class="form-locks">
               <div data-feature="lobby-history"></div>
               <div data-feature="advanced-network"></div>
+              <div data-feature="magic-dns"></div>
             </div>
             <p class="hint">
               EasyTier 以普通用户运行。缺少网络权限时会明确报错，系统授权需由你确认。
@@ -317,6 +322,8 @@
             <p id="capture-state" class="hint">麦克风尚未申请。</p>
             <p class="hint">音频与变声已接入，仍需双向听音、ICE、重连和资源清理验收。</p>
           </div>
+          <div id="profile-panel" class="settings-card"></div>
+          <div id="statistics-panel" class="settings-card"></div>
           <div class="feature-grid">
             <div data-feature="desktop-integration"></div>
             <div data-feature="appearance"></div>

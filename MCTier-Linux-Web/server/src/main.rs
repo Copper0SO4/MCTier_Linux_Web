@@ -1,4 +1,6 @@
 mod attachments;
+mod overlay_http;
+mod binary_response;
 mod firewall;
 mod firewall_pause;
 mod folders;
@@ -8,6 +10,7 @@ mod network_operations;
 mod network_settings;
 mod privileged;
 mod runtime;
+mod version_metadata;
 
 use axum::{
     extract::{DefaultBodyLimit, Path, Request, State},
@@ -117,12 +120,12 @@ async fn status(State(app): State<Arc<App>>) -> Json<Value> {
     Json(app.status().await)
 }
 
-async fn owner(app: &App, headers: &HeaderMap) -> Result<(), ApiError> {
+async fn owner(app: &App, headers: &HeaderMap) -> Result<runtime::ControlTicket, ApiError> {
     let id = headers
         .get("x-mctier-client")
         .and_then(|v| v.to_str().ok())
         .ok_or_else(|| ApiError(StatusCode::UNAUTHORIZED, "缺少浏览器会话标识".into()))?;
-    app.claim(id)
+    app.claim_ticket(id)
         .await
         .map_err(|message| ApiError(StatusCode::CONFLICT, message))
 }
@@ -189,8 +192,9 @@ async fn invoke(
     headers: HeaderMap,
     Json(input): Json<Invoke>,
 ) -> Result<Json<Value>, ApiError> {
-    owner(&app, &headers).await?;
+    let control = owner(&app, &headers).await?;
     let result = match input.command.as_str() {
+        "get_upstream_version_tags" => json!(version_metadata::fetch_tags().await?),
         "get_network_settings" => json!(network_settings::NetworkSettings::default()),
         "validate_network_settings" => {
             let settings = value::<network_settings::NetworkSettings>(input.args)?;
@@ -212,7 +216,7 @@ async fn invoke(
         "connect_lobby" => {
             let mut args = value::<LobbyInput>(input.args)?;
             args.password = modules::secret_store::resolve(&args.password)?;
-            app.start(args).await?
+            app.start(args, &control).await?
         }
         "protect_lobby_password" | "export_lobby_password" | "resolve_lobby_password" => {
             #[derive(Deserialize)]
@@ -257,10 +261,10 @@ async fn invoke(
             .await?
         }
         "leave_lobby" | "force_stop_easytier" => {
-            app.leave().await;
+            app.leave_owned(&control).await?;
             Value::Null
         }
-        "restart_easytier_network" => app.restart_network().await?,
+        "restart_easytier_network" => app.restart_network_owned(&control).await?,
         "get_virtual_ip" => json!(app.virtual_ip().await),
         "get_config" => json!(modules::config_manager::UserConfig::default()),
         "get_settings" => json!({"language":"system"}),
@@ -276,6 +280,7 @@ async fn invoke(
                 return Err("信令 challenge 格式无效".to_string().into());
             }
             let runtime = app.runtime.lock().await;
+            runtime.ensure_control(&control)?;
             let session = runtime
                 .session
                 .as_ref()
@@ -296,6 +301,7 @@ async fn invoke(
                 return Err("大厅成员超过限制".to_string().into());
             }
             let runtime = app.runtime.lock().await;
+            runtime.ensure_control(&control)?;
             let session = runtime
                 .session
                 .as_ref()

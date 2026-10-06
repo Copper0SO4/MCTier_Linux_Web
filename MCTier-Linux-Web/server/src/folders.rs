@@ -331,17 +331,13 @@ async fn remote(app: &App, args: &Remote, operation: &str) -> Result<reqwest::Re
         }
     }
     drop(chat);
-    let client = reqwest::Client::builder()
-        .no_proxy()
-        .redirect(reqwest::redirect::Policy::none())
+    let client = crate::overlay_http::client(Duration::from_secs(60), Duration::from_secs(4))
         .local_address(
             local
                 .virtual_ip
                 .parse::<std::net::IpAddr>()
                 .map_err(|_| "本机虚拟地址无效")?,
         )
-        .timeout(Duration::from_secs(60))
-        .connect_timeout(Duration::from_secs(4))
         .build()
         .map_err(|_| "创建共享客户端失败")?;
     let response = client
@@ -388,19 +384,13 @@ pub async fn download(
     owner(&app, &headers).await?;
     let _slot = app
         .folder_transfers
-        .try_acquire()
+        .clone()
+        .try_acquire_owned()
         .map_err(|_| ApiError(StatusCode::TOO_MANY_REQUESTS, "已有两个文件正在传输".into()))?;
     let mut changed = app.chat_generation.subscribe();
     let request = async { bounded(remote(&app, &args, "download").await?, MAX_FILE).await };
     let data = tokio::select! { result=request=>result?, _=changed.changed()=>return Err("大厅凭据已变更，请重试下载".to_string().into()) };
-    Ok((
-        [
-            (header::CONTENT_TYPE, "application/octet-stream"),
-            (header::CONTENT_DISPOSITION, "attachment"),
-        ],
-        data,
-    )
-        .into_response())
+    Ok(crate::binary_response::download(data, _slot))
 }
 #[cfg(test)]
 mod tests {

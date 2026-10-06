@@ -38,6 +38,7 @@ enum Action {
         plan: firewall::Plan,
         remove: bool,
         restart_network: bool,
+        expected_session: Option<String>,
     },
 }
 impl Action {
@@ -128,10 +129,13 @@ fn hosts_content(old: &str, mappings: &[Mapping]) -> Result<String, String> {
     validate_hosts_update(old, old)?;
     // Keep every unrelated byte/section; only this adapter's section is replaced.
     let mut inside = false;
+    let mut sections = 0;
     let mut new = String::new();
     for line in old.split_inclusive('\n') {
         let trimmed = line.trim_end_matches(['\r', '\n']);
         if trimmed == MARKER {
+            if inside || sections != 0 { return Err("Linux Web hosts 标记重复或嵌套，请先手动检查".into()); }
+            sections += 1;
             inside = true;
             continue;
         }
@@ -139,10 +143,14 @@ fn hosts_content(old: &str, mappings: &[Mapping]) -> Result<String, String> {
             inside = false;
             continue;
         }
+        if inside && trimmed.starts_with("# MCTier Magic DNS -") {
+            return Err("Linux Web hosts 段内嵌套了其它 MCTier 标记，拒绝修改".into());
+        }
         if !inside {
             new.push_str(line);
         }
     }
+    if inside { return Err("Linux Web hosts 标记未闭合，拒绝删除其它记录".into()); }
     for line in new.lines() {
         let fields = line
             .split('#')
@@ -201,7 +209,8 @@ pub async fn dns_status(app: &App) -> Value {
     let up_to_date = old
         .as_ref()
         .is_ok_and(|s| hosts_content(s, &entries).is_ok_and(|updated| updated == *s));
-    json!({"entries":entries,"installed":installed,"upToDate":up_to_date,"error":old.err().or_else(||peers.err())})
+    let section_error = old.as_ref().ok().and_then(|s| hosts_content(s, &entries).err());
+    json!({"entries":entries,"installed":installed,"upToDate":up_to_date,"error":old.err().or_else(||peers.err()).or(section_error)})
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -436,6 +445,8 @@ pub async fn prepare_firewall(app: &App, args: FirewallArgs) -> Result<Value, St
     } else {
         None
     };
+    let rt = app.runtime.lock().await;
+    let expected_session = rt.session.as_ref().map(|s| s.instance_id.clone());
     let plan = if let Some(token) = args.remove_token {
         read_ledger()?
             .into_iter()
@@ -464,7 +475,6 @@ pub async fn prepare_firewall(app: &App, args: FirewallArgs) -> Result<Value, St
             allow_outgoing: false,
         }
     } else {
-        let rt = app.runtime.lock().await;
         let s = rt
             .session
             .as_ref()
@@ -511,6 +521,7 @@ pub async fn prepare_firewall(app: &App, args: FirewallArgs) -> Result<Value, St
             },
         }
     };
+    drop(rt);
     plan.validate()?;
     let token = uuid::Uuid::new_v4().simple().to_string();
     let preview = json!({"token":token,"title":if remove{"撤销本次防火墙规则"}else{"修复本次 EasyTier 防火墙"},"lines":plan.descriptions(),"commands":plan.commands(remove),"confirmationText":if remove { "" } else if plan.pause { "我确认暂停整个防火墙" } else { "我确认修改本机防火墙" }});
@@ -521,6 +532,7 @@ pub async fn prepare_firewall(app: &App, args: FirewallArgs) -> Result<Value, St
             plan,
             remove,
             restart_network: args.restart_network,
+            expected_session,
         },
     });
     Ok(preview)
@@ -584,11 +596,11 @@ pub async fn apply(app: &App, args: Confirm) -> Result<Value, String> {
             }
             Ok(json!({"report":["hosts 标记段已写入并复核；域名实际解析和游戏访问仍需测试。"]}))
         }
-        Action::Firewall { plan, remove, restart_network } => {
+        Action::Firewall { plan, remove, restart_network, expected_session } => {
             if !remove && !plan.pause {
                 let rt = app.runtime.lock().await;
                 let s = rt.session.as_ref().ok_or("大厅已经退出，请重新预览")?;
-                if s.listener_port != plan.port || s.virtual_ip != plan.virtual_ip {
+                if expected_session.as_deref() != Some(s.instance_id.as_str()) || s.listener_port != plan.port || s.virtual_ip != plan.virtual_ip {
                     return Err("EasyTier 实例已变化，请重新预览".into());
                 }
             }
@@ -605,7 +617,7 @@ pub async fn apply(app: &App, args: Confirm) -> Result<Value, String> {
             if !remove && !plan.pause {
                 let rt = app.runtime.lock().await;
                 let session = rt.session.as_ref().ok_or("认证期间已退出大厅")?;
-                if session.listener_port != plan.port || session.virtual_ip != plan.virtual_ip {
+                if expected_session.as_deref() != Some(session.instance_id.as_str()) || session.listener_port != plan.port || session.virtual_ip != plan.virtual_ip {
                     return Err("认证期间 EasyTier 实例已变化，请重新预览".into());
                 }
             }
@@ -615,23 +627,23 @@ pub async fn apply(app: &App, args: Confirm) -> Result<Value, String> {
                 write_ledger(&plans)?;
             }
 
-            // A firewall update may unblock the existing EasyTier peer, but the
-            // core needs a fresh transport negotiation to use the new policy.
-            // Release the system-operation gate before restart_network acquires it.
-            drop(_guard);
-            let has_session = app.runtime.lock().await.session.is_some();
-            if restart_network && has_session {
-                match app.restart_network().await {
-                    Ok(_) => report.push(
-                        "EasyTier 已在后台静默重新连接；请稍候检查对端路由，直连仍取决于网络与对端配置。"
-                            .into(),
-                    ),
-                    Err(error) => report.push(format!(
-                        "防火墙已变更，但 EasyTier 自动重连失败：{error}。可在网络面板手动重新组网。"
-                    )),
-                }
+            let mut restart = json!({"state":"not-requested"});
+            if restart_network {
+                restart = match expected_session.as_deref() {
+                    None => json!({"state":"skipped","reason":"预览时没有活动大厅，未重启任何新会话"}),
+                    Some(expected) => match app.restart_network_for(Some(expected), None, &_guard).await {
+                        Ok(_) => {
+                            report.push("EasyTier 已在后台重新连接；请核对对端路由与媒体恢复。".into());
+                            json!({"state":"restarted"})
+                        },
+                        Err(error) => {
+                            report.push(format!("防火墙已变更，但原会话重连未完成：{error}。请检查本地会话，必要时重新加入。"));
+                            json!({"state":"failed","error":error})
+                        },
+                    },
+                };
             }
-            Ok(json!({"report":report}))
+            Ok(json!({"report":report,"restart":restart}))
         }
     }
 }
@@ -739,5 +751,16 @@ mod tests {
             hosts_content(&format!("{old}1.2.3.4 {}.mct.net\n", "a".repeat(32)), &map).is_err()
         );
         assert!(!new.contains("<script>"));
+    }
+
+    #[test]
+    fn malformed_own_hosts_sections_are_never_rewritten() {
+        for old in [
+            format!("127.0.0.1 localhost\n{MARKER}\n10.1.1.1 sensitive.local\n"),
+            format!("{MARKER}\n{MARKER}\n{END}\n"),
+            format!("{MARKER}\n{END}\n{MARKER}\n{END}\n"),
+        ] {
+            assert!(hosts_content(&old, &[]).is_err());
+        }
     }
 }

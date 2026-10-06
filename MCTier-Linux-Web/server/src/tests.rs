@@ -692,7 +692,10 @@ async fn delayed_upload_cannot_register_in_a_rejoined_room_with_the_same_token()
         )
         .unwrap();
     }
-    continue_tx.send(()).unwrap();
-    assert_eq!(pending.await.unwrap().status(), StatusCode::BAD_REQUEST);
+    // Leaving must cancel the read even if the sender never completes its body.
+    let response = tokio::time::timeout(std::time::Duration::from_secs(2), pending)
+        .await.unwrap().unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(continue_tx.send(()).is_err());
     assert_eq!(*app.upload_budget.lock().await, (0, 0));
 }

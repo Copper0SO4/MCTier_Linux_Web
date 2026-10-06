@@ -2,6 +2,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
+node MCTier-Linux-Web/scripts/check-upstream.mjs
 node MCTier-Linux-Web/scripts/prepare-frontend.mjs
 node MCTier-Linux-Web/scripts/prepare-secrets.mjs
 node MCTier-Linux-Web/scripts/prepare-network.mjs

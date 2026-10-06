@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import { fileURLToPath } from 'node:url';
+import { readFile } from 'node:fs/promises';
 import { execFileSync } from 'node:child_process';
 const path = (relative: string) => fileURLToPath(new URL(relative, import.meta.url));
 export default defineConfig({
@@ -7,6 +8,10 @@ export default defineConfig({
     {
       name: 'mctier-builtin-emoji',
       apply: 'build',
+      async generateBundle() {
+        // Browser UI assets only: do not publish every upstream public file.
+        this.emitFile({type: 'asset', fileName: 'MCTierIcon.png', source: await readFile(path('../public/MCTierIcon.png'))});
+      },
       closeBundle() {
         // Vite empties web-dist: every build must restore the authenticated pack.
         execFileSync(process.execPath, [path('./scripts/prepare-emoji.mjs')], { stdio: 'inherit' });
@@ -14,7 +19,7 @@ export default defineConfig({
     },
   ],
   root: path('./web/'),
-  publicDir: path('../public/'),
+  publicDir: false,
   resolve: {
     alias: {
       '@tauri-apps/api/core': path('./web/tauriCore.ts'),

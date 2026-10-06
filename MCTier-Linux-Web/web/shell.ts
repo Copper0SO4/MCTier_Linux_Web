@@ -42,14 +42,19 @@ export function setupShell() {
     if (view === 'home' || view === 'connect' || view === 'lobby') previous = view;
     show(next);
   };
+  const selectEntryMode = (create: boolean) => {
+    element('form-title').textContent = create ? '创建大厅' : '加入大厅';
+    const submit = element<HTMLButtonElement>(create ? 'create' : 'join');
+    submit.parentElement?.prepend(submit);
+    element('join').textContent = '加入大厅';
+    element('create').textContent = '创建大厅';
+  };
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-connect]')) {
     button.disabled = !browser.canJoin;
     button.title = browser.canJoin ? '' : browser.warning;
     button.onclick = () => {
       if (!browser.canJoin || session !== 'idle') return;
-      const create = button.dataset.connect === 'create';
-      element('form-title').textContent = create ? '创建大厅' : '加入大厅';
-      element('join').textContent = create ? '创建 / 连接大厅' : '加入大厅';
+      selectEntryMode(button.dataset.connect === 'create');
       show('connect');
       element<HTMLInputElement>('player-name').focus();
     };
@@ -131,7 +136,7 @@ export function setupShell() {
   element('browser-warning').textContent = browser.canJoin
     ? ''
     : `Firefox 大厅入口暂未开放：${browser.warning}`;
-  element<HTMLButtonElement>('join').disabled = !browser.canJoin;
+  for (const id of ['join', 'create']) element<HTMLButtonElement>(id).disabled = !browser.canJoin;
   const outputSupported = 'setSinkId' in HTMLMediaElement.prototype;
   element<HTMLSelectElement>('audio-output').disabled = !outputSupported;
   element('output-support').textContent = outputSupported
@@ -139,7 +144,9 @@ export function setupShell() {
     : '当前浏览器未提供输出设备切换；暂不可用，使用系统默认。';
 
   return {
+    showSettings() { show('settings'); },
     showConnect() {
+      if (session === 'idle') selectEntryMode(false);
       show(session === 'idle' ? 'connect' : returnView());
     },
     canJoin: browser.canJoin,

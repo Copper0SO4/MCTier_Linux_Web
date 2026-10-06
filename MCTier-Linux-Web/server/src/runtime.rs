@@ -38,6 +38,7 @@ pub struct LobbyInput {
 }
 
 pub struct Session {
+    pub instance_id: String,
     pub input: LobbyInput,
     pub player_id: String,
     pub virtual_ip: String,
@@ -57,7 +58,10 @@ pub struct NetworkStatus {
     pub failure: Option<String>,
 }
 
+#[derive(Clone)]
+pub struct ControlTicket { owner: String, generation: u64 }
 pub struct Runtime {
+    control_generation: u64,
     pub owner: Option<String>,
     pub last_lease: Instant,
     pub session: Option<Session>,
@@ -71,9 +75,18 @@ pub struct App {
     pub chat_generation: watch::Sender<u64>,
     pub upload_budget: Mutex<(u64, u32)>,
     pub folders: Mutex<crate::folders::Folders>,
-    pub folder_transfers: tokio::sync::Semaphore,
+    pub folder_transfers: Arc<tokio::sync::Semaphore>,
     pub core: PathBuf,
     pub network_operations: crate::network_operations::Operations,
+}
+
+impl Runtime {
+    pub fn ensure_control(&self, ticket: &ControlTicket) -> Result<(), String> {
+        if self.owner.as_deref() != Some(ticket.owner.as_str()) || self.control_generation != ticket.generation {
+            return Err("浏览器控制会话已改变，已拒绝过期请求".into());
+        }
+        Ok(())
+    }
 }
 
 impl App {
@@ -87,6 +100,7 @@ impl App {
             ),
             runtime: Mutex::new(Runtime {
                 owner: None,
+                control_generation: 0,
                 last_lease: Instant::now(),
                 session: None,
                 status: Arc::new(Mutex::new(NetworkStatus {
@@ -100,13 +114,17 @@ impl App {
             chat_generation,
             upload_budget: Mutex::new((0, 0)),
             folders: Mutex::new(crate::folders::Folders::new()),
-            folder_transfers: tokio::sync::Semaphore::new(2),
+            folder_transfers: Arc::new(tokio::sync::Semaphore::new(2)),
             core,
             network_operations: crate::network_operations::Operations::new(),
         })
     }
 
+    #[cfg(test)]
     pub async fn claim(&self, owner: &str) -> Result<(), String> {
+        self.claim_ticket(owner).await.map(|_| ())
+    }
+    pub async fn claim_ticket(&self, owner: &str) -> Result<ControlTicket, String> {
         if owner.len() != 32 || !owner.bytes().all(|c| c.is_ascii_hexdigit()) {
             return Err("浏览器会话标识无效".into());
         }
@@ -118,11 +136,18 @@ impl App {
         {
             return Err("另一个浏览器页面正在控制本地服务，请先在该页面退出".into());
         }
+        if runtime.owner.is_none() { runtime.control_generation = runtime.control_generation.wrapping_add(1); }
         runtime.owner = Some(owner.into());
         runtime.last_lease = Instant::now();
-        Ok(())
+        Ok(ControlTicket { owner: owner.into(), generation: runtime.control_generation })
     }
 
+    pub async fn leave_owned(&self, ticket: &ControlTicket) -> Result<(), String> {
+        let mut runtime = self.runtime.lock().await;
+        runtime.ensure_control(ticket)?;
+        self.stop_runtime(&mut runtime).await;
+        Ok(())
+    }
     pub async fn leave(&self) {
         let mut runtime = self.runtime.lock().await;
         self.stop_runtime(&mut runtime).await;
@@ -155,6 +180,7 @@ impl App {
             failure: None,
         };
         runtime.owner = None;
+        runtime.control_generation = runtime.control_generation.wrapping_add(1);
     }
 
     pub async fn maintenance(&self) {
@@ -188,9 +214,10 @@ impl App {
         json!({"service":"ready","network":network,"session":session,"chatRunning":chat.is_running(),"chatReceive":{"storedRemoteMessages":received,"authenticatedPeers":chat.authoritative_peers().len()},"webrtc":"browser-controlled","screenShare":"browser-controlled-unverified","remoteInput":"not-implemented"})
     }
 
-    pub async fn start(&self, input: LobbyInput) -> Result<Value, String> {
+    pub async fn start(&self, input: LobbyInput, ticket: &ControlTicket) -> Result<Value, String> {
         validate_input(&input)?;
         let mut runtime = self.runtime.lock().await;
+        runtime.ensure_control(ticket)?;
         if runtime.session.is_some() {
             return Err("大厅正在连接或已连接，请先退出".into());
         }
@@ -274,6 +301,7 @@ impl App {
         };
         let readers = core_readers(&mut child, status.clone());
         runtime.session = Some(Session {
+            instance_id: uuid::Uuid::new_v4().to_string(),
             input: input.clone(),
             player_id: player_id.clone(),
             virtual_ip: virtual_ip.clone(),
@@ -305,8 +333,9 @@ impl App {
             }
         };
         if let Err(error) = ready {
-            drop(runtime);
-            self.leave().await;
+            // Keep the session lock until failed-start cleanup completes: a new
+            // room must not be stopped by this older request's cleanup.
+            self.stop_runtime(&mut runtime).await;
             return Err(error);
         }
         self.chat.lock().await.set_virtual_ip(virtual_ip.clone());
@@ -319,12 +348,34 @@ impl App {
     }
 
     /// Restart only the owned core. Keep the room identity, chat and firewall port stable.
+    #[cfg(test)]
     pub async fn restart_network(&self) -> Result<Value, String> {
         let _guard = self.network_operations.restart_guard()?;
-        self.network_operations.cancel().await;
+        self.restart_network_for(None, None, &_guard).await
+    }
+
+    pub async fn restart_network_owned(&self, ticket: &ControlTicket) -> Result<Value, String> {
+        let guard = self.network_operations.restart_guard()?;
+        self.restart_network_for(None, Some(ticket), &guard).await
+    }
+
+    // The caller retains the operation permit across validation and restart.
+    // Room changes may proceed to cancel authorization, but cannot redirect it.
+    pub(crate) async fn restart_network_for(
+        &self,
+        expected: Option<&str>,
+        control: Option<&ControlTicket>,
+        _guard: &tokio::sync::SemaphorePermit<'_>,
+    ) -> Result<Value, String> {
         let mut runtime = self.runtime.lock().await;
+        if let Some(ticket) = control { runtime.ensure_control(ticket)?; }
+        let session = runtime.session.as_ref().ok_or("请先加入大厅")?;
+        if expected.is_some_and(|id| id != session.instance_id) {
+            return Err("大厅会话已改变，未重启新会话的 EasyTier".into());
+        }
+        self.network_operations.cancel().await;
         let status = runtime.status.clone();
-        let session = runtime.session.as_mut().ok_or("请先加入大厅")?;
+        let session = runtime.session.as_mut().unwrap();
         verify_core(&self.core).await?;
         let (config, _) = lobby_address::configuration(
             Some(&session.input.network_settings.config()?),
@@ -610,7 +661,7 @@ pub fn validate_input(input: &LobbyInput) -> Result<(), String> {
 
 pub fn defaults() -> Value {
     let config = UserConfig::default();
-    json!({"serverNode":config.private_easytier_server,"signalingServer":config.private_signaling_server,"version":"3.8.0"})
+    json!({"serverNode":config.private_easytier_server,"signalingServer":config.private_signaling_server,"version":env!("MCTIER_UPSTREAM_VERSION"),"releaseVersion":env!("CARGO_PKG_VERSION")})
 }
 
 pub(crate) fn uses_websocket_listener(server_node: &str) -> bool {
@@ -802,6 +853,39 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn old_controller_requests_are_rejected_even_when_tab_id_is_reused() {
+        let app = App::new(PathBuf::from("/missing-core"));
+        let id = "a".repeat(32);
+        let old = app.claim_ticket(&id).await.unwrap();
+        app.leave().await;
+        let current = app.claim_ticket(&id).await.unwrap();
+        assert!(app.leave_owned(&old).await.unwrap_err().contains("过期请求"));
+        assert!(app.start(sample_input(), &old).await.unwrap_err().contains("过期请求"));
+        assert!(app.restart_network_owned(&old).await.unwrap_err().contains("过期请求"));
+        app.runtime.lock().await.ensure_control(&current).unwrap();
+        app.leave_owned(&current).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn restart_bound_to_old_instance_never_kills_new_room() {
+        let app = App::new(PathBuf::from("/missing-core"));
+        let dir = tempfile::tempdir().unwrap();
+        let child = Command::new("/usr/bin/sleep").arg("60").kill_on_drop(true).spawn().unwrap();
+        let pid = child.id().unwrap();
+        app.runtime.lock().await.session = Some(Session {
+            instance_id: "new-room-instance".into(), input: sample_input(), player_id: "a".repeat(64),
+            virtual_ip: "10.126.126.2".into(), rpc_port: 15889, listener_port: 15890,
+            child, readers: vec![], config_dir: dir.path().into(),
+        });
+        let guard = app.network_operations.restart_guard().unwrap();
+        let error = app.restart_network_for(Some("old-room-instance"), None, &guard).await.unwrap_err();
+        assert!(error.contains("会话已改变"));
+        assert!(app.runtime.lock().await.session.as_mut().unwrap().child.try_wait().unwrap().is_none());
+        assert_eq!(app.runtime.lock().await.session.as_ref().unwrap().child.id(), Some(pid));
+        app.leave().await;
+    }
+
+    #[tokio::test]
     async fn replacement_exits_are_detected_without_claiming_network_success() {
         let dir = tempfile::tempdir().unwrap();
         let child = Command::new("/usr/bin/false")
@@ -809,6 +893,7 @@ mod tests {
             .spawn()
             .unwrap();
         let mut session = Session {
+            instance_id: uuid::Uuid::new_v4().to_string(),
             input: sample_input(),
             player_id: "a".repeat(64),
             virtual_ip: "not-an-ip".into(),
@@ -986,6 +1071,7 @@ mod tests {
             .unwrap();
         let pid = child.id().unwrap();
         app.runtime.lock().await.session = Some(Session {
+            instance_id: uuid::Uuid::new_v4().to_string(),
             input: sample_input(),
             player_id: "a".repeat(64),
             virtual_ip: "10.126.126.2".into(),

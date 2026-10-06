@@ -1,3 +1,11 @@
+import { setupSettingsTabs } from './settingsTabs';
+import { captureSession } from './sessionGuard';
+import { readProfile, setupProfile } from './profile';
+import { memberControls } from './memberControls';
+import { renderStatistics } from './sessionStatistics';
+import { refreshReportedDefault, versionDetectionStatus } from './versionUpdater';
+import { isSafeImageDataUrl } from '../frontend-src/security/trustBoundary';
+import { beginReportedVersion, endReportedVersion, savedReportedVersion } from './clientVersion';
 import { setupCommunity } from './community';
 import { setupNetworkPanel } from './networkPanel';
 import { builtinEmojiUrl } from './builtinEmoji';
@@ -37,7 +45,7 @@ function controlState(online: boolean) {
   for (const id of ['mic', 'speaker', 'resume-audio', 'voice-group', 'send', 'chat-text', 'recipient', 'peer-query', 'share-screen', 'refresh-shares']) {
     (el(id) as HTMLButtonElement).disabled = !online;
   }
-  el<HTMLButtonElement>('join').disabled = busy || online || !shell.canJoin || !serviceReady;
+  for (const id of ['join', 'create']) el<HTMLButtonElement>(id).disabled = busy || online || !shell.canJoin || !serviceReady;
   el<HTMLButtonElement>('leave').disabled = !busy && !online;
   el<HTMLButtonElement>('signal-probe').disabled = busy || online || !serviceReady;
   for (const id of ['player-name', 'lobby-name', 'lobby-password', 'server-node', 'signaling-server']) el<HTMLInputElement>(id).readOnly = busy || online;
@@ -58,8 +66,27 @@ const players = new Map<string, Player>();
 const messages = new Map<string, ChatMessage>();
 const receipts = new Map<string, string>();
 let statsRunning = false;
+let sessionStartedAt = 0, signalingReconnects = 0;
 const shell = setupShell();
 setupTheme();
+const profilePanel = setupProfile({
+  online: () => online, name: () => input('player-name'), identity: () => localId, ip: () => el('virtual-ip').textContent || '', status: notice,
+  apply: async profile => {
+    useAppStore.getState().updateConfig({ avatarData: profile.avatarData });
+    if (!online && !busy) el<HTMLInputElement>('player-name').value = profile.name;
+    if (online) {
+      const me = players.get(localId); if (me) me.avatarData = profile.avatarData;
+      useAppStore.getState().updatePlayerStatus(localId, { avatarData: profile.avatarData }); renderMembers();
+      await p2pChatService.sendAvatar(profile.avatarData);
+    }
+  },
+});
+const settingsTabs = setupSettingsTabs();
+useAppStore.getState().updateConfig({ avatarData: readProfile().avatarData });
+for (const card of document.querySelectorAll('[data-feature="avatar"] .feature-card, #feature-matrix [data-feature-id="avatar"]')) {
+  const action = document.createElement('button'); action.type = 'button'; action.className = 'feature-action'; action.textContent = '个人资料与统计';
+  action.onclick = () => { shell.showSettings(); settingsTabs.profile(); el('profile-panel').scrollIntoView({ block: 'start' }); }; card.append(action);
+}
 
 async function sendOutgoing(message: Omit<ChatMessage, 'id' | 'playerId' | 'playerName' | 'timestamp'>, send: (id: string) => Promise<{delivered:number;total:number} | void>) {
   if (!online) throw new Error('请先加入大厅');
@@ -100,6 +127,8 @@ const community = setupCommunity({
   },
   isHost:()=>online && hostId===localId, publicState:()=>lobbyPublic,
   publish:(enabled,description)=>webrtcClient.setLobbyOptions({isPublic:enabled,description,serverNode:input('server-node').trim()}),
+  mute: (id, muted) => online && hostId === localId && webrtcClient.setPlayerMuted(id, muted),
+  transfer: id => online && hostId === localId && webrtcClient.transferHost(id),
   maxPlayers:()=>lobbyMaxPlayers,
   setMaxPlayers:(max)=>webrtcClient.setLobbyOptions({maxPlayers:max}),
   announcement:()=>useAppStore.getState().announcement,
@@ -117,6 +146,11 @@ const community = setupCommunity({
   text:(content)=>sendOutgoing({content,type:'text'},id=>p2pChatService.sendTextMessage(content,id)),
 });
 
+window.addEventListener('mctier-version-default', () => {
+  const field = document.getElementById('reported-version-input') as HTMLInputElement | null;
+  if (field && !field.hasAttribute('data-edited')) field.value = savedReportedVersion();
+  const status = document.getElementById('reported-version-status'); if (status) status.textContent = versionDetectionStatus();
+});
 const networkPanel=setupNetworkPanel({online:()=>online,busy:()=>busy,players:()=>[...players.values()],restartNetwork,status:notice});
 
 el('copy-ip').onclick = async () => {
@@ -125,7 +159,15 @@ el('copy-ip').onclick = async () => {
   catch { notice('浏览器未允许复制，请手动选择虚拟 IP。', true); }
 };
 
-function installMessageListener() { p2pChatService.onMessage(message => { messages.set(message.id, message); renderMessages(); }); }
+function installMessageListener() {
+  p2pChatService.onMessage(message => { if (!online) return; messages.set(message.id, message); renderMessages(); });
+  p2pChatService.onAvatar((id, avatarData) => {
+    if (!online || !players.has(id)) return;
+    const data = isSafeImageDataUrl(avatarData) ? avatarData : undefined;
+    players.get(id)!.avatarData = data;
+    useAppStore.getState().updatePlayerStatus(id, { avatarData: data }); renderMembers();
+  });
+}
 function renderMessages() {
   if (!messages.size) return;
   const container = el('messages');
@@ -190,7 +232,9 @@ function renderMessages() {
   container.scrollTop = container.scrollHeight;
 }
 function renderMembers() {
-  const members = el('members'); members.replaceChildren();
+  const members = el('members');
+  const expanded = new Set([...members.querySelectorAll<HTMLLIElement>('li[data-player-id]')].filter(row => row.querySelector<HTMLDetailsElement>('details')?.open).map(row => row.dataset.playerId));
+  members.replaceChildren();
   text('member-count', String(players.size));
   for (const action of document.querySelectorAll<HTMLButtonElement>('[data-feature="lobby-management"] .feature-action')) {
     action.disabled = !online || hostId !== localId;
@@ -199,26 +243,22 @@ function renderMembers() {
   const recipient = el<HTMLSelectElement>('recipient'); const selected = recipient.value;
   recipient.replaceChildren(new Option('所有成员', ''));
   for (const player of players.values()) {
-    const row = document.createElement('li'); row.className = 'mini-player-item';
+    const row = document.createElement('li'); row.className = 'mini-player-item'; row.dataset.playerId = player.id;
     const info = document.createElement('div'); info.className = 'mini-player-info';
-    const avatar = document.createElement('span'); avatar.className = 'player-avatar'; avatar.textContent = player.name.slice(0, 1);
+    const avatar = document.createElement('span'); avatar.className = 'player-avatar';
+    if (isSafeImageDataUrl(player.avatarData)) { const image = document.createElement('img'); image.src = player.avatarData; image.alt = `${player.name}的头像`; avatar.append(image); }
+    else avatar.textContent = Array.from(player.name)[0] || '?';
     const details = document.createElement('div'); details.className = 'player-details';
     const name = document.createElement('div'); name.className = 'member-name mini-player-name';
     name.textContent = `${player.name}${player.id === localId ? '（你）' : ''}${player.id === hostId ? ' · 房主' : ''}`;
-    const mic = document.createElement('span'); mic.textContent = player.micEnabled ? '🎙' : '关麦'; name.append(mic);
+    const mic = document.createElement('span'); mic.textContent = useAppStore.getState().hostMutedPlayers.has(player.id) ? '房主禁言' : player.micEnabled ? '🎙' : '关麦'; name.append(mic);
     const address = document.createElement('small'); address.className = 'player-ip-row'; address.textContent = player.virtualIp || '地址未知';
     details.append(name, address); info.append(avatar, details); row.append(info);
     if (player.id !== localId) {
       recipient.append(new Option(player.name, player.id));
-      if (hostId === localId) {
-        const kick = document.createElement('button'); kick.textContent = '移出大厅';
-        kick.onclick = () => {
-          if (!online || hostId !== localId) return;
-          if (window.confirm(`确认将 ${player.name} 移出大厅？`) && !webrtcClient.kickPlayer(player.id))
-            notice('移出请求未发送，请检查信令连接。', true);
-        };
-        row.append(kick);
-      }
+      const current = ticket;
+      const controls = memberControls(player, { valid: () => online && ticket === current && players.has(player.id), host: () => online && hostId === localId, status: notice });
+      (controls as HTMLDetailsElement).open = expanded.has(player.id); row.append(controls);
     }
     members.append(row);
   }
@@ -238,13 +278,14 @@ useAppStore.subscribe((state, previous) => {
 
 webrtcClient.onPlayerJoined((id, name, virtualIp) => {
   const newcomer = online && !players.has(id), current = ticket;
-  const player = { id, name, virtualIp, micEnabled: false, isMuted: false, joinedAt: new Date().toISOString() };
+  const player = { ...players.get(id), id, name, virtualIp, micEnabled: false, isMuted: false, joinedAt: new Date().toISOString() };
   players.set(id, player); useAppStore.getState().addPlayer(player); renderMembers();
   if (newcomer) {
     if (rosterSyncTimer) clearTimeout(rosterSyncTimer);
     rosterSyncTimer = window.setTimeout(()=>{
       rosterSyncTimer=null;
       if (online && ticket===current && players.has(id)) {
+        void p2pChatService.sendAvatar(readProfile().avatarData).catch(error => { if (online && ticket === current) notice(`头像同步失败：${label(error)}`, true); });
         void community.syncCurrentTodos().catch(error=>{if(ticket===current && online)notice(`新成员待办同步失败：${label(error)}`,true);});
         const announcement = useAppStore.getState().announcement;
         if (hostId===localId && announcement) {
@@ -261,14 +302,17 @@ webrtcClient.onPlayerLeft(id => { players.delete(id); useAppStore.getState().rem
 webrtcClient.onStatusUpdate((id, micEnabled) => { const player = players.get(id); if (player) player.micEnabled = micEnabled; renderMembers(); });
 webrtcClient.onSignalingStatus((status, error) => {
   const labels = { connected: '已注册', connecting: '连接中', reconnecting: '重连中', disconnected: '未连接', failed: '注册失败' };
+  if (online && status === 'connecting' && useAppStore.getState().signalingStatus !== 'connecting') signalingReconnects++;
   text('signal-state', labels[status] || status);
-  if (status === 'connected' && online) { installMessageListener(); p2pChatService.startPolling(); }
+  useAppStore.getState().setSignalingStatus(status, error);
+  if (status === 'connected' && online) { installMessageListener(); p2pChatService.startPolling(); void p2pChatService.sendAvatar(readProfile().avatarData).catch(error => notice(`头像重同步失败：${label(error)}`, true)); }
   if (busy && status === 'connecting') notice('正在建立浏览器 WebSocket 信令连接；失败时会按原版策略有限重试，可点击取消。');
+  if (status === 'failed' && online) { void leave().then(() => notice(`信令注册失败：${error || '请重新加入'}`, true)); return; }
   if (error) notice(`信令：${error}`, true);
 });
 webrtcClient.onLobbyMeta(meta => {
   hostId = meta.hostId || ''; lobbyPublic = meta.isPublic === true; lobbyMaxPlayers = meta.maxPlayers ?? null;
-  const store = useAppStore.getState(); store.setHostId(hostId || null); store.setMaxPlayers(lobbyMaxPlayers); store.setIsPublicLobby(lobbyPublic);
+  const store = useAppStore.getState(); store.setHostId(hostId || null); store.setMaxPlayers(lobbyMaxPlayers); store.setIsPublicLobby(lobbyPublic); store.setHostMutedPlayers(meta.mutedPlayers || []);
   renderMembers();
 });
 webrtcClient.onLobbyOptionsChanged((max,isPublic)=>{
@@ -277,6 +321,7 @@ webrtcClient.onLobbyOptionsChanged((max,isPublic)=>{
   window.dispatchEvent(new Event('mctier-lobby-options'));
   notice(`信令服务已确认：人数上限 ${max ?? '不限'}，${isPublic ? '已公开' : '未公开'}。`);
 });
+webrtcClient.onMuteChanged((id, muted) => { useAppStore.getState().setHostMuted(id, muted); renderMembers(); if (id === localId) notice(muted ? '你已被房主语音禁言。文字聊天仍可使用。' : '房主已解除语音禁言，可手动开启麦克风。'); });
 webrtcClient.onHostChanged(id => { hostId = id; useAppStore.getState().setHostId(id); renderMembers(); });
 webrtcClient.onKicked(reason => { void leave().then(() => notice(`已离开大厅：${reason}`, true)); });
 webrtcClient.onVersionError((current, minimum) => notice(`版本不符合信令要求：当前 ${current}，至少需要 ${minimum}`, true));
@@ -299,48 +344,53 @@ async function startNetwork(attempt: number): Promise<Lobby> {
     creatorVirtualIp: '', automaticVirtualIp: result.automatic_virtual_ip, addressAttempt: attempt,
     serverNode: input('server-node').trim(), signalingServer: input('signaling-server').trim() };
 }
-async function join() {
+async function join(entryMode: 'create' | 'join') {
   if (!shell.canJoin) { notice(shell.blockedReason, true); return; }
   if (!serviceReady) { notice('本地服务尚未就绪，请确认服务已启动后刷新页面。', true); return; }
   if (busy || online) return;
-  busy = true; controlState(false); ticket = lobbySessionCoordinator.begin();
+  busy = true; useAppStore.getState().setAppState('connecting'); controlState(false); ticket = lobbySessionCoordinator.begin();
   const current = ticket;
-  leaseTimer = window.setInterval(() => { void renewLocalLease().catch(error => { if (online) void leave().then(() => notice(label(error), true)); }); }, 10000);
+  const action = entryMode === 'create' ? '创建' : '加入';
+  leaseTimer = window.setInterval(() => { void renewLocalLease().catch(error => { if (online || busy) void leave().then(() => notice(label(error), true)); }); }, 10000);
   notice('正在读取本机签名身份；若用户密钥环锁定，请检查系统提示…');
   try {
+    beginReportedVersion();
     const identity = await prepareSignalingIdentity();
     lobbySessionCoordinator.assertCurrent(current); localId = identity.clientId; localName = input('player-name').trim();
     notice('正在启动所选 EasyTier 节点并等待本机虚拟接口…');
-    let lobby = await startNetwork(0);
+    let lobby: Lobby = { ...await startNetwork(0), entryMode };
     for (;;) {
       lobbySessionCoordinator.assertCurrent(current);
       notice('虚拟接口已就绪，正在注册原版协议 v3 信令…');
-      try { const password=await localInvoke<string>('resolve_lobby_password',{password:input('lobby-password')}); lobbySessionCoordinator.assertCurrent(current); await webrtcClient.initialize(localId, localName, lobby.name, password, undefined, false, lobby.signalingServer, current); break; }
+      try { const password=await localInvoke<string>('resolve_lobby_password',{password:input('lobby-password')}); lobbySessionCoordinator.assertCurrent(current); await webrtcClient.initialize(localId, localName, lobby.name, password, undefined, false, lobby.signalingServer, current, lobby.entryMode); break; }
       catch (error) {
         const replacement = await recoverVirtualAddress(lobby, label(error), async attempt => {
           await localInvoke('leave_lobby');
           return startNetwork(attempt);
         }, () => lobbySessionCoordinator.isCurrent(current));
         if (!replacement) throw error;
-        lobby = replacement;
+        lobby = { ...replacement, entryMode: replacement.entryMode ?? entryMode };
       }
     }
     lobbySessionCoordinator.assertCurrent(current);
-    online = true; busy = false;
-    useAppStore.getState().setLobby(lobby);
-    const me = { id: localId, name: localName, virtualIp: lobby.virtualIp, micEnabled: false, isMuted: false, joinedAt: new Date().toISOString() };
+    online = true; busy = false; sessionStartedAt = Date.now(); signalingReconnects = 0;
+    useAppStore.getState().setLobby({ ...lobby, entryMode: 'auto' });
+    useAppStore.getState().setAppState('in-lobby');
+    useAppStore.getState().setSignalingStatus('connected');
+    const me = { id: localId, name: localName, avatarData: readProfile().avatarData, virtualIp: lobby.virtualIp, micEnabled: false, isMuted: false, joinedAt: new Date().toISOString() };
     players.set(localId, me); useAppStore.getState().addPlayer(me);
     installMessageListener(); p2pChatService.startPolling();
+    void p2pChatService.sendAvatar(readProfile().avatarData).catch(error => notice(`头像同步失败：${label(error)}`, true));
     text('room-name', lobby.name); text('virtual-ip', lobby.virtualIp);
     text('chat-state', '本机聊天服务已配置 · 送达待对端验证');
-    localStorage.setItem('mctier_linux_player_name', localName);
+    try { localStorage.setItem('mctier_linux_player_name', localName); } catch { /* Storage does not decide admission. */ }
     controlState(true); renderMembers();
     void community.record().catch(error=>notice(`大厅已加入，但最近记录保存失败：${label(error)}`,true));
     notice('信令已注册，EasyTier 虚拟接口已就绪。请分别验证数据收发与双向语音。');
   } catch (error) {
     const cancelled = !lobbySessionCoordinator.isCurrent(current);
     await leave();
-    if (!cancelled) notice(`加入失败：${label(error)}`, true);
+    if (!cancelled) notice(`${action}失败：${label(error)}`, true);
   }
 }
 async function restartNetwork() {
@@ -355,7 +405,7 @@ async function restartNetwork() {
 }
 async function leave() {
   if (leaving) return;
-  leaving = true; online = false; community.reset(); networkPanel.reset(); composer.cancel(); stopViewing();
+  leaving = true; online = false; sessionStartedAt = 0; signalingReconnects = 0; endReportedVersion(); community.reset(); networkPanel.reset(); composer.cancel(); stopViewing();
   for (const controller of downloads) controller.abort(); downloads.clear();
   for (const url of downloadUrls) URL.revokeObjectURL(url); downloadUrls.clear();
   for (const url of previewUrls) URL.revokeObjectURL(url); previewUrls.clear();
@@ -364,11 +414,12 @@ async function leave() {
   if (leaseTimer) clearInterval(leaseTimer); leaseTimer = null;
   if (rosterSyncTimer) clearTimeout(rosterSyncTimer); rosterSyncTimer=null;
   try {
-    await webrtcClient.cleanup();
-    await localInvoke('leave_lobby');
+    const results = await Promise.allSettled([webrtcClient.cleanup(), localInvoke('leave_lobby')]);
+    const failure = results.find(result => result.status === 'rejected');
+    if (failure?.status === 'rejected') throw failure.reason;
   } catch (error) { notice(`清理请求失败：${label(error)}。服务将在浏览器租约过期后停止自有进程。`, true); }
   finally {
-    busy = false; leaving = false; controlState(false); useAppStore.getState().clearLobby();
+    busy = false; leaving = false; controlState(false); useAppStore.getState().clearLobby(); useAppStore.getState().setAppState('idle');
     players.clear(); messages.clear(); receipts.clear(); hostId = ''; lobbyPublic=false; lobbyMaxPlayers=null; renderMembers();
     localShare = null; viewedShare = null;
     const video = el<HTMLVideoElement>('screen-video'); video.pause(); video.srcObject = null; video.hidden = true;
@@ -376,7 +427,7 @@ async function leave() {
     text('messages', '已退出大厅，聊天与媒体资源已释放。'); text('peer-report', ''); renderShares();
   }
 }
-el<HTMLFormElement>('lobby-form').onsubmit = event => { event.preventDefault(); void join(); };
+el<HTMLFormElement>('lobby-form').onsubmit = event => { event.preventDefault(); void join((event as SubmitEvent).submitter?.id === 'create' ? 'create' : 'join'); };
 el<HTMLFormElement>('lobby-form').addEventListener('invalid', event => {
   const field = event.target as HTMLInputElement;
   notice(`请检查${field.closest('label')?.firstChild?.textContent?.trim() || '输入项'}：${field.validationMessage}`, true);
@@ -413,16 +464,9 @@ el<HTMLSelectElement>('voice-group').onchange = () => {
 };
 el<HTMLFormElement>('chat-form').onsubmit = async event => {
   event.preventDefault(); const content = input('chat-text').trim(); if (!online || !content) return;
-  const id = `msg-${localId}-${crypto.randomUUID()}`;
   const recipientId = input('recipient') || undefined;
-  const message = { id, playerId: localId, playerName: localName, content, timestamp: Date.now(), recipientId };
-  messages.set(id, message); receipts.set(id, '发送中'); renderMessages(); el<HTMLInputElement>('chat-text').value = '';
-  try {
-    const receipt = await p2pChatService.sendTextMessage(content, id, recipientId);
-    receipts.set(id, receipt.total ? `送达 ${receipt.delivered}/${receipt.total}` : '本地消息 · 无对端');
-    if (receipt.delivered < receipt.total) notice('消息未送达全部目标，请检查 EasyTier 数据链路与对端聊天服务。', true);
-  } catch (error) { receipts.set(id, '发送失败'); notice(label(error), true); }
-  renderMessages();
+  el<HTMLInputElement>('chat-text').value = '';
+  await sendOutgoing({ content, recipientId, type: 'text' }, id => p2pChatService.sendTextMessage(content, id, recipientId));
 };
 
 async function refreshDevices() {
@@ -456,9 +500,18 @@ el('peer-query').onclick = async () => {
 };
 async function refreshDiagnostics() {
   if (statsRunning) return; statsRunning = true;
+  const valid = captureSession(() => ticket);
+  const abort = new AbortController();
+  const timeout = window.setTimeout(() => abort.abort(), 8000);
+  let serviceAnswered = false;
   try {
-    const response = await fetch('/api/status', { cache: 'no-store' }); if (!response.ok) throw new Error('本地服务不可用');
-    const status = await response.json(); text('service-state', '本地服务在线');
+    const response = await fetch('/api/status', { cache: 'no-store', signal: abort.signal }); if (!response.ok) throw new Error('本地服务不可用');
+    const status = await response.json();
+    if (!valid()) return;
+    serviceAnswered = true; text('service-state', '本地服务在线');
+    profilePanel.refresh();
+    const snapshot = { online, startedAt: online ? sessionStartedAt : 0, members: players.size, sent: [...messages.values()].filter(m => m.playerId === localId).length, received: [...messages.values()].filter(m => m.playerId !== localId).length, failed: [...receipts.values()].filter(value => value === '发送失败' || /^送达 (\d+)\/(\d+)$/.test(value) && Number(value.match(/\d+/g)?.[0]) < Number(value.match(/\d+/g)?.[1])).length, reconnects: signalingReconnects, sentBytes: 0, receivedBytes: 0, mediaPeers: 0 };
+    if (!online) renderStatistics(snapshot);
     const closed = webrtcClient.getSignalingDiagnostics();
     text('signal-details', closed ? `上次断开 ${closed.code} · 存活 ${(closed.aliveMs / 1000).toFixed(1)} 秒 · 收包间隔 ${(closed.silentMs / 1000).toFixed(1)} 秒 · 待处理 ${closed.queuedFrames} · ${closed.pongPending ? '等待心跳' : '无待收心跳'}` : '暂无断开记录');
     text('network-state', status.network.state === 'interface-ready' ? '虚拟接口就绪' : status.network.state === 'starting' ? 'EasyTier 启动中' : 'EasyTier 未启动');
@@ -476,7 +529,12 @@ async function refreshDiagnostics() {
     text('chat-state', `后端远端记录 ${status.chatReceive?.storedRemoteMessages ?? 0} 条 · 页面聊天 ${chat.receivedMessages} 条 · 消息流${streamLabels[chat.stream] || chat.stream}${chat.error ? ' · ' + chat.error : ''}`);
     renderShares();
     const diagnostics = await webrtcClient.getVoiceDiagnostics();
-    text('media-state', `${diagnostics.filter(peer => peer.connection === 'connected').length}/${diagnostics.length} 已连接`);
+    if (!valid() || !online) return;
+    snapshot.mediaPeers = diagnostics.filter(peer => peer.connection === 'connected').length;
+    snapshot.sentBytes = diagnostics.reduce((sum, peer) => sum + peer.sentBytes, 0);
+    snapshot.receivedBytes = diagnostics.reduce((sum, peer) => sum + peer.receivedBytes, 0);
+    renderStatistics(snapshot);
+    text('media-state', `${snapshot.mediaPeers}/${diagnostics.length} 已连接`);
     const container = el('voice-diagnostics'); container.replaceChildren();
     for (const peer of diagnostics) {
       const row = document.createElement('div'); row.className = 'diag-row';
@@ -487,8 +545,13 @@ async function refreshDiagnostics() {
       row.append(reconnect, name, detail); container.append(row);
     }
     if (!diagnostics.length) container.textContent = '暂无对端媒体连接。';
-  } catch { text('service-state', '本地服务不可达'); }
-  finally { statsRunning = false; }
+  } catch {
+    if (valid()) {
+      if (serviceAnswered) text('media-state', '媒体诊断暂不可用');
+      else text('service-state', '本地服务不可达');
+    }
+  }
+  finally { clearTimeout(timeout); statsRunning = false; }
 }
 
 function stopViewing() {
@@ -569,7 +632,7 @@ async function initialize() {
     controlState(false);
     el<HTMLInputElement>('server-node').value = boot.defaults.serverNode;
     el<HTMLInputElement>('signaling-server').value = boot.defaults.signalingServer;
-    el<HTMLInputElement>('player-name').value = localStorage.getItem('mctier_linux_player_name') || '';
+    try { el<HTMLInputElement>('player-name').value = readProfile().name || localStorage.getItem('mctier_linux_player_name') || ''; } catch { /* User can enter a name without storage. */ }
     // No signing identity, device permission, node or signaling connection at startup.
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) notice('当前浏览器上下文不能申请麦克风；请访问准确的回环地址。', true);
     text('service-state', '本地服务在线');
@@ -578,9 +641,11 @@ async function initialize() {
     if (status.session) {
       shell.setSessionState('orphaned');
       el<HTMLButtonElement>('leave').disabled = false;
-      el<HTMLButtonElement>('join').disabled = true;
+      for (const id of ['join', 'create']) el<HTMLButtonElement>(id).disabled = true;
       el<HTMLButtonElement>('signal-probe').disabled = true;
     }
+    void refreshReportedDefault().catch(error => notice(label(error), true));
+    void refreshDiagnostics();
     window.setInterval(() => { void refreshDiagnostics(); }, 2500);
   } catch (error) { serviceReady = false; controlState(false); text('service-state', '本地服务不可达'); notice(`本地服务初始化失败：${label(error)}`, true); }
 }

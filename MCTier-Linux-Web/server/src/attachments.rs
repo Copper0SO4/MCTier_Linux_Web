@@ -28,6 +28,9 @@ pub async fn download(
     if !valid_attachment_meta(&args.attachment) {
         return Err("文件附件元数据无效".to_string().into());
     }
+    let mut changed = app.chat_generation.subscribe();
+    let generation = *changed.borrow();
+    let transfer = async {
     let chat = app.chat.lock().await;
     let local = chat
         .get_local_identity()
@@ -67,10 +70,7 @@ pub async fn download(
         drop(chat);
         let host = chat_transport::chat_http_host(&peer.virtual_ip)?;
         let response = chat_transport::with_chat_signature(
-            reqwest::Client::builder()
-                .timeout(Duration::from_secs(60))
-                .connect_timeout(Duration::from_secs(4))
-                .redirect(reqwest::redirect::Policy::none())
+            crate::overlay_http::client(Duration::from_secs(60), Duration::from_secs(4))
                 .build()
                 .map_err(|_| "创建附件客户端失败".to_string())?
                 .get(format!("http://{host}:14540{path}"))
@@ -88,7 +88,7 @@ pub async fn download(
             chat_transport::read_remote_body_limited(response, 90 * 1024 * 1024).await?;
         let chat = app.chat.lock().await;
         if chat.get_chat_token().as_deref() != Some(token.as_str())
-            || chat.peer_by_player_id(&peer.player_id).is_none()
+            || chat.peer_by_player_id(&peer.player_id).as_ref() != Some(&peer)
         {
             return Err("下载期间大厅会话已变化，请重新下载".to_string().into());
         }
@@ -98,15 +98,16 @@ pub async fn download(
     {
         return Err("附件实际大小与消息元数据不一致".to_string().into());
     }
-    // Always download as binary. HTML/SVG attachments cannot execute in our origin.
-    Ok((
-        [
-            (header::CONTENT_TYPE, "application/octet-stream"),
-            (header::CONTENT_DISPOSITION, "attachment"),
-        ],
-        bytes,
-    )
-        .into_response())
+    if *app.chat_generation.borrow() != generation {
+        return Err("下载期间大厅会话已变化，请重新下载".to_string().into());
+    }
+    Ok::<_, ApiError>(bytes)
+    };
+    let bytes = tokio::select! {
+        result = transfer => result?,
+        _ = changed.changed() => return Err("下载期间大厅会话已变化，请重新下载".to_string().into()),
+    };
+    Ok(crate::binary_response::download(bytes, _permit))
 }
 
 // Bytes selected by the user only. Never accept a source filesystem path.
@@ -126,12 +127,16 @@ pub async fn upload(
 ) -> Result<Json<ChatAttachmentMeta>, ApiError> {
     owner(&app, request.headers()).await?;
     let _permit = UPLOADS.try_acquire().map_err(|_| ApiError(StatusCode::TOO_MANY_REQUESTS, "附件上传繁忙".into()))?;
+    let mut changed = app.chat_generation.subscribe();
     let (token, generation) = { let chat = app.chat.lock().await; (chat.get_chat_token().ok_or("聊天会话尚未就绪".to_string())?, *app.chat_generation.borrow()) };
     let mut meta = ChatAttachmentMeta { id: uuid::Uuid::new_v4().to_string(), name: args.name, mime: args.mime, size: 1 };
     if !valid_attachment_meta(&meta) { return Err("附件名称或类型无效".to_string().into()); }
-    let bytes = tokio::time::timeout(Duration::from_secs(120), axum::body::to_bytes(request.into_body(), MAX_CHAT_ATTACHMENT_BYTES as usize)).await
-        .map_err(|_| "附件上传超时".to_string())?
-        .map_err(|_| "附件超过 64 MiB 或上传中断".to_string())?;
+    if *changed.borrow() != generation { return Err("上传期间会话已变化".to_string().into()); }
+    let bytes = tokio::select! {
+        result = tokio::time::timeout(Duration::from_secs(120), axum::body::to_bytes(request.into_body(), MAX_CHAT_ATTACHMENT_BYTES as usize)) =>
+            result.map_err(|_| "附件上传超时".to_string())?.map_err(|_| "附件超过 64 MiB 或上传中断".to_string())?,
+        _ = changed.changed() => return Err("上传期间会话已变化".to_string().into()),
+    };
     meta.size = bytes.len() as u64;
     if !valid_attachment_meta(&meta) { return Err("附件为空或超过限制".to_string().into()); }
     let chat = app.chat.lock().await;

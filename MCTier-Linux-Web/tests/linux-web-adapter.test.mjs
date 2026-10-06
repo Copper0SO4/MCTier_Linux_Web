@@ -93,7 +93,7 @@ test('manual signaling probe receives v3 challenge without sending registration 
   const module = await load('MCTier-Linux-Web/web/signalingProbe.ts');
   const pending = module.probeSignaling('wss://mctier.pmhs.top/signaling');
   sockets[0].onopen();
-  sockets[0].onmessage({ data: JSON.stringify({ type: 'server-challenge', protocolVersion: 3, challenge: 'a'.repeat(64) }) });
+  sockets[0].onmessage({ data: JSON.stringify({ type: 'server-challenge', protocolVersion: 3, lobbyEntryModes: true, challenge: 'a'.repeat(64) }) });
   assert.match(await pending, /未发送注册/);
   assert.deepEqual(sockets[0].sent, []);
   assert.equal(sockets[0].closed, true);
