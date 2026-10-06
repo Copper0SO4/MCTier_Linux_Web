@@ -65,6 +65,20 @@ sudo apt install curl xdg-utils libcap2-bin policykit-1 libdbus-1-3 libsystemd0 
 
 自动化历史基线：22 个前端测试文件（120 用例）、123 个 Rust 测试通过。本轮新增高级参数、设置分类与启动接续已通过完整 Debug 构建，用户完成当前开发版总体验收；本次发行执行 TypeScript/Vite/Rust release 构建和包体检查，不把历史自动化数量当作本次新增功能覆盖。未进行新的真实联机或系统授权操作。
 
+## Arch Linux 安装
+
+Arch打包仓库：[mctier-linux-web-git](https://github.com/Copper0SO4/mctier-linux-web-git)。使用普通用户构建，安装后启动命令为 **`mctier`**，也有应用菜单入口：
+
+```bash
+sudo pacman -S --needed base-devel git rust nodejs npm
+git clone https://github.com/Copper0SO4/mctier-linux-web-git.git
+cd mctier-linux-web-git
+makepkg -si
+mctier
+```
+
+这是跟踪本Linux Web仓库master的源码构建包，与固定发行ZIP分别维护，尚未宣称发布到AUR。PKGBUILD声明运行/编译依赖并固定校验随包EasyTier，不在安装阶段启动服务或修改防火墙；第一次启动仅在缺CAP时请求原有setcap授权。详细依赖、升级和权限说明见打包仓库README。
+
 ## 源码构建
 
 需要 Node.js 20+、npm、Rust stable（本次用官方 1.90.0 验证）、C 工具链及 OpenSSL/D-Bus 开发头文件：

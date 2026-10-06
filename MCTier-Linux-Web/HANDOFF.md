@@ -427,3 +427,9 @@ ZIP SHA-256：88c8d119acf7ef56823bb7db2d62047c3077e3c605c9ec05e27100d2635c60e8�
 - 上游WebRTCClient改从shared/signaling-protocol.json读取协议版本，当前值仍3。Linux生成src位于更深一层，新增独立前端补丁修正相对导入路径，直接使用仓库原版清单，不复制协议字段或更改其值；构建哈希检查仍覆盖原有四个手工Rust来源，未改源哈希。
 - 本轮不移动3.9.0发行标签、不替换已发布ZIP、不重启开发服务、不另外联机或授权。构建结果稍后追加。GitHub仍显示领先上游是Linux Web独立提交的正常结果，落后应归零。
 - 验证：4个手工适配来源哈希检查、TypeScript/Vite（566项表情）及Rust Debug完整构建通过，Linux本地改动空白检查通过。未新增或运行自动化测试，本轮结果仅是构建验证，不能代替真实联机。
+
+## 2026-10-06：Arch Linux独立源码包
+
+- 用户指定空仓库Copper0SO4/mctier-linux-web-git用于Arch安装，启动命令为mctier。独立打包仓库维护PKGBUILD、.SRCINFO、mctier包装、桌面入口和中文安装说明；主项目只增加安装链接，不更改Rust/前端功能或已发布3.9.0附件。
+- 包从Linux Web master取源码，以Cargo发行版本+Git计数/哈希生成pkgver；官方源码同步仍在主项目完成。EasyTier固定2.5.0，压缩包和核心/CLI校验；关闭makepkg strip/debug拆分避免破坏运行时哈希。安装到/usr/lib/mctier-linux-web，/usr/bin/mctier调用真实路径的原启动器，保持资源发现方式。
+- 以普通用户构建/运行，pacman只负责安装。安装/升级钩子只提示，不提权setcap、不启动服务；用户首次启动按需经过原pkexec setcap及复核。提供应用菜单终端入口，沿用默认浏览器开启，不引入Electron。构建/安装与真实联机结论以打包仓库HANDOFF为准。
