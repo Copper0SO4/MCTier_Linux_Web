@@ -422,6 +422,13 @@ ZIP SHA-256：88c8d119acf7ef56823bb7db2d62047c3077e3c605c9ec05e27100d2635c60e8�
 - 发行校验结果：TypeScript/Vite/Rust release 构建通过（Rust 1.90.0）；ZIP CRC、7个必需文件、可执行权限及包内服务与构建产物一致性通过；源码空白及启动/打包脚本语法检查通过。ELF最高GLIBC符号为2.39，链接OpenSSL 3和D-Bus；中文运行要求据此保持glibc>=2.39。ZIP SHA-256：`8d3b41a37131879099b2bfd0b4b4a50a4c3f5e6905c68f0081dbad80f9d74a40`。
 - 发布完成：2026-10-06 20:52（Asia/Shanghai），代码提交`66ca4c021d3f827f028eae44dcff2eff9830f100`和标签`3.9.0`已推送origin/master；GitHub正式Release已发布并标记Latest，ZIP和SHA-256附件上传完成。页面：https://github.com/Copper0SO4/MCTier_Linux_Web/releases/tag/3.9.0 。此后只补充发布记录，不移动发行标签或重打包。
 
+## 2026-10-06：Arch pacman 包加入 3.9.0 Release
+
+- 已把 Arch Linux x86_64 包上传到现有 3.9.0 Release，没有创建新版本标签；原 ZIP 与 ZIP `.sha256` 保持不变。Release 页面资产列表确认文件名和摘要。
+- 资产：`mctier-linux-web-git-3.9.0.r382.gc362bd7-1-x86_64.pkg.tar.zst`；SHA-256：`de6e68cc7c33f5d7a54644aae43f6ec880d84d60fe0a395ec97e081024ba3e40`。
+- 下载：`https://github.com/Copper0SO4/MCTier_Linux_Web/releases/download/3.9.0/mctier-linux-web-git-3.9.0.r382.gc362bd7-1-x86_64.pkg.tar.zst`。发行说明有 `sudo pacman -U` 安装命令。
+- 软件包由系统 Arch Rust 1.99.0/LLVM 23.1.1 构建，构建检查见独立 Arch 打包仓库 HANDOFF。本包未安装到系统，没有执行房间、网络或媒体真实环境验收。
+
 ## 2026-10-06：解决GitHub上游同步冲突
 
 - 用户截图显示origin/master领先官方21个提交、落后6个，GitHub同步菜单要求丢弃本地提交。本轮用保留历史的merge合并官方master `61cb9f5`，不reset/rebase、不丢弃Linux Web历史；origin在开始前与本地完全一致且工作树干净。
