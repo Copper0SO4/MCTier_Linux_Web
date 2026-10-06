@@ -433,3 +433,5 @@ ZIP SHA-256：88c8d119acf7ef56823bb7db2d62047c3077e3c605c9ec05e27100d2635c60e8�
 - 用户指定空仓库Copper0SO4/mctier-linux-web-git用于Arch安装，启动命令为mctier。独立打包仓库维护PKGBUILD、.SRCINFO、mctier包装、桌面入口和中文安装说明；主项目只增加安装链接，不更改Rust/前端功能或已发布3.9.0附件。
 - 包从Linux Web master取源码，以Cargo发行版本+Git计数/哈希生成pkgver；官方源码同步仍在主项目完成。EasyTier固定2.5.0，压缩包和核心/CLI校验；关闭makepkg strip/debug拆分避免破坏运行时哈希。安装到/usr/lib/mctier-linux-web，/usr/bin/mctier调用真实路径的原启动器，保持资源发现方式。
 - 以普通用户构建/运行，pacman只负责安装。安装/升级钩子只提示，不提权setcap、不启动服务；用户首次启动按需经过原pkexec setcap及复核。提供应用菜单终端入口，沿用默认浏览器开启，不引入Electron。构建/安装与真实联机结论以打包仓库HANDOFF为准。
+
+- 2026-10-06后续产品调整：用户要求因桌面启动缺少合适退出机制移除desktop。Arch包pkgrel提升为2，删除菜单入口和图标、移除desktop-file-utils依赖；主项目README同步为仅终端mctier启动、Ctrl+C停止。此前关于桌面入口的描述是历史状态。

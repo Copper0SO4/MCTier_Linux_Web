@@ -67,7 +67,7 @@ sudo apt install curl xdg-utils libcap2-bin policykit-1 libdbus-1-3 libsystemd0 
 
 ## Arch Linux 安装
 
-Arch打包仓库：[mctier-linux-web-git](https://github.com/Copper0SO4/mctier-linux-web-git)。使用普通用户构建，安装后启动命令为 **`mctier`**，也有应用菜单入口：
+Arch打包仓库：[mctier-linux-web-git](https://github.com/Copper0SO4/mctier-linux-web-git)。使用普通用户构建，安装后在终端使用 **`mctier`** 启动，按 Ctrl+C 停止服务；不提供桌面菜单入口：
 
 ```bash
 sudo pacman -S --needed base-devel git rust nodejs npm
