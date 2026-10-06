@@ -1,3 +1,4 @@
+mod auto_join;
 mod attachments;
 mod overlay_http;
 mod binary_response;
@@ -194,6 +195,10 @@ async fn invoke(
 ) -> Result<Json<Value>, ApiError> {
     let control = owner(&app, &headers).await?;
     let result = match input.command.as_str() {
+        "get_auto_join_config" => auto_join::get()?,
+        "save_auto_join_config" => auto_join::save(value(input.args)?)?,
+        "adopt_auto_network" => app.adopt_auto_network(&control).await?,
+        "detach_browser" => { app.detach_owned(&control).await?; Value::Null },
         "get_upstream_version_tags" => json!(version_metadata::fetch_tags().await?),
         "get_network_settings" => json!(network_settings::NetworkSettings::default()),
         "validate_network_settings" => {
@@ -201,8 +206,6 @@ async fn invoke(
             settings.config()?;
             json!(settings)
         }
-        "get_magic_dns_status" => network_operations::dns_status(&app).await,
-        "prepare_magic_dns" => network_operations::prepare_dns(&app, value(input.args)?).await?,
         "get_firewall_status" => network_operations::firewall_status(&app).await?,
         "prepare_firewall_repair" => {
             network_operations::prepare_firewall(&app, value(input.args)?).await?
@@ -269,7 +272,7 @@ async fn invoke(
         "get_config" => json!(modules::config_manager::UserConfig::default()),
         "get_settings" => json!({"language":"system"}),
         "prepare_signaling_identity" => {
-            // No background keyring access; requested only by an explicit join.
+            // Explicit browser join or opt-in startup profile uses the same signer.
             let (id, key) = app.chat.lock().await.signaling_identity()?;
             json!({"clientId":id,"identityPublicKey":key})
         }
@@ -352,6 +355,8 @@ async fn invoke(
         }
         "stop_p2p_chat" => {
             let args: Stop = value(input.args)?;
+            let runtime = app.runtime.lock().await;
+            runtime.ensure_control(&control)?;
             let chat = app.chat.lock().await;
             app.chat_generation.send_modify(|v| *v = v.wrapping_add(1));
             if args.preserve_signing_identity == Some(true) {
@@ -529,8 +534,6 @@ fn router(app: Arc<App>) -> Router {
 
 fn main() {
     firewall::run_if_requested();
-    privileged::hosts_ready();
-    modules::unix_hosts_helper::run_if_requested();
     run_service();
 }
 #[tokio::main]
@@ -548,7 +551,8 @@ async fn run_service() {
             std::process::exit(1);
         }
     };
-    println!("MCTier Linux local service ready. Open http://127.0.0.1:14700 manually in Firefox or Chromium. No room/node is joined until requested.");
+    println!("MCTier Linux local service ready. Open http://127.0.0.1:14700 manually in Firefox or Chromium. Startup networking is used only when explicitly enabled in settings.");
+    let startup = tokio::spawn(auto_join::startup(app.clone()));
     let watchdog = app.clone();
     let worker = tokio::spawn(async move {
         loop {
@@ -571,6 +575,7 @@ async fn run_service() {
             shutdown.leave().await;
         })
         .await;
+    startup.abort();
     worker.abort();
     app.leave().await;
     if let Err(error) = result {

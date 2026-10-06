@@ -3,13 +3,10 @@ use crate::{
     firewall,
     modules::{
         chat_service::ChatPeerIdentity,
-        hosts_manager::HostsManager,
-        hosts_security::{validate_hosts_update, MAX_HOSTS_BYTES},
-        virtual_network::virtual_host,
     },
     runtime::App,
 };
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use std::{
     collections::BTreeSet,
@@ -29,11 +26,6 @@ struct Pending {
     action: Action,
 }
 enum Action {
-    Dns {
-        old: String,
-        new: String,
-        identities: Option<Vec<ChatPeerIdentity>>,
-    },
     Firewall {
         plan: firewall::Plan,
         remove: bool,
@@ -44,13 +36,6 @@ enum Action {
 impl Action {
     fn confirmation_text(&self) -> &'static str {
         match self {
-            Action::Dns {
-                identities: Some(_),
-                ..
-            } => "我确认更新本机域名映射",
-            Action::Dns {
-                identities: None, ..
-            } => "我确认清理本机域名映射",
             Action::Firewall {
                 plan,
                 remove: false,
@@ -81,9 +66,6 @@ impl Operations {
         }
     }
 }
-const MARKER: &str = "# MCTier Magic DNS - LinuxWeb";
-const END: &str = "# MCTier Magic DNS End";
-
 pub async fn identities(app: &App) -> Result<Vec<ChatPeerIdentity>, String> {
     let chat = app.chat.lock().await;
     let me = chat
@@ -97,163 +79,6 @@ pub async fn identities(app: &App) -> Result<Vec<ChatPeerIdentity>, String> {
         return Err("大厅成员超出虚拟网段容量".into());
     }
     Ok(peers)
-}
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Mapping {
-    player_name: String,
-    domain: String,
-    ip: String,
-}
-fn mappings(peers: &[ChatPeerIdentity]) -> Result<Vec<Mapping>, String> {
-    let mut domains = BTreeSet::new();
-    let mut ips = BTreeSet::new();
-    let mut out = vec![];
-    for p in peers {
-        if virtual_host(&p.virtual_ip).is_none() {
-            return Err("成员虚拟地址无效，拒绝写入 hosts".into());
-        }
-        let domain = HostsManager::domain_for_identity(&p.player_id).map_err(|e| e.to_string())?;
-        if !domains.insert(domain.clone()) || !ips.insert(p.virtual_ip.clone()) {
-            return Err("成员域名或虚拟地址冲突".into());
-        }
-        out.push(Mapping {
-            player_name: p.player_name.clone(),
-            domain,
-            ip: p.virtual_ip.clone(),
-        });
-    }
-    Ok(out)
-}
-fn hosts_content(old: &str, mappings: &[Mapping]) -> Result<String, String> {
-    validate_hosts_update(old, old)?;
-    // Keep every unrelated byte/section; only this adapter's section is replaced.
-    let mut inside = false;
-    let mut sections = 0;
-    let mut new = String::new();
-    for line in old.split_inclusive('\n') {
-        let trimmed = line.trim_end_matches(['\r', '\n']);
-        if trimmed == MARKER {
-            if inside || sections != 0 { return Err("Linux Web hosts 标记重复或嵌套，请先手动检查".into()); }
-            sections += 1;
-            inside = true;
-            continue;
-        }
-        if inside && trimmed == END {
-            inside = false;
-            continue;
-        }
-        if inside && trimmed.starts_with("# MCTier Magic DNS -") {
-            return Err("Linux Web hosts 段内嵌套了其它 MCTier 标记，拒绝修改".into());
-        }
-        if !inside {
-            new.push_str(line);
-        }
-    }
-    if inside { return Err("Linux Web hosts 标记未闭合，拒绝删除其它记录".into()); }
-    for line in new.lines() {
-        let fields = line
-            .split('#')
-            .next()
-            .unwrap_or("")
-            .split_whitespace()
-            .collect::<Vec<_>>();
-        if fields.len() > 1
-            && mappings.iter().any(|m| {
-                fields[1..]
-                    .iter()
-                    .any(|domain| domain.eq_ignore_ascii_case(&m.domain))
-                    && fields[0] != m.ip
-            })
-        {
-            return Err("已有其它 hosts 记录与大厅域名冲突；请自行检查，本功能不会覆盖它".into());
-        }
-    }
-    if !mappings.is_empty() {
-        if !new.is_empty() && !new.ends_with('\n') {
-            new.push('\n');
-        }
-        new.push_str(MARKER);
-        new.push('\n');
-        for m in mappings {
-            new.push_str(&format!("{}\t{}\n", m.ip, m.domain));
-        }
-        new.push_str(END);
-        new.push('\n');
-    }
-    validate_hosts_update(old, &new)?;
-    Ok(new)
-}
-fn read_hosts() -> Result<String, String> {
-    use std::io::Read;
-    let mut s = String::new();
-    std::fs::File::open("/etc/hosts")
-        .map_err(|_| "不能读取系统 hosts")?
-        .take(MAX_HOSTS_BYTES as u64 + 1)
-        .read_to_string(&mut s)
-        .map_err(|_| "系统 hosts 编码无效")?;
-    if s.len() > MAX_HOSTS_BYTES {
-        return Err("系统 hosts 超出安全限制".into());
-    }
-    Ok(s)
-}
-pub async fn dns_status(app: &App) -> Value {
-    let old = read_hosts();
-    let peers = identities(app).await;
-    let entries = peers
-        .as_ref()
-        .ok()
-        .and_then(|p| mappings(p).ok())
-        .unwrap_or_default();
-    let installed = old.as_ref().is_ok_and(|s| s.lines().any(|l| l == MARKER));
-    let up_to_date = old
-        .as_ref()
-        .is_ok_and(|s| hosts_content(s, &entries).is_ok_and(|updated| updated == *s));
-    let section_error = old.as_ref().ok().and_then(|s| hosts_content(s, &entries).err());
-    json!({"entries":entries,"installed":installed,"upToDate":up_to_date,"error":old.err().or_else(||peers.err()).or(section_error)})
-}
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DnsArgs {
-    pub remove: bool,
-}
-pub async fn prepare_dns(app: &App, args: DnsArgs) -> Result<Value, String> {
-    let _guard = app
-        .network_operations
-        .gate
-        .try_acquire()
-        .map_err(|_| "已有系统授权进行中")?;
-    let peers = if args.remove {
-        None
-    } else {
-        Some(identities(app).await?)
-    };
-    let entries = peers
-        .as_ref()
-        .map(|p| mappings(p))
-        .transpose()?
-        .unwrap_or_default();
-    let old = read_hosts()?;
-    let new = hosts_content(&old, &entries)?;
-    if old == new {
-        return Err(if args.remove {
-            "没有 Linux Web hosts 记录需要清理".into()
-        } else {
-            "当前记录已一致，无需授权".into()
-        });
-    }
-    let token = uuid::Uuid::new_v4().simple().to_string();
-    let preview = json!({"token":token,"title":if args.remove{"清理 Linux Web 域名"}else{"更新 Magic DNS"},"lines":["仅修改 /etc/hosts 中 LinuxWeb 标记段，保留其它记录。","成员变更后需手动更新；退出大厅不会自动弹出授权或清理，请及时撤销。"],"entries":entries,"confirmationText": if args.remove { "我确认清理本机域名映射" } else { "我确认更新本机域名映射" }});
-    *app.network_operations.pending.lock().await = Some(Pending {
-        token,
-        created: Instant::now(),
-        action: Action::Dns {
-            old,
-            new,
-            identities: peers,
-        },
-    });
-    Ok(preview)
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -564,38 +389,6 @@ pub async fn apply(app: &App, args: Confirm) -> Result<Value, String> {
     let p = lock.take().unwrap();
     drop(lock);
     match p.action {
-        Action::Dns {
-            old,
-            new,
-            identities: expected,
-        } => {
-            if let Some(ref expected) = expected {
-                if &identities(app).await? != expected {
-                    return Err("成员列表已改变，请重新预览域名映射".into());
-                }
-            }
-            if read_hosts()? != old {
-                return Err("hosts 已改变，请重新预览".into());
-            }
-            let helper =
-                crate::privileged::Helper::start(crate::privileged::HOSTS_SWITCH, &mut cancel)
-                    .await?;
-            // Authentication can outlive the preview's original room/hosts snapshot.
-            if let Some(ref expected) = expected {
-                if &identities(app).await? != expected {
-                    return Err("认证期间成员已变化，请重新预览".into());
-                }
-            }
-            if read_hosts()? != old {
-                return Err("认证期间 hosts 已变化，请重新预览".into());
-            }
-            use sha2::{Digest, Sha256};
-            helper.execute(json!({"expected_sha256":format!("{:x}", Sha256::digest(old.as_bytes())), "content":new}), &mut cancel).await?;
-            if read_hosts()? != new {
-                return Err("hosts 写入后复核失败".into());
-            }
-            Ok(json!({"report":["hosts 标记段已写入并复核；域名实际解析和游戏访问仍需测试。"]}))
-        }
         Action::Firewall { plan, remove, restart_network, expected_session } => {
             if !remove && !plan.pause {
                 let rt = app.runtime.lock().await;
@@ -681,10 +474,13 @@ mod tests {
         *app.network_operations.pending.lock().await = Some(Pending {
             token: "preview".into(),
             created: Instant::now(),
-            action: Action::Dns {
-                old: "invalid-old-hosts-snapshot".into(),
-                new: String::new(),
-                identities: None,
+            action: Action::Firewall {
+                plan: serde_json::from_value(json!({
+                    "backend":"ufw", "zone":"", "port":31111, "protocol":"udp",
+                    "overlayZone":"", "quicPort":null, "virtualIp":"10.126.126.2",
+                    "token":"a".repeat(32), "ephemeralUdp":null
+                })).unwrap(),
+                remove: false, restart_network: true, expected_session: None,
             },
         });
         let error = apply(
@@ -696,18 +492,18 @@ mod tests {
         )
         .await
         .unwrap_err();
-        assert!(error.contains("我确认清理本机域名映射"));
+        assert!(error.contains("我确认修改本机防火墙"));
         assert!(app.network_operations.pending.lock().await.is_some());
         let error = apply(
             &app,
             Confirm {
                 token: "preview".into(),
-                confirmation_text: "我确认清理本机域名映射".into(),
+                confirmation_text: "我确认修改本机防火墙".into(),
             },
         )
         .await
         .unwrap_err();
-        assert!(error.contains("hosts 已改变"));
+        assert!(error.contains("大厅已经退出"));
         assert!(app.network_operations.pending.lock().await.is_none());
     }
     #[test]
@@ -731,36 +527,5 @@ mod tests {
         assert!(read_ledger_at(&link).is_err());
         assert!(write_ledger_at(&link, &[]).is_err());
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "[]");
-    }
-    #[test]
-    fn hosts_updates_only_own_section() {
-        let old="127.0.0.1 localhost\n# MCTier Magic DNS - other\n10.126.126.3 other.mct.net\n# MCTier Magic DNS End\n";
-        let peer = ChatPeerIdentity {
-            player_id: "a".repeat(64),
-            player_name: "<script>".into(),
-            virtual_ip: "10.126.126.2".into(),
-            chat_public_key: None,
-        };
-        let map = mappings(&[peer.clone()]).unwrap();
-        let new = hosts_content(old, &map).unwrap();
-        assert!(new.starts_with(old));
-        assert!(new.contains(&format!("{}.mct.net", "a".repeat(32))));
-        assert_eq!(hosts_content(&new, &[]).unwrap(), old);
-        assert!(mappings(&[peer.clone(), peer]).is_err());
-        assert!(
-            hosts_content(&format!("{old}1.2.3.4 {}.mct.net\n", "a".repeat(32)), &map).is_err()
-        );
-        assert!(!new.contains("<script>"));
-    }
-
-    #[test]
-    fn malformed_own_hosts_sections_are_never_rewritten() {
-        for old in [
-            format!("127.0.0.1 localhost\n{MARKER}\n10.1.1.1 sensitive.local\n"),
-            format!("{MARKER}\n{MARKER}\n{END}\n"),
-            format!("{MARKER}\n{END}\n{MARKER}\n{END}\n"),
-        ] {
-            assert!(hosts_content(&old, &[]).is_err());
-        }
     }
 }

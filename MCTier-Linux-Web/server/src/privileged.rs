@@ -6,17 +6,10 @@ use tokio::{
     sync::watch,
 };
 const READY: &[u8] = b"MCTierWeb helper ready\n";
-pub const HOSTS_SWITCH: &str = "--mctier-write-hosts";
 pub fn ready() {
     let mut out = std::io::stdout();
     let _ = out.write_all(READY);
     let _ = out.flush();
-}
-pub fn hosts_ready() {
-    let args: Vec<_> = std::env::args_os().collect();
-    if args.len() == 2 && args[1] == HOSTS_SWITCH && unsafe { libc::geteuid() } == 0 {
-        ready();
-    }
 }
 pub struct Helper {
     child: Child,
@@ -75,7 +68,7 @@ impl Helper {
             return Err("操作已取消，未提交系统改动".into());
         }
         let data = serde_json::to_vec(&request).map_err(|e| e.to_string())?;
-        if data.len() > crate::modules::hosts_security::MAX_HOSTS_BYTES * 2 + 4096 {
+        if data.len() > 16 * 1024 {
             return Err("授权请求过大".into());
         }
         let run = async {

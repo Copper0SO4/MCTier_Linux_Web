@@ -36,13 +36,13 @@ test('unimplemented native and file operations cannot be advertised as available
     'remote-control',
     'system-audio',
     'desktop-integration',
-    'auto-lobby',
   ]) {
     assert.equal(indexed.get(id)?.state, 'blocked', `${id} must stay blocked until migrated`);
     assert.ok(indexed.get(id)?.reason.length > 10);
   }
   // Receiving attachments and viewing screens remain independent of blocked sending/control.
-  assert.equal(indexed.get('magic-dns')?.state, 'experimental');
+  assert.equal(indexed.has('magic-dns'), false);
+  assert.equal(indexed.get('auto-lobby')?.state, 'experimental');
   assert.equal(indexed.get('avatar')?.state, 'experimental');
   for (const id of ['chat', 'screen', 'voice', 'network', 'send-file', 'send-image', 'record-voice', 'folder-share', 'room-tools', 'invite', 'lobby-history', 'appearance','advanced-network','network-fix'])
     assert.equal(indexed.get(id)?.state, 'experimental');

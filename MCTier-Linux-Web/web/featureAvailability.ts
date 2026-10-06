@@ -39,7 +39,6 @@ export const FEATURES = [
     state: 'experimental',
     reason: '目录快照已接入原版 HTTP 共享；单文件 64 MiB，总量 256 MiB。跨端访问和凭据轮换待验收。',
   },
-  { id: 'magic-dns', name: 'Magic DNS 成员域名', state: 'experimental', reason: '按原版身份派生 .mct.net 域名；预览并确认后通过系统授权更新 hosts。成员变化需手动更新，退出可清理；实际解析待验收。' },
   {
     id: 'remote-control',
     name: '远程操控',
@@ -93,7 +92,7 @@ export const FEATURES = [
     id: 'advanced-network',
     name: '高级网络 / 游戏增强',
     state: 'experimental',
-    reason: '已接入性能/P2P/KCP/QUIC、私有子网/出口客户端、回环端口转发、游戏快连和 Minecraft 查询。SOCKS5、提供出口和 LAN 广播桥未开放；新参数待验收。',
+    reason: '已接入性能/P2P/KCP/QUIC、网络栈、中继、STUN、IPv6、路由、私有子网/出口、回环转发与游戏查询。SOCKS5、任意监听器和 LAN 广播桥未开放；新参数待验收。',
   },
   {
     id: 'network-fix',
@@ -121,9 +120,9 @@ export const FEATURES = [
   },
   {
     id: 'auto-lobby',
-    name: '自动加入 / 自动更新',
-    state: 'blocked',
-    reason: '服务就绪后需手动连接大厅；后台启动、自动加入和更新安装尚未接入。',
+    name: '启动自动组网 / 浏览器接续',
+    state: 'experimental',
+    reason: '软件设置中的大厅与邀请可保存启动目标；服务启动自动运行 EasyTier，打开网页后注册大厅信令。默认关闭，不自动开启媒体或授权。真实启动接续待验收。',
   },
 ] as const satisfies readonly { id: string; name: string; state: FeatureState; reason: string }[];
 

@@ -1,6 +1,6 @@
 [package]
 name = "mctier-linux-web"
-version = "3.6.0"
+version = "3.9.0"
 edition = "2021"
 
 [dependencies]

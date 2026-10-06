@@ -135,7 +135,6 @@ async fn network_privilege_operations_require_preview_nonce_and_active_room() {
             "prepare_firewall_repair",
             json!({"backend":"ufw","zone":"","ephemeralUdp":false}),
         ),
-        ("prepare_magic_dns", json!({"remove":false})),
         ("scan_minecraft_servers", json!({"port":25565})),
         (
             "validate_network_settings",
@@ -698,4 +697,15 @@ async fn delayed_upload_cannot_register_in_a_rejoined_room_with_the_same_token()
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     assert!(continue_tx.send(()).is_err());
     assert_eq!(*app.upload_budget.lock().await, (0, 0));
+}
+
+#[tokio::test]
+async fn removed_magic_dns_commands_cannot_read_or_modify_hosts() {
+    let app = app();
+    for command in ["get_magic_dns_status", "prepare_magic_dns"] {
+        let response = router(app.clone()).oneshot(request(
+            &app, "/api/invoke", Some(json!({"command":command,"args":{"remove":false}})),
+        )).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+    }
 }

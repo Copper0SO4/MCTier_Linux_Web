@@ -63,8 +63,8 @@ function fixture() {
     'return-room',
     'session-navigation',
     'form-title',
-    'join',
-    'create',
+    'entry-submit',
+    'entry-hint',
     'player-name',
     'home-link',
     'feature-matrix',
@@ -81,9 +81,6 @@ function fixture() {
     n.attributes['aria-label'] = id;
     elements.set(id, n);
   }
-  const actions = { children: [elements.get('join'), elements.get('create')], prepend(n) { this.children = [n, ...this.children.filter(child => child !== n)]; } };
-  elements.get('join').parentElement = actions;
-  elements.get('create').parentElement = actions;
   const connect = ['create', 'join'].map((v) => {
     const n = new Element();
     n.dataset.connect = v;
@@ -198,9 +195,10 @@ test('view changes restore each page scroll instead of carrying lobby position i
   const f = fixture();
   f.connect[0].click();
   assert.equal(f.elements.get('form-title').textContent, '创建大厅');
-  assert.equal(f.elements.get('create').parentElement.children[0], f.elements.get('create'));
-  assert.equal(f.elements.get('join').textContent, '加入大厅');
+  assert.equal(f.elements.get('entry-submit').textContent, '创建大厅');
+  assert.equal(f.shell.entryMode, 'create');
   f.shell.showConnect();
   assert.equal(f.elements.get('form-title').textContent, '加入大厅');
-  assert.equal(f.elements.get('join').parentElement.children[0], f.elements.get('join'));
+  assert.equal(f.elements.get('entry-submit').textContent, '加入大厅');
+  assert.equal(f.shell.entryMode, 'join');
 });

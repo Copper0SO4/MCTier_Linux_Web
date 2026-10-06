@@ -10,6 +10,7 @@ export function setupShell() {
   let view: View = 'home',
     session: 'idle' | 'connecting' | 'online' | 'orphaned' = 'idle';
   let previous: View = 'home';
+  let entryMode: 'create' | 'join' = 'join';
   const views: View[] = ['home', 'connect', 'lobby', 'settings', 'capabilities', 'about'];
   const scrollPositions = new Map<View, number>();
   const show = (next: View) => {
@@ -43,11 +44,14 @@ export function setupShell() {
     show(next);
   };
   const selectEntryMode = (create: boolean) => {
-    element('form-title').textContent = create ? '创建大厅' : '加入大厅';
-    const submit = element<HTMLButtonElement>(create ? 'create' : 'join');
-    submit.parentElement?.prepend(submit);
-    element('join').textContent = '加入大厅';
-    element('create').textContent = '创建大厅';
+    entryMode = create ? 'create' : 'join';
+    const title = create ? '创建大厅' : '加入大厅';
+    element('form-title').textContent = title;
+    element('connect-view').setAttribute('aria-label', title);
+    element('entry-submit').textContent = title;
+    element('entry-hint').textContent = create
+      ? '创建新的大厅，名称须未被占用。已有大厅请返回主页选择“加入大厅”。'
+      : '加入已有大厅，请填写与房主一致的大厅名称和密码。';
   };
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-connect]')) {
     button.disabled = !browser.canJoin;
@@ -136,7 +140,7 @@ export function setupShell() {
   element('browser-warning').textContent = browser.canJoin
     ? ''
     : `Firefox 大厅入口暂未开放：${browser.warning}`;
-  for (const id of ['join', 'create']) element<HTMLButtonElement>(id).disabled = !browser.canJoin;
+  element<HTMLButtonElement>('entry-submit').disabled = !browser.canJoin;
   const outputSupported = 'setSinkId' in HTMLMediaElement.prototype;
   element<HTMLSelectElement>('audio-output').disabled = !outputSupported;
   element('output-support').textContent = outputSupported
@@ -149,6 +153,7 @@ export function setupShell() {
       if (session === 'idle') selectEntryMode(false);
       show(session === 'idle' ? 'connect' : returnView());
     },
+    get entryMode() { return entryMode; },
     canJoin: browser.canJoin,
     blockedReason: browser.warning,
     setSessionState(next: typeof session) {

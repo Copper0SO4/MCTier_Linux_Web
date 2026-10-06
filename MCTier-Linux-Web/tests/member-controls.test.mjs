@@ -16,7 +16,8 @@ test('per-peer volume and mute stay local; host actions await authority and reje
   t.after(() => { Object.assign(globalThis, previous); delete globalThis.memberFixture; });
   let valid = true, host = true;
   const panel = memberControls({ id: 'peer', name: 'Phone' }, { valid: () => valid, host: () => host, status() {} });
-  const slider = panel.children[1].children[0], actions = panel.children[2].children;
+  assert.equal(panel.tag, 'div', 'per-member volume must not be hidden in a disclosure');
+  const slider = panel.children[0].children[0], actions = [panel.children[1].children[0], ...panel.children[2].children[1].children];
   slider.value = '25'; slider.oninput(); assert.deepEqual(volumes, [['peer', .25]]); assert.equal(requests.length, 0);
   actions[0].onclick(); assert.ok(muted.has('peer')); assert.equal(requests.length, 0);
   actions[1].onclick(); assert.deepEqual(requests[0], ['mute', 'peer', true]);

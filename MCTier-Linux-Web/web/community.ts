@@ -833,7 +833,7 @@ export function setupCommunity(ctx: Context) {
     ['room-tools', '打开房间工具', tools],
     ['folder-share', '打开文件夹共享', folderPanel],
   ] as const) {
-    for (const placeholder of document.querySelectorAll(`[data-feature="${id}"], #feature-matrix [data-feature-id="${id}"]`)) {
+    for (const placeholder of document.querySelectorAll(`[data-feature="${id}"]`)) {
       const card = placeholder.querySelector('.feature-card') ?? placeholder;
       const actionButton = button(name, () =>
         run(async () => {
@@ -844,6 +844,11 @@ export function setupCommunity(ctx: Context) {
       actionButton.title = card.querySelector('p')?.textContent || name;
       card.append(actionButton);
     }
+  }
+  const settingsActions = { saved, plaza, import: importInvite, invite: exportInvite };
+  for (const entry of document.querySelectorAll<HTMLButtonElement>('[data-community-open]')) {
+    const action = settingsActions[entry.dataset.communityOpen as keyof typeof settingsActions];
+    if (action) entry.onclick = () => void run(async () => { await action(); });
   }
   document.querySelector('.sidebar-locks')?.append(button('公开广场 / 发布管理', plaza));
   const connect = document.querySelector('.form-locks');

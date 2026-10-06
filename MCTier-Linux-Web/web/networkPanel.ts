@@ -4,6 +4,26 @@ import { localInvoke } from '../frontend-src/services/platform/localWeb';
 import type { Player } from '../frontend-src/types';
 
 export type NetworkSettings = {
+  useSmoltcp: boolean;
+  disableKcpInput: boolean;
+  disableQuicInput: boolean;
+  proxyForwardBySystem: boolean;
+  enableAsExitNode: boolean;
+  relayAllPeerRpc: boolean;
+  disableRelayKcp: boolean;
+  enableRelayForeignNetworkKcp: boolean;
+  privateMode: boolean;
+  devName: string;
+  defaultProtocol: string;
+  ipv6: string;
+  foreignRelayBpsLimit: number;
+  relayNetworkWhitelist: string[];
+  manualRoutes: string[];
+  mappedListeners: string[];
+  tcpWhitelist: string[];
+  udpWhitelist: string[];
+  stunServers: string[];
+  stunServersV6: string[];
   listenerPort: number;
   ipv4: string;
   mtu: number;
@@ -25,6 +45,12 @@ export type NetworkSettings = {
   portForwards: { protocol: string; localPort: number; targetIp: string; targetPort: number }[];
 };
 const defaults = (): NetworkSettings => ({
+  useSmoltcp: false, disableKcpInput: false, disableQuicInput: false,
+  proxyForwardBySystem: false, enableAsExitNode: false, relayAllPeerRpc: false,
+  disableRelayKcp: false, enableRelayForeignNetworkKcp: false, privateMode: false,
+  devName: 'MCTier_Net', defaultProtocol: '', ipv6: '', foreignRelayBpsLimit: 0,
+  relayNetworkWhitelist: [], manualRoutes: [], mappedListeners: [],
+  tcpWhitelist: [], udpWhitelist: [], stunServers: [], stunServersV6: [],
   listenerPort: 0,
   ipv4: '',
   mtu: 1360,
@@ -64,7 +90,6 @@ type Preview = {
   confirmationText: string;
   title: string;
   lines: string[];
-  entries?: { playerName: string; domain: string; ip: string }[];
   commands?: string[][];
 };
 type Context = {
@@ -191,7 +216,7 @@ export function setupNetworkPanel(ctx: Context) {
     return { label, input };
   };
 
-  function open(tab: 'settings' | 'games' | 'dns' | 'repair') {
+  function open(tab: 'settings' | 'games' | 'repair') {
     if (authorizing) {
       ctx.status('系统授权仍在进行，请先完成或取消认证。', true);
       return;
@@ -207,7 +232,6 @@ export function setupNetworkPanel(ctx: Context) {
     const names = [
       ['settings', '高级网络'],
       ['games', '游戏快连'],
-      ['dns', 'Magic DNS'],
       ['repair', '网络修复'],
     ] as const;
     const buttons = names.map(([key, title]) => {
@@ -243,7 +267,6 @@ export function setupNetworkPanel(ctx: Context) {
     target = pane;
     if (tab === 'settings') advanced();
     else if (tab === 'games') games();
-    else if (tab === 'dns') void run(dns);
     else void run(repair);
   }
   let target: HTMLElement = body;
@@ -349,7 +372,7 @@ export function setupNetworkPanel(ctx: Context) {
       exitLabel,
       proxyLabel,
       hint(
-        '使用出口节点会改变本机流量路径，需对端已提供出口。子网共享会向大厅成员开放所填私有网段，请只填你希望共享的网段；不能覆盖 MCTier 网段。系统转发、提供出口节点和 SOCKS5 服务仍未开放。'
+        '使用出口节点会改变本机流量路径，需对端已提供出口。子网共享会向大厅成员开放所填私有网段；不能覆盖 MCTier 网段。系统转发需自行配置内核转发与防火墙，本程序不自动修改。'
       )
     );
     const forwards = card('本地端口转发', true),
@@ -408,6 +431,57 @@ export function setupNetworkPanel(ctx: Context) {
         addForward({ protocol: 'tcp', localPort: 25566, targetIp: '', targetPort: 25565 })
       )
     );
+    const extraFlags: { key: keyof NetworkSettings; input: HTMLInputElement }[] = [];
+    const extraFields: { key: keyof NetworkSettings; input: HTMLInputElement | HTMLTextAreaElement; kind: 'text' | 'list' | 'number' }[] = [];
+    const flag = (container: HTMLElement, key: keyof NetworkSettings, title: string) => {
+      const c = checkbox(title, settings[key] as boolean); container.append(c.label);
+      extraFlags.push({ key, input: c.input });
+    };
+    const scalar = (container: HTMLElement, key: keyof NetworkSettings, title: string, kind: 'text' | 'number' = 'text') => {
+      const c = field(title, String(settings[key]), kind); container.append(c.label);
+      if (kind === 'number') { c.input.min = '0'; c.input.max = String(Number.MAX_SAFE_INTEGER); }
+      extraFields.push({ key, input: c.input, kind }); return c.input;
+    };
+    const list = (container: HTMLElement, key: keyof NetworkSettings, title: string, placeholder = '') => {
+      const label = make('label', title), input = make('textarea'); input.rows = 3;
+      input.maxLength = 4096; input.value = (settings[key] as string[]).join('\n'); input.placeholder = placeholder;
+      label.append(input); container.append(label); extraFields.push({ key, input, kind: 'list' });
+    };
+    const stack = card('网络栈与协议输入', true);
+    flag(stack, 'useSmoltcp', '使用 smoltcp 网络栈');
+    flag(stack, 'disableKcpInput', '禁用 KCP 输入');
+    flag(stack, 'disableQuicInput', '禁用 QUIC 输入');
+    stack.append(hint('输入控制与出站 KCP/QUIC 代理是独立选项，沿用原版参数。'));
+    const device = card('网络设备与 IPv6', true);
+    scalar(device, 'devName', 'TUN 设备名称（最多15字符）').maxLength = 15;
+    scalar(device, 'ipv6', '虚拟 IPv6（留空不指定）').placeholder = 'fd00::2/64';
+    const protocol = select('默认传输协议', settings.defaultProtocol, [
+      ['', '自动（按所选节点）'], ['udp', 'UDP'], ['tcp', 'TCP'], ['ws', 'WebSocket'], ['wss', '安全 WebSocket'], ['wg', 'WireGuard'],
+    ]);
+    device.append(protocol.label);
+    flag(routing, 'proxyForwardBySystem', '通过系统内核转发子网数据');
+    flag(routing, 'enableAsExitNode', '作为出口节点（允许其他节点经本机访问网络）');
+    const relay = card('中继与私有模式', true);
+    list(relay, 'relayNetworkWhitelist', '中继网络白名单（一行一个，支持通配符）', 'MCTier-*');
+    flag(relay, 'relayAllPeerRpc', '转发所有对等节点 RPC');
+    flag(relay, 'disableRelayKcp', '禁用中继 KCP');
+    flag(relay, 'enableRelayForeignNetworkKcp', '启用中继外部网络 KCP');
+    flag(relay, 'privateMode', '私有模式（不为其它网络提供中继）');
+    scalar(relay, 'foreignRelayBpsLimit', '外部网络中继限速（BPS，0不指定）', 'number');
+    const routes = card('路由与映射监听器', true);
+    list(routes, 'manualRoutes', '手动路由 CIDR（一行一个）', '192.168.1.0/24');
+    list(routes, 'mappedListeners', '公网映射监听器（一行一个）', 'udp://203.0.113.1:11010');
+    routes.append(hint('映射地址用于声明已有公网端口映射，不会替你开放端口或修改路由器。手动路由可能改变流量路径。'));
+    const whitelist = card('虚拟网络端口白名单', true);
+    list(whitelist, 'tcpWhitelist', 'TCP 端口或范围（一行一个，留空沿用核心默认）', '14539-14540\n25565');
+    list(whitelist, 'udpWhitelist', 'UDP 端口或范围（一行一个，留空沿用核心默认）', '19132');
+    whitelist.append(hint('这是 EasyTier 虚拟网络访问限制，不是 UFW/firewalld 规则。限制 TCP 时请保留14539、14540，否则聊天和文件功能可能被阻断。'));
+    const stun = card('EasyTier STUN 服务器', true);
+    list(stun, 'stunServers', 'STUN 主机:端口（一行一个，留空使用核心默认）', 'stun.example.com:3478');
+    list(stun, 'stunServersV6', 'IPv6 STUN 主机:端口（一行一个）', '[2001:db8::1]:3478');
+    stun.append(hint('仅用于 EasyTier P2P 打洞，与浏览器 WebRTC ICE 服务器不同。填写值作为核心的 STUN 覆盖参数，本应用不替换你填写的服务器。'));
+    const limits = card('当前 Linux Web 固定项', true);
+    limits.append(hint('与原版一致固定 AES-256-GCM 加密和10.126.126.0/24虚拟网段。无 TUN / 核心 DHCP 与当前聊天接口、原版固定选址流程不兼容；任意监听器和无监听模式尚未接入防火墙端口管理；SOCKS5 尚未接入受限监听。这些选项暂不开放。Magic DNS 已按用户决定移除。'));
     const split = (s: string) =>
       s
         .split(/\r?\n/)
@@ -426,6 +500,7 @@ export function setupNetworkPanel(ctx: Context) {
           compression: compression.input.value,
           p2pMode: mode.input.value,
           quicPort: Number(quicPort.input.value),
+          defaultProtocol: protocol.input.value,
           exitNodes: split(exits.value),
           proxyNetworks: split(proxies.value),
           portForwards: editors.map((f) => ({
@@ -436,6 +511,9 @@ export function setupNetworkPanel(ctx: Context) {
           })),
         };
         for (const c of toggles) candidate[c.key] = c.input.checked;
+        for (const c of extraFlags) (candidate as unknown as Record<string, unknown>)[c.key] = c.input.checked;
+        for (const c of extraFields) (candidate as unknown as Record<string, unknown>)[c.key] = c.kind === 'list'
+          ? split(c.input.value) : c.kind === 'number' ? Number(c.input.value) : c.input.value.trim();
         save.disabled = true;
         try {
           const validated = await localInvoke<NetworkSettings>(
@@ -576,61 +654,6 @@ export function setupNetworkPanel(ctx: Context) {
         '点击后只向已同步成员的虚拟 IP 发起原版 Minecraft 状态查询。随机 LAN 端口请手动填写；自动局域网广播桥和基岩版发现暂未接入。'
       ),
       results
-    );
-  }
-  async function dns() {
-    const current = generation,
-      pane = target;
-    pane.append(
-      hint(
-        '域名沿用原版身份派生规则：身份前 32 位 + .mct.net。一次性授权只更新 LinuxWeb 标记段，不接管系统 DNS。'
-      )
-    );
-    const result = await localInvoke<{
-      entries: { playerName: string; domain: string; ip: string }[];
-      installed: boolean;
-      upToDate: boolean;
-      error?: string;
-    }>('get_magic_dns_status');
-    if (current !== generation) return;
-    pane.append(
-      hint(
-        result.installed
-          ? result.upToDate
-            ? 'hosts 记录与当前成员一致。'
-            : '存在 Linux Web 记录；成员或地址变动后请手动更新。'
-          : '尚未写入 Linux Web hosts 记录。'
-      )
-    );
-    if (result.error) pane.append(hint(result.error));
-    for (const m of result.entries) {
-      const row = make('div');
-      row.className = 'community-row';
-      row.append(
-        make('strong', m.playerName),
-        make('code', m.domain),
-        hint(m.ip),
-        button('复制域名', () =>
-          run(async () => {
-            await navigator.clipboard.writeText(m.domain);
-          })
-        )
-      );
-      pane.append(row);
-    }
-    const actions = make('div');
-    actions.className = 'community-tool-actions';
-    actions.append(
-      button('预览更新域名', () => run(() => prepare('prepare_magic_dns', { remove: false }))),
-      button('预览清理域名', () => run(() => prepare('prepare_magic_dns', { remove: true }))),
-      button('刷新映射状态', () => open('dns'))
-    );
-
-    pane.append(
-      actions,
-      hint(
-        '退出大厅或停服务后记录不会自动删除；可再次启动服务，进入此页清理。实际解析、对端游戏访问仍需验收。'
-      )
     );
   }
   async function repair() {
@@ -950,7 +973,6 @@ export function setupNetworkPanel(ctx: Context) {
       )
     );
     for (const line of preview.lines) summary.append(hint(line));
-    for (const m of preview.entries || []) summary.append(make('code', `${m.ip} → ${m.domain}`));
     if (preview.commands) {
       const details = make('details'),
         code = make('pre');
@@ -1011,7 +1033,7 @@ export function setupNetworkPanel(ctx: Context) {
         cancel.disabled = true;
         return;
       }
-      open(command.includes('dns') ? 'dns' : 'repair');
+      open('repair');
     });
     const actions = make('div');
     actions.className = 'community-tool-actions';
@@ -1022,10 +1044,9 @@ export function setupNetworkPanel(ctx: Context) {
   for (const [id, title, tab] of [
     ['advanced-network', '高级网络 / 游戏快连', 'settings'],
     ['network-fix', '预览网络修复', 'repair'],
-    ['magic-dns', '管理成员域名', 'dns'],
   ] as const) {
     for (const p of document.querySelectorAll(
-      `[data-feature="${id}"], #feature-matrix [data-feature-id="${id}"]`
+      `[data-feature="${id}"]`
     )) {
       const container = p.querySelector('.feature-card') ?? p;
       const b = button(title, () => open(tab));
@@ -1034,6 +1055,12 @@ export function setupNetworkPanel(ctx: Context) {
       container.append(b);
     }
   }
+  for (const entry of document.querySelectorAll<HTMLButtonElement>('[data-network-open]')) {
+    const tab = entry.dataset.networkOpen;
+    if (tab === 'settings' || tab === 'games' || tab === 'repair') entry.onclick = () => open(tab);
+  }
+  const entry = document.getElementById('easytier-advanced-open');
+  if (entry) entry.onclick = () => open('settings');
   document
     .querySelector('.sidebar-locks')
     ?.append(button('网络设置 / 游戏', () => open('games')));

@@ -23,13 +23,7 @@ pub mod virtual_network;
 
 #[path = "../../../src-tauri/src/modules/file_transfer.rs"]
 pub mod file_transfer;
-#[path = "../../../src-tauri/src/modules/hosts_manager.rs"]
-pub mod hosts_manager;
-#[path = "../../../src-tauri/src/modules/hosts_security.rs"]
-pub mod hosts_security;
 #[path = "../shared/minecraft_discovery.rs"]
 pub mod minecraft_discovery;
 #[path = "../shared/secret_store.rs"]
 pub mod secret_store;
-#[path = "../../../src-tauri/src/modules/unix_hosts_helper.rs"]
-pub mod unix_hosts_helper;

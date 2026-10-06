@@ -8,6 +8,26 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 pub struct NetworkSettings {
+    pub use_smoltcp: bool,
+    pub disable_kcp_input: bool,
+    pub disable_quic_input: bool,
+    pub proxy_forward_by_system: bool,
+    pub enable_as_exit_node: bool,
+    pub relay_all_peer_rpc: bool,
+    pub disable_relay_kcp: bool,
+    pub enable_relay_foreign_network_kcp: bool,
+    pub private_mode: bool,
+    pub dev_name: String,
+    pub default_protocol: String,
+    pub ipv6: String,
+    pub foreign_relay_bps_limit: u64,
+    pub relay_network_whitelist: Vec<String>,
+    pub manual_routes: Vec<String>,
+    pub mapped_listeners: Vec<String>,
+    pub tcp_whitelist: Vec<String>,
+    pub udp_whitelist: Vec<String>,
+    pub stun_servers: Vec<String>,
+    pub stun_servers_v6: Vec<String>,
     pub listener_port: u16,
     pub ipv4: String,
     pub mtu: u32,
@@ -40,6 +60,14 @@ pub struct Forward {
 impl Default for NetworkSettings {
     fn default() -> Self {
         Self {
+            use_smoltcp: false, disable_kcp_input: false, disable_quic_input: false,
+            proxy_forward_by_system: false, enable_as_exit_node: false,
+            relay_all_peer_rpc: false, disable_relay_kcp: false,
+            enable_relay_foreign_network_kcp: false, private_mode: false,
+            dev_name: "MCTier_Net".into(), default_protocol: String::new(), ipv6: String::new(),
+            foreign_relay_bps_limit: 0, relay_network_whitelist: vec![], manual_routes: vec![],
+            mapped_listeners: vec![], tcp_whitelist: vec![], udp_whitelist: vec![],
+            stun_servers: vec![], stun_servers_v6: vec![],
             listener_port: 0,
             ipv4: String::new(),
             mtu: 1360,
@@ -66,6 +94,66 @@ pub fn safe_port(port: u16) -> bool {
     port >= 1024 && !matches!(port, 14700 | 14539 | 14540)
 }
 impl NetworkSettings {
+    fn validate_extended(&self) -> Result<(), String> {
+        if self.dev_name.len() > 15 || (!self.dev_name.is_empty() &&
+            (!self.dev_name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+             || self.dev_name.starts_with('-'))) {
+            return Err("TUN 名称限15个字母、数字、下划线或连字符，不能以连字符开头".into());
+        }
+        if !matches!(self.default_protocol.as_str(), "" | "udp" | "tcp" | "ws" | "wss" | "wg") {
+            return Err("默认协议须为 udp/tcp/ws/wss/wg 或留空".into());
+        }
+        if self.foreign_relay_bps_limit > 9_007_199_254_740_991 {
+            return Err("中继限速超出浏览器整数范围".into());
+        }
+        if !self.ipv6.is_empty() {
+            let (ip, prefix) = self.ipv6.split_once('/').ok_or("IPv6 需要地址/前缀")?;
+            let ip: std::net::Ipv6Addr = ip.parse().map_err(|_| "IPv6 地址无效")?;
+            let prefix: u8 = prefix.parse().map_err(|_| "IPv6 前缀无效")?;
+            if prefix > 128 || ip.is_unspecified() || ip.is_loopback() || ip.is_multicast() || self.disable_ipv6 {
+                return Err("虚拟 IPv6 不得为回环、未指定或组播；启用时不能同时禁用 IPv6".into());
+            }
+        }
+        for list in [&self.relay_network_whitelist, &self.manual_routes, &self.mapped_listeners,
+            &self.tcp_whitelist, &self.udp_whitelist, &self.stun_servers, &self.stun_servers_v6] {
+            if list.len() > 16 || list.iter().any(|v| v.is_empty() || v.len() > 253 || v.starts_with('-') || v.chars().any(|c| c.is_control() || c.is_whitespace())) {
+                return Err("高级列表最多16项；每项限253字符，不接受空白、控制字符或命令参数".into());
+            }
+        }
+        if self.relay_network_whitelist.iter().any(|v| !v.chars().all(|c| c.is_alphanumeric() || "_-.*?".contains(c))) {
+            return Err("中继网络白名单须为网络名称或通配符".into());
+        }
+        for route in &self.manual_routes {
+            let (ip, prefix) = route.split_once('/').ok_or("路由需要 IPv4 CIDR")?;
+            let _: std::net::Ipv4Addr = ip.parse().map_err(|_| "路由 IPv4 无效")?;
+            let prefix: u8 = prefix.parse().map_err(|_| "路由前缀无效")?;
+            if prefix > 32 { return Err("路由前缀须为0–32".into()); }
+        }
+        for list in [&self.tcp_whitelist, &self.udp_whitelist] {
+            for value in list {
+                let (a, b) = value.split_once('-').unwrap_or((value, value));
+                let a: u16 = a.parse().map_err(|_| "白名单须为端口或端口范围")?;
+                let b: u16 = b.parse().map_err(|_| "白名单须为端口或端口范围")?;
+                if a == 0 || a > b { return Err("端口白名单范围无效".into()); }
+            }
+        }
+        for v in &self.mapped_listeners {
+            let u = reqwest::Url::parse(v).map_err(|_| "映射监听器 URL 无效")?;
+            if !matches!(u.scheme(), "tcp" | "udp" | "ws" | "wss" | "wg") || u.host_str().is_none()
+                || u.port().is_none_or(|p| p == 0) || !u.username().is_empty() || u.password().is_some()
+                || u.query().is_some() || u.fragment().is_some() || !matches!(u.path(), "" | "/") {
+                return Err("映射监听器须为协议://地址:端口，不含凭证、路径或查询".into());
+            }
+        }
+        for v in self.stun_servers.iter().chain(&self.stun_servers_v6) {
+            let u = reqwest::Url::parse(&format!("udp://{v}")).map_err(|_| "STUN 地址须为主机:端口，IPv6 使用[地址]:端口")?;
+            if u.host_str().is_none() || u.port().is_none_or(|p| p == 0) || !u.username().is_empty()
+                || u.password().is_some() || !u.path().is_empty() || u.query().is_some() || u.fragment().is_some() {
+                return Err("STUN 地址须为主机:端口，IPv6 使用[地址]:端口".into());
+            }
+        }
+        Ok(())
+    }
     pub fn config(&self) -> Result<EasyTierAdvancedConfig, String> {
         if (self.listener_port != 0 && !safe_port(self.listener_port))
             || !(576..=9000).contains(&self.mtu)
@@ -136,7 +224,28 @@ impl NetworkSettings {
                 );
             }
         }
+        self.validate_extended()?;
         let mut c = EasyTierAdvancedConfig::default();
+        c.use_smoltcp = self.use_smoltcp;
+        c.disable_kcp_input = self.disable_kcp_input;
+        c.disable_quic_input = self.disable_quic_input;
+        c.proxy_forward_by_system = self.proxy_forward_by_system;
+        c.enable_as_exit_node = self.enable_as_exit_node;
+        c.relay_all_peer_rpc = self.relay_all_peer_rpc;
+        c.disable_relay_kcp = self.disable_relay_kcp;
+        c.enable_relay_foreign_network_kcp = self.enable_relay_foreign_network_kcp;
+        c.private_mode = self.private_mode;
+        c.dev_name = (!self.dev_name.is_empty()).then(|| self.dev_name.clone());
+        c.default_protocol = (!self.default_protocol.is_empty()).then(|| self.default_protocol.clone());
+        c.ipv6 = (!self.ipv6.is_empty()).then(|| self.ipv6.clone());
+        c.foreign_relay_bps_limit = (self.foreign_relay_bps_limit != 0).then_some(self.foreign_relay_bps_limit);
+        c.relay_network_whitelist = self.relay_network_whitelist.clone();
+        c.manual_routes = self.manual_routes.clone();
+        c.mapped_listeners = self.mapped_listeners.clone();
+        c.tcp_whitelist = self.tcp_whitelist.clone();
+        c.udp_whitelist = self.udp_whitelist.clone();
+        c.stun_servers = self.stun_servers.clone();
+        c.stun_servers_v6 = self.stun_servers_v6.clone();
         c.ipv4 = (!self.ipv4.is_empty()).then(|| format!("{}/24", self.ipv4));
         c.mtu = Some(self.mtu);
         c.multi_thread = self.multi_thread;
@@ -164,7 +273,7 @@ impl NetworkSettings {
                 dst_addr: format!("{}:{}", f.target_ip, f.target_port),
             })
             .collect();
-        // Magic DNS uses the original bounded hosts helper, never EasyTier's OS DNS takeover.
+        // Linux Web does not manage system DNS.
         c.accept_dns = false;
         Ok(c)
     }

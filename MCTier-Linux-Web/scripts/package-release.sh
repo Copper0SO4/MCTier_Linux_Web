@@ -21,6 +21,7 @@ install -m 0755 MCTier-Linux-Web/server/target/release/mctier-linux-web "$APP/bi
 install -m 0755 "$CORE" "$APP/bin/binaries/easytier-core"
 install -m 0755 "$CLI" "$APP/bin/binaries/easytier-cli"
 install -m 0644 MCTier-Linux-Web/packaging/README-Linux.txt "$APP/README-Linux.txt"
+install -m 0644 MCTier-Linux-Web/ADVANCED-NETWORK.md "$APP/ADVANCED-NETWORK.md"
 install -m 0644 MCTier-Linux-Web/UFW-P2P-TROUBLESHOOTING.md "$APP/UFW-P2P-TROUBLESHOOTING.md"
 DIST="$ROOT/MCTier-Linux-Web/dist"
 mkdir -p "$DIST"

@@ -13,7 +13,7 @@
         >
         <div class="header-actions">
           <span id="service-state" class="badge">连接本地服务…</span
-          ><button type="button" id="return-room" hidden>返回大厅</button
+          ><button type="button" id="resume-auto-network" hidden>接续自动组网</button><button type="button" id="return-room" hidden>返回大厅</button
           ><button type="button" data-view="capabilities">功能状态</button
           ><button type="button" id="leave" disabled hidden>退出 / 取消</button>
         </div>
@@ -58,7 +58,7 @@
           aria-label="连接大厅"
         >
           <div class="lobby-form-card">
-            <button type="button" class="back-button" data-back>← 返回</button>
+            <button type="button" class="web-back-button" data-back><span aria-hidden="true">←</span><span>返回</span></button>
             <h2 id="form-title" class="lobby-form-title">加入大厅</h2>
             <form id="lobby-form" class="lobby-form">
               <label
@@ -88,7 +88,7 @@
                   autocomplete="off"
               /></label>
               <details>
-                <summary>节点与信令服务</summary>
+                <summary>高级选项：节点与信令服务</summary>
                 <label
                   >EasyTier 节点<input
                     id="server-node"
@@ -106,18 +106,17 @@
                 /></label>
                 <p class="hint">负责大厅和 WebRTC 信令。</p>
                 <button id="signal-probe" type="button">检查信令握手</button>
+                <button id="easytier-advanced-open" type="button">EasyTier 高级设置</button>
               </details>
               <p class="hint">使用原版名称与密码连接大厅。房主身份以信令服务返回的成员信息为准。</p>
               <div class="lobby-entry-actions">
-                <button id="join" class="primary connect-submit" type="submit">加入大厅</button>
-                <button id="create" class="connect-submit" type="submit">创建大厅</button>
+                <button id="entry-submit" class="primary connect-submit" type="submit">加入大厅</button>
               </div>
-              <p class="hint">加入只进入已有大厅；创建要求名称未被占用。两者由信令服务校验。</p>
+              <p id="entry-hint" class="hint">加入已有大厅，请填写与房主一致的大厅名称和密码。</p>
             </form>
             <div class="form-locks">
               <div data-feature="lobby-history"></div>
               <div data-feature="advanced-network"></div>
-              <div data-feature="magic-dns"></div>
             </div>
             <p class="hint">
               EasyTier 以普通用户运行。缺少网络权限时会明确报错，系统授权需由你确认。
@@ -291,7 +290,7 @@
         </section>
         <section id="settings-view" class="utility-view web-view" hidden aria-label="软件设置">
           <header class="utility-header">
-            <button type="button" class="back-button" data-back>← 返回</button>
+            <button type="button" class="web-back-button" data-back><span aria-hidden="true">←</span><span>返回</span></button>
             <h2>软件设置</h2>
           </header>
           <div class="settings-card">
@@ -324,16 +323,42 @@
           </div>
           <div id="profile-panel" class="settings-card"></div>
           <div id="statistics-panel" class="settings-card"></div>
-          <div class="feature-grid">
+          <div id="network-settings-panel" class="settings-category" hidden>
+            <div class="settings-card">
+              <h3>EasyTier 高级设置</h3>
+              <p class="hint">配置性能、打洞、中继、路由和 STUN；保存后下次加入生效。</p>
+              <button type="button" data-network-open="settings">打开 EasyTier 高级设置</button>
+            </div>
+            <div class="settings-card">
+              <h3>游戏与网络维护</h3>
+              <p class="hint">游戏地址与查询在入房后使用；防火墙更改仍需预览及系统授权。</p>
+              <div class="settings-actions">
+                <button type="button" data-network-open="games">游戏快连</button>
+                <button type="button" data-network-open="repair">网络诊断 / 防火墙修复</button>
+              </div>
+            </div>
+          </div>
+          <div id="lobby-settings-panel" class="settings-category" hidden>
+            <div id="auto-join-settings" class="settings-card"></div>
+            <div class="settings-card">
+              <h3>大厅与邀请</h3>
+              <p class="hint">管理常用大厅、查看公开广场或导入邀请；选中大厅只填写表单，由你手动加入。</p>
+              <div class="settings-actions">
+                <button type="button" data-community-open="saved">常用 / 最近大厅</button>
+                <button type="button" data-community-open="plaza">公开广场</button>
+                <button type="button" data-community-open="import">导入邀请</button>
+                <button type="button" data-community-open="invite">生成邀请 / 大厅二维码</button>
+              </div>
+              <p class="hint">生成邀请使用当前大厅表单信息；房主管理、文件夹共享和房间工具位于大厅左侧。</p>
+            </div>
+          </div>
+          <div id="desktop-settings-panel" class="settings-category" hidden>
             <div data-feature="desktop-integration"></div>
-            <div data-feature="appearance"></div>
-            <div data-feature="avatar"></div>
-            <div data-feature="auto-lobby"></div>
           </div>
         </section>
         <section id="capabilities-view" class="utility-view web-view" hidden aria-label="功能状态">
           <header class="utility-header">
-            <button type="button" class="back-button" data-back>← 返回</button>
+            <button type="button" class="web-back-button" data-back><span aria-hidden="true">←</span><span>返回</span></button>
             <h2>Linux 功能状态</h2>
           </header>
           <p class="hint">绿色“用户已验收”表示已有本项目真实使用反馈；“已接入 · 实验性”表示代码已接入但尚未逐项验收；“暂未开放”表示功能仍受限。信令连接、EasyTier 组网与 WebRTC 媒体是不同链路。</p>
@@ -341,7 +366,7 @@
         </section>
         <section id="about-view" class="utility-view web-view" hidden aria-label="关于软件">
           <header class="utility-header">
-            <button type="button" class="back-button" data-back>← 返回</button>
+            <button type="button" class="web-back-button" data-back><span aria-hidden="true">←</span><span>返回</span></button>
             <h2>关于 MCTier</h2>
           </header>
           <div class="about-card">

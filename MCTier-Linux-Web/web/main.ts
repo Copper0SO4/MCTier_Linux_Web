@@ -1,3 +1,5 @@
+import { RegistrationError } from '../frontend-src/services/signaling/registrationRecovery';
+import { setupAutoJoin, showAutoJoinNotification, showAutoJoinFailure, type AutoNetwork } from './autoJoin';
 import { setupSettingsTabs } from './settingsTabs';
 import { captureSession } from './sessionGuard';
 import { readProfile, setupProfile } from './profile';
@@ -45,7 +47,7 @@ function controlState(online: boolean) {
   for (const id of ['mic', 'speaker', 'resume-audio', 'voice-group', 'send', 'chat-text', 'recipient', 'peer-query', 'share-screen', 'refresh-shares']) {
     (el(id) as HTMLButtonElement).disabled = !online;
   }
-  for (const id of ['join', 'create']) el<HTMLButtonElement>(id).disabled = busy || online || !shell.canJoin || !serviceReady;
+  el<HTMLButtonElement>('entry-submit').disabled = busy || online || !shell.canJoin || !serviceReady;
   el<HTMLButtonElement>('leave').disabled = !busy && !online;
   el<HTMLButtonElement>('signal-probe').disabled = busy || online || !serviceReady;
   for (const id of ['player-name', 'lobby-name', 'lobby-password', 'server-node', 'signaling-server']) el<HTMLInputElement>(id).readOnly = busy || online;
@@ -83,7 +85,7 @@ const profilePanel = setupProfile({
 });
 const settingsTabs = setupSettingsTabs();
 useAppStore.getState().updateConfig({ avatarData: readProfile().avatarData });
-for (const card of document.querySelectorAll('[data-feature="avatar"] .feature-card, #feature-matrix [data-feature-id="avatar"]')) {
+for (const card of document.querySelectorAll('[data-feature="avatar"] .feature-card')) {
   const action = document.createElement('button'); action.type = 'button'; action.className = 'feature-action'; action.textContent = '个人资料与统计';
   action.onclick = () => { shell.showSettings(); settingsTabs.profile(); el('profile-panel').scrollIntoView({ block: 'start' }); }; card.append(action);
 }
@@ -152,6 +154,10 @@ window.addEventListener('mctier-version-default', () => {
   const status = document.getElementById('reported-version-status'); if (status) status.textContent = versionDetectionStatus();
 });
 const networkPanel=setupNetworkPanel({online:()=>online,busy:()=>busy,players:()=>[...players.values()],restartNetwork,status:notice});
+const autoJoinPanel = setupAutoJoin({ snapshot: () => ({
+  name: input('lobby-name').trim(), password: input('lobby-password'), playerName: input('player-name').trim(),
+  serverNode: input('server-node').trim(), signalingServer: input('signaling-server').trim(), networkSettings: networkPanel.settings(),
+}), status: notice });
 
 el('copy-ip').onclick = async () => {
   if (!online) return;
@@ -258,7 +264,9 @@ function renderMembers() {
       recipient.append(new Option(player.name, player.id));
       const current = ticket;
       const controls = memberControls(player, { valid: () => online && ticket === current && players.has(player.id), host: () => online && hostId === localId, status: notice });
-      (controls as HTMLDetailsElement).open = expanded.has(player.id); row.append(controls);
+      const management = controls.querySelector<HTMLDetailsElement>('details');
+      if (management) management.open = expanded.has(player.id);
+      row.append(controls);
     }
     members.append(row);
   }
@@ -344,7 +352,7 @@ async function startNetwork(attempt: number): Promise<Lobby> {
     creatorVirtualIp: '', automaticVirtualIp: result.automatic_virtual_ip, addressAttempt: attempt,
     serverNode: input('server-node').trim(), signalingServer: input('signaling-server').trim() };
 }
-async function join(entryMode: 'create' | 'join') {
+async function join(entryMode: 'create' | 'join', adopted?: AutoNetwork) {
   if (!shell.canJoin) { notice(shell.blockedReason, true); return; }
   if (!serviceReady) { notice('本地服务尚未就绪，请确认服务已启动后刷新页面。', true); return; }
   if (busy || online) return;
@@ -357,13 +365,19 @@ async function join(entryMode: 'create' | 'join') {
     beginReportedVersion();
     const identity = await prepareSignalingIdentity();
     lobbySessionCoordinator.assertCurrent(current); localId = identity.clientId; localName = input('player-name').trim();
-    notice('正在启动所选 EasyTier 节点并等待本机虚拟接口…');
-    let lobby: Lobby = { ...await startNetwork(0), entryMode };
+    notice(adopted ? '正在接续服务启动时已建立的 EasyTier 组网…' : '正在启动所选 EasyTier 节点并等待本机虚拟接口…');
+    if (adopted && adopted.playerId !== localId) throw new Error('自动组网身份与浏览器签名不一致');
+    let lobby: Lobby = adopted ? {
+      id: adopted.input.name, name: adopted.input.name, createdAt: new Date().toISOString(), virtualIp: adopted.virtualIp,
+      creatorVirtualIp: '', automaticVirtualIp: false, addressAttempt: 0,
+      serverNode: adopted.input.serverNode, signalingServer: adopted.input.signalingServer, entryMode: 'auto',
+    } : { ...await startNetwork(0), entryMode };
     for (;;) {
       lobbySessionCoordinator.assertCurrent(current);
       notice('虚拟接口已就绪，正在注册原版协议 v3 信令…');
       try { const password=await localInvoke<string>('resolve_lobby_password',{password:input('lobby-password')}); lobbySessionCoordinator.assertCurrent(current); await webrtcClient.initialize(localId, localName, lobby.name, password, undefined, false, lobby.signalingServer, current, lobby.entryMode); break; }
       catch (error) {
+        if (adopted) throw error;
         const replacement = await recoverVirtualAddress(lobby, label(error), async attempt => {
           await localInvoke('leave_lobby');
           return startNetwork(attempt);
@@ -387,10 +401,15 @@ async function join(entryMode: 'create' | 'join') {
     controlState(true); renderMembers();
     void community.record().catch(error=>notice(`大厅已加入，但最近记录保存失败：${label(error)}`,true));
     notice('信令已注册，EasyTier 虚拟接口已就绪。请分别验证数据收发与双向语音。');
+    if (adopted) showAutoJoinNotification(lobby.name);
   } catch (error) {
     const cancelled = !lobbySessionCoordinator.isCurrent(current);
-    await leave();
-    if (!cancelled) notice(`${action}失败：${label(error)}`, true);
+    const rejected = error instanceof RegistrationError && !error.retryable;
+    await leave(!!adopted && !rejected);
+    if (!cancelled) {
+      notice(`${action}失败：${label(error)}${adopted && rejected ? '。自动组网已停止，请修正启动配置后重试。' : ''}`, true);
+      if (adopted && rejected) showAutoJoinFailure(label(error));
+    }
   }
 }
 async function restartNetwork() {
@@ -403,7 +422,7 @@ async function restartNetwork() {
     notice('EasyTier 已重新启动，虚拟接口就绪；请核对对端数据、P2P 路由及媒体恢复。');
   } finally { busy = false; controlState(online); }
 }
-async function leave() {
+async function leave(preserveAutoNetwork = false) {
   if (leaving) return;
   leaving = true; online = false; sessionStartedAt = 0; signalingReconnects = 0; endReportedVersion(); community.reset(); networkPanel.reset(); composer.cancel(); stopViewing();
   for (const controller of downloads) controller.abort(); downloads.clear();
@@ -414,7 +433,7 @@ async function leave() {
   if (leaseTimer) clearInterval(leaseTimer); leaseTimer = null;
   if (rosterSyncTimer) clearTimeout(rosterSyncTimer); rosterSyncTimer=null;
   try {
-    const results = await Promise.allSettled([webrtcClient.cleanup(), localInvoke('leave_lobby')]);
+    const results = await Promise.allSettled([webrtcClient.cleanup(), localInvoke(preserveAutoNetwork ? 'detach_browser' : 'leave_lobby')]);
     const failure = results.find(result => result.status === 'rejected');
     if (failure?.status === 'rejected') throw failure.reason;
   } catch (error) { notice(`清理请求失败：${label(error)}。服务将在浏览器租约过期后停止自有进程。`, true); }
@@ -427,7 +446,7 @@ async function leave() {
     text('messages', '已退出大厅，聊天与媒体资源已释放。'); text('peer-report', ''); renderShares();
   }
 }
-el<HTMLFormElement>('lobby-form').onsubmit = event => { event.preventDefault(); void join((event as SubmitEvent).submitter?.id === 'create' ? 'create' : 'join'); };
+el<HTMLFormElement>('lobby-form').onsubmit = event => { event.preventDefault(); void join(shell.entryMode); };
 el<HTMLFormElement>('lobby-form').addEventListener('invalid', event => {
   const field = event.target as HTMLInputElement;
   notice(`请检查${field.closest('label')?.firstChild?.textContent?.trim() || '输入项'}：${field.validationMessage}`, true);
@@ -516,6 +535,7 @@ async function refreshDiagnostics() {
     text('signal-details', closed ? `上次断开 ${closed.code} · 存活 ${(closed.aliveMs / 1000).toFixed(1)} 秒 · 收包间隔 ${(closed.silentMs / 1000).toFixed(1)} 秒 · 待处理 ${closed.queuedFrames} · ${closed.pongPending ? '等待心跳' : '无待收心跳'}` : '暂无断开记录');
     text('network-state', status.network.state === 'interface-ready' ? '虚拟接口就绪' : status.network.state === 'starting' ? 'EasyTier 启动中' : 'EasyTier 未启动');
     el('network-dot').classList.toggle('ready', status.network.state === 'interface-ready');
+    el('resume-auto-network').hidden = !status.autoNetwork || online || busy || !shell.canJoin;
     if (online && !status.session) { await leave(); notice('EasyTier 已停止，浏览器会话已清理。请手动重新加入。', true); }
     if (!online) return;
     // A failed chat-auth sync resets the shared service during reconnect.
@@ -621,9 +641,31 @@ window.addEventListener('pagehide', () => {
   for (const url of previewUrls) URL.revokeObjectURL(url);
   // Synchronously release capture even when the browser cannot finish requests.
   void webrtcClient.setMicEnabled(false); screenShareService.cleanup(); lobbySessionCoordinator.cancel();
-  void localInvoke('leave_lobby', {}, true).catch(() => {});
-  void webrtcClient.cleanup();
+  void localInvoke('detach_browser', {}, true).catch(() => {});
+  void webrtcClient.cleanup(true);
 });
+
+async function resumeAutoNetwork() {
+  if (busy || online || !shell.canJoin) return;
+  el<HTMLButtonElement>('resume-auto-network').disabled = true;
+  try {
+    const adopted = await localInvoke<AutoNetwork>('adopt_auto_network');
+    for (const [id, value] of [
+      ['lobby-name', adopted.input.name], ['lobby-password', adopted.input.password], ['player-name', adopted.input.playerName],
+      ['server-node', adopted.input.serverNode], ['signaling-server', adopted.input.signalingServer],
+    ]) el<HTMLInputElement>(id).value = value;
+    await join('join', adopted);
+    const state = await fetch('/api/status', { cache: 'no-store' }).then(r => r.json());
+    if (!online && state.autoNetwork && state.session) {
+      shell.setSessionState('orphaned');
+      el<HTMLButtonElement>('leave').disabled = false;
+      el<HTMLButtonElement>('entry-submit').disabled = true;
+      el<HTMLButtonElement>('signal-probe').disabled = true;
+    }
+  } catch (error) { notice(`自动组网接续失败：${label(error)}。请检查信令或其它控制页面。`, true); }
+  finally { el<HTMLButtonElement>('resume-auto-network').disabled = false; }
+}
+el('resume-auto-network').onclick = () => { void resumeAutoNetwork(); };
 
 async function initialize() {
   try {
@@ -633,17 +675,25 @@ async function initialize() {
     el<HTMLInputElement>('server-node').value = boot.defaults.serverNode;
     el<HTMLInputElement>('signaling-server').value = boot.defaults.signalingServer;
     try { el<HTMLInputElement>('player-name').value = readProfile().name || localStorage.getItem('mctier_linux_player_name') || ''; } catch { /* User can enter a name without storage. */ }
-    // No signing identity, device permission, node or signaling connection at startup.
+    // Saved startup profile is explicit opt-in; media always requires user action.
     if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia) notice('当前浏览器上下文不能申请麦克风；请访问准确的回环地址。', true);
     text('service-state', '本地服务在线');
-    const response = await fetch('/api/status', { cache: 'no-store' }); const status = await response.json();
-    if (status.session) notice('本地服务已有大厅会话。若是本页面刷新留下的会话，请先点击退出，再手动重新加入。');
-    if (status.session) {
+    let status = await fetch('/api/status', { cache: 'no-store' }).then(r => r.json());
+    for (let tries = 0; status.autoStartup?.state === 'starting' && tries < 30; tries++) {
+      notice('服务正在按已保存配置自动组网…');
+      await new Promise(resolve => window.setTimeout(resolve, 1000));
+      status = await fetch('/api/status', { cache: 'no-store' }).then(r => r.json());
+    }
+    await autoJoinPanel.load();
+    if (status.autoNetwork && status.session && shell.canJoin) {
+      await resumeAutoNetwork();
+    } else if (status.session) {
+      notice(status.autoNetwork ? '服务已自动组网；请用 Chrome/Chromium 打开以接续大厅。' : '本地服务已有大厅会话，请先退出或回到控制该会话的页面。');
       shell.setSessionState('orphaned');
       el<HTMLButtonElement>('leave').disabled = false;
-      for (const id of ['join', 'create']) el<HTMLButtonElement>(id).disabled = true;
+      el<HTMLButtonElement>('entry-submit').disabled = true;
       el<HTMLButtonElement>('signal-probe').disabled = true;
-    }
+    } else if (status.autoStartup?.state === 'failed') notice(`启动自动组网失败：${status.autoStartup.error}。请检查保存配置，手动加入或下次启动重试。`, true);
     void refreshReportedDefault().catch(error => notice(label(error), true));
     void refreshDiagnostics();
     window.setInterval(() => { void refreshDiagnostics(); }, 2500);

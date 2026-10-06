@@ -63,6 +63,7 @@ pub struct ControlTicket { owner: String, generation: u64 }
 pub struct Runtime {
     control_generation: u64,
     pub owner: Option<String>,
+    pub auto_network: bool,
     pub last_lease: Instant,
     pub session: Option<Session>,
     pub status: Arc<Mutex<NetworkStatus>>,
@@ -70,6 +71,7 @@ pub struct Runtime {
 
 pub struct App {
     pub csrf: String,
+    pub auto_startup: Mutex<Value>,
     pub runtime: Mutex<Runtime>,
     pub chat: Arc<Mutex<ChatService>>,
     pub chat_generation: watch::Sender<u64>,
@@ -98,7 +100,9 @@ impl App {
                 uuid::Uuid::new_v4().simple(),
                 uuid::Uuid::new_v4().simple()
             ),
+            auto_startup: Mutex::new(json!({"state":"starting"})),
             runtime: Mutex::new(Runtime {
+                auto_network: false,
                 owner: None,
                 control_generation: 0,
                 last_lease: Instant::now(),
@@ -153,7 +157,7 @@ impl App {
         self.stop_runtime(&mut runtime).await;
     }
 
-    async fn stop_runtime(&self, runtime: &mut Runtime) {
+    pub(crate) async fn stop_runtime(&self, runtime: &mut Runtime) {
         self.network_operations.cancel().await;
         self.chat_generation
             .send_modify(|generation| *generation = generation.wrapping_add(1));
@@ -179,8 +183,34 @@ impl App {
             pid: None,
             failure: None,
         };
+        runtime.auto_network = false;
         runtime.owner = None;
         runtime.control_generation = runtime.control_generation.wrapping_add(1);
+    }
+
+    async fn detach_runtime(&self, runtime: &mut Runtime) {
+        self.network_operations.cancel().await;
+        self.chat_generation.send_modify(|v| *v = v.wrapping_add(1));
+        let chat = self.chat.lock().await;
+        chat.stop_server().await; chat.clear_session(); chat.clear_local_messages();
+        self.folders.lock().await.clear().await;
+        *self.upload_budget.lock().await = (0, 0);
+        runtime.owner = None;
+        runtime.control_generation = runtime.control_generation.wrapping_add(1);
+    }
+    pub async fn detach_owned(&self, ticket: &ControlTicket) -> Result<(), String> {
+        let mut rt = self.runtime.lock().await; rt.ensure_control(ticket)?;
+        if rt.auto_network { self.detach_runtime(&mut rt).await; }
+        else { self.stop_runtime(&mut rt).await; }
+        Ok(())
+    }
+    pub async fn adopt_auto_network(&self, ticket: &ControlTicket) -> Result<Value, String> {
+        let rt = self.runtime.lock().await; rt.ensure_control(ticket)?;
+        if !rt.auto_network { return Err("没有启动时自动组网的会话".into()); }
+        let s = rt.session.as_ref().ok_or("EasyTier 已停止，请手动加入")?;
+        let mut input = s.input.clone();
+        input.password = crate::modules::secret_store::protect_lobby_password(input.password)?;
+        Ok(json!({"input":input,"virtualIp":s.virtual_ip,"playerId":s.player_id}))
     }
 
     pub async fn maintenance(&self) {
@@ -191,8 +221,10 @@ impl App {
             .session
             .as_mut()
             .is_some_and(|session| session.child.try_wait().ok().flatten().is_some());
-        if stale || dead {
-            self.stop_runtime(&mut runtime).await;
+        if dead { self.stop_runtime(&mut runtime).await; }
+        else if stale {
+            if runtime.auto_network { self.detach_runtime(&mut runtime).await; }
+            else { self.stop_runtime(&mut runtime).await; }
         }
     }
 
@@ -211,7 +243,7 @@ impl App {
                     .is_some_and(|me| m.player_id != me.player_id)
             })
             .count();
-        json!({"service":"ready","network":network,"session":session,"chatRunning":chat.is_running(),"chatReceive":{"storedRemoteMessages":received,"authenticatedPeers":chat.authoritative_peers().len()},"webrtc":"browser-controlled","screenShare":"browser-controlled-unverified","remoteInput":"not-implemented"})
+        json!({"service":"ready","autoNetwork":runtime.auto_network,"autoStartup":self.auto_startup.lock().await.clone(),"network":network,"session":session,"chatRunning":chat.is_running(),"chatReceive":{"storedRemoteMessages":received,"authenticatedPeers":chat.authoritative_peers().len()},"webrtc":"browser-controlled","screenShare":"browser-controlled-unverified","remoteInput":"not-implemented"})
     }
 
     pub async fn start(&self, input: LobbyInput, ticket: &ControlTicket) -> Result<Value, String> {
@@ -735,8 +767,10 @@ pub fn build_command(
     .arg(dir)
     .args(["--rpc-portal", &format!("127.0.0.1:{rpc}")])
     .arg("--listeners")
-    .args(listeners)
-    .args(["--default-protocol", if ws { "ws" } else { "udp" }]);
+    .args(listeners);
+    if config.default_protocol.as_ref().is_none_or(|p| p.is_empty()) {
+        cmd.args(["--default-protocol", if ws { "ws" } else { "udp" }]);
+    }
     network_arguments::apply_advanced_config(&mut cmd, config);
     cmd
 }

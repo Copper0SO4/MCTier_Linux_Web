@@ -82,7 +82,7 @@ function confirm(f, text = '我确认更新本机域名映射') {
 function fixture(saved, tools = {}, savedRules = [], restartNetwork) {
   const body = new Element('body'),
     cards = new Map(
-      ['magic-dns', 'advanced-network', 'network-fix'].map((id) => {
+      ['advanced-network', 'network-fix'].map((id) => {
         const p = new Element('div'),
           card = new Element('div');
         card.className = 'feature-card';
@@ -108,8 +108,7 @@ function fixture(saved, tools = {}, savedRules = [], restartNetwork) {
     notices = [];
   globalThis.networkApi = async (command, args) => {
     calls.push([command, args]);
-    if (command === 'get_magic_dns_status')
-      return { entries: [], installed: false, upToDate: false };
+
     if (command === 'get_firewall_status')
       return {
         tools: {
@@ -126,14 +125,11 @@ function fixture(saved, tools = {}, savedRules = [], restartNetwork) {
     if (command.startsWith('prepare_'))
       return {
         token: 'one-use-preview',
-        confirmationText: command.includes('dns')
-          ? '我确认更新本机域名映射'
-          : args.pause
+        confirmationText: args.pause
             ? '我确认暂停整个防火墙'
             : '我确认修改本机防火墙',
         title: '授权预览',
         lines: ['固定范围'],
-        entries: [],
       };
     if (command === 'apply_network_operation') return { report: ['复核完成'] };
     if (command === 'validate_network_settings') return args;
@@ -157,17 +153,12 @@ function fixture(saved, tools = {}, savedRules = [], restartNetwork) {
     body,
   };
 }
-test('Magic DNS has a dedicated tab and requires preview before any write', async () => {
+test('Magic DNS has no feature card, tab or API operation', async () => {
   const f = fixture();
+  assert.equal(f.cards.has('magic-dns'), false);
   f.cards.get('advanced-network').children[0].children.at(-1).click();
-  assert.ok(f.find('Magic DNS'));
-  assert.equal(f.calls.length, 0);
-  f.find('Magic DNS').click(); await tick();
-  assert.equal(f.calls.at(-1)[0], 'get_magic_dns_status');
-  assert.equal(f.calls.some(([command]) => command === 'apply_network_operation'), false);
-  f.find('预览更新域名').click(); await tick();
-  assert.equal(f.calls.at(-1)[0], 'prepare_magic_dns');
-  assert.equal(f.calls.some(([command]) => command === 'apply_network_operation'), false);
+  assert.equal(f.find('Magic DNS'), undefined);
+  assert.equal(f.calls.some(([command]) => command.includes('dns')), false);
 });
 test('firewall defaults to narrow rules, broad UDP is explicitly opt-in and cancellation makes no apply call', async () => {
   const f = fixture();
