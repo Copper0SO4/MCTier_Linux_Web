@@ -100,3 +100,7 @@ npm ci
 手工适配来源记录在 `MCTier-Linux-Web/upstream-sources.json`，上游更新导致检查失败时须先对照 Windows 源码审查，再更新记录，不可直接接受新哈希。架构边界与优化安排见 [架构维护说明](MCTier-Linux-Web/ARCHITECTURE-MAINTENANCE.md)。
 
 接手文档：[`HANDOFF.md`](MCTier-Linux-Web/HANDOFF.md)；本地防火墙排障：[`UFW-P2P-TROUBLESHOOTING.md`](MCTier-Linux-Web/UFW-P2P-TROUBLESHOOTING.md)。每次维护同步更新文档，未测功能不得标记通过。
+
+## 上游 master 同步说明（2026-10-06）
+
+已合并官方 master 的6个后续维护提交至 `61cb9f5`，包括桌面重构、共享信令协议清单及CI配置；官方版本仍为3.10.0。Linux Web改动和首页说明保留。CI检查范围沿用上游，**不包含Linux Web完整构建或真实媒体验收**，详见 [上游架构说明](docs/architecture.md) 与 [CI配置](.github/workflows/ci.yml)。Linux Web仍使用上文独立构建流程。已发布3.9.0标签与附件保持原样，本次同步只更新开发分支。

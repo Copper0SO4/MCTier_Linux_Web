@@ -1,0 +1,5 @@
+--- a/services/webrtc/WebRTCClient.ts
++++ b/services/webrtc/WebRTCClient.ts
+@@ -53,1 +53,1 @@
+-import signalingProtocol from '../../../shared/signaling-protocol.json';
++import signalingProtocol from '../../../../shared/signaling-protocol.json';

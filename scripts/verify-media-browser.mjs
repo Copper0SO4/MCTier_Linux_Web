@@ -7,7 +7,7 @@ import { build } from 'esbuild';
 // Pass the installed Playwright package path; no project dependency is added.
 const { chromium } = await import(pathToFileURL(path.join(process.argv[2], 'index.mjs')));
 const root = fileURLToPath(new URL('../', import.meta.url));
-const out = path.join(root, 'docs', 'verification-20260910');
+const out = path.join(root, '.artifacts', 'verification-20260910');
 await fs.mkdir(out, { recursive: true });
 const bundled = await build({ entryPoints: [path.join(root, 'src/services/screenShare/ScreenShareService.ts')], bundle: true, format: 'iife', globalName: 'screenModule', write: false });
 const audio = await build({ entryPoints: [path.join(root, 'src/services/webrtc/audioTransceiver.ts')], bundle: true, format: 'iife', globalName: 'audioModule', write: false });

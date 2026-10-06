@@ -81,7 +81,7 @@ Log timestamps below are UTC; local timezone is UTC+08:00.
 
 ## 5. Commands and Evidence
 
-Main log: `C:\Users\pmh13\AppData\Local\MCTier\mctier.log`.
+Main log: `%LOCALAPPDATA%\MCTier\mctier.log`.
 UI evidence: Windows Computer Use screenshots/accessibility results in this
 task, including the persistent timeout alert and joined lobby IP 10.126.126.2.
 
@@ -100,7 +100,7 @@ Get-CimInstance Win32_Process -Filter "Name='MCTier.exe' OR Name='easytier-core.
 The RPC/listener ports were read from the log for each fresh attempt; they
 must not be reused as fixed ports for future runs.
 
-Release directory: `E:\GitHubProjects\MCTier-master\MCTier-发布-v3.0.0`.
+Release output was stored in a local release directory outside the source repository.
 
 ```text
 MCTier.exe

@@ -419,3 +419,11 @@ ZIP SHA-256：88c8d119acf7ef56823bb7db2d62047c3077e3c605c9ec05e27100d2635c60e8�
 - 本次发行不停止或替换正在运行的开发服务，不触发pkexec、不另外接入真实大厅。构建、包体校验和发布结果随后追加。
 - 发行校验结果：TypeScript/Vite/Rust release 构建通过（Rust 1.90.0）；ZIP CRC、7个必需文件、可执行权限及包内服务与构建产物一致性通过；源码空白及启动/打包脚本语法检查通过。ELF最高GLIBC符号为2.39，链接OpenSSL 3和D-Bus；中文运行要求据此保持glibc>=2.39。ZIP SHA-256：`8d3b41a37131879099b2bfd0b4b4a50a4c3f5e6905c68f0081dbad80f9d74a40`。
 - 发布完成：2026-10-06 20:52（Asia/Shanghai），代码提交`66ca4c021d3f827f028eae44dcff2eff9830f100`和标签`3.9.0`已推送origin/master；GitHub正式Release已发布并标记Latest，ZIP和SHA-256附件上传完成。页面：https://github.com/Copper0SO4/MCTier_Linux_Web/releases/tag/3.9.0 。此后只补充发布记录，不移动发行标签或重打包。
+
+## 2026-10-06：解决GitHub上游同步冲突
+
+- 用户截图显示origin/master领先官方21个提交、落后6个，GitHub同步菜单要求丢弃本地提交。本轮用保留历史的merge合并官方master `61cb9f5`，不reset/rebase、不丢弃Linux Web历史；origin在开始前与本地完全一致且工作树干净。
+- 唯一Git内容冲突为根README：保留Linux Web首页、下载和编译文档，补充上游新增CI范围及架构链接。其余上游变更正常合入，包括官方桌面锁序/错误类型/命令模块重构及共享协议清单；不额外修改Windows/Android代码。上游版本仍3.10.0，稳定基线d6af338保持记录，mergedMasterCommit单独记录已合并master。
+- 上游WebRTCClient改从shared/signaling-protocol.json读取协议版本，当前值仍3。Linux生成src位于更深一层，新增独立前端补丁修正相对导入路径，直接使用仓库原版清单，不复制协议字段或更改其值；构建哈希检查仍覆盖原有四个手工Rust来源，未改源哈希。
+- 本轮不移动3.9.0发行标签、不替换已发布ZIP、不重启开发服务、不另外联机或授权。构建结果稍后追加。GitHub仍显示领先上游是Linux Web独立提交的正常结果，落后应归零。
+- 验证：4个手工适配来源哈希检查、TypeScript/Vite（566项表情）及Rust Debug完整构建通过，Linux本地改动空白检查通过。未新增或运行自动化测试，本轮结果仅是构建验证，不能代替真实联机。
