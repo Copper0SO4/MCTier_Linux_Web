@@ -41,7 +41,7 @@ const bundle = await build({
       setup(b) {
         b.onResolve({ filter: /.*/ }, (args) => {
           if (
-            args.kind === 'entry-point' ||
+            args.kind === 'entry-point' || args.path.endsWith('.json') ||
             /(?:signalingTrustBoundary|trustBoundary|audioTransceiver|voiceHealth|registeredSocket)$/.test(args.path)
           )
             return;

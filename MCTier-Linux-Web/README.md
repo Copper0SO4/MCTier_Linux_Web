@@ -1,15 +1,15 @@
-# MCTier Linux Web 3.9.0
+# MCTier Linux Web 3.10.0
 
 MCTier 的 Linux 浏览器版发行线，面向 Debian/Ubuntu 系 x86_64 桌面。基于 [MCTier 官方项目](https://github.com/pmh1314520/MCTier)，复用大厅、组网、聊天和 WebRTC 协议，Linux 专属实现位于 `MCTier-Linux-Web/`。
 
 ## 下载运行
 
-从 [3.9.0 Release](https://github.com/Copper0SO4/MCTier_Linux_Web/releases/tag/3.9.0) 下载 ZIP 与 SHA-256 校验文件，完整解压并阅读包内中文 `README-Linux.txt`：
+从 [3.10.0 Release](https://github.com/Copper0SO4/MCTier_Linux_Web/releases/tag/3.10.0) 下载 ZIP 与 SHA-256 校验文件，完整解压并阅读包内中文 `README-Linux.txt`：
 
 ```bash
-sha256sum -c mctier-linux-web-linux-x86_64-3.9.0.zip.sha256
-unzip mctier-linux-web-linux-x86_64-3.9.0.zip
-cd mctier-linux-web-linux-x86_64-3.9.0
+sha256sum -c mctier-linux-web-linux-x86_64-3.10.0.zip.sha256
+unzip mctier-linux-web-linux-x86_64-3.10.0.zip
+cd mctier-linux-web-linux-x86_64-3.10.0
 ./mctier-linux-web
 ```
 
@@ -27,15 +27,14 @@ sudo apt install curl xdg-utils libcap2-bin policykit-1 libdbus-1-3 libsystemd0 
 
 使用 t64 包名的系统将 `libssl3` 替换为 `libssl3t64`；polkit 包名可能为 `polkitd pkexec`。另需桌面认证代理、用户 D-Bus/Secret Service 密钥环（例如 GNOME Keyring）、`/dev/net/tun` 和已安装的 Chrome/Chromium。发行包自带 EasyTier core/CLI；无需 Linux Tauri/WebKitGTK 媒体环境。
 
-## 3.9.0 更新和验收范围
+## 3.10.0 更新和验收范围
 
-- 跟进官方稳定源码 3.10.0；创建/加入表单各保留一个对应按钮，重连接续沿用原版协议。
-- 整理桌面布局、横排返回按钮和六标签软件设置；网络、游戏、邀请与大厅操作从功能状态说明迁到设置入口。
-- 每个成员卡片直接提供独立的本地音量和静音；房主管理支持转让、语音禁言等原版信令操作。
-- 补充 EasyTier 高级设置及参数校验，保留普通用户运行、TCP/UDP 双监听和 UFW/firewalld 预览授权流程。
-- 新增默认关闭的服务启动自动组网及浏览器接续；配置密码采用本机密钥环加密，密码错误明确提示。
-- 修复旧请求污染新会话、取消清理、传输边界和虚拟网络 HTTP 代理问题。
-- 按用户决定全面移除 Linux Web Magic DNS，不自动修改或清理已有 hosts。
+- 2026-10-11 重新拉取官方仓库并核对 latest 非预发行版，仍为 v3.10.0（`d6af338`）；保留已合并的官方 master 维护提交 `61cb9f5`。没有新的稳定源码需要合入。
+- 修复此前共享信令协议 JSON 和设置入口变化造成的自动化测试失配；信令/语音测试直接使用当前官方协议清单。
+- ZIP 发布构建固定 Rust/C/C++ 的通用 x86_64 目标，避免继承构建机 `native` CPU 优化；打包前校验发行号与 Cargo 版本一致，拒绝覆盖已有 ZIP 或校验文件。
+- 启动器的本地健康检查明确绕过 HTTP 代理，保持前台运行和 `--stop` 退出；启动提示与 Firefox 封锁状态一致。
+- 聊天身份/密码密钥环错误提供中文解锁与 Secret Service 排障提示；继续使用原版身份签名和凭据存储，不自动重置身份。
+- ZIP 补齐本项目和 EasyTier 许可证。现有大厅、网络、房主管理、成员音量、文件和媒体能力保留；Magic DNS 和远程输入的产品决定不变。
 
 用户在当前开发版反馈“功能大概都正常”；此前明确反馈组网、文字/文件、双向麦克风与屏幕、邀请和房主管理可用，UFW 放行后重新组网可以 P2P。这是用户实测反馈，不代表每项高级参数、错误密码、多标签租约或长期重连均已专项验收。信令大厅在线、EasyTier 对端收发和 WebRTC 媒体需分别判断。
 
@@ -63,7 +62,11 @@ sudo apt install curl xdg-utils libcap2-bin policykit-1 libdbus-1-3 libsystemd0 
 
 设置页整理为“外观与音频 / 个人资料 / 会话统计 / 网络与游戏 / 大厅与邀请 / 桌面集成”六个标签页。EasyTier 设置、游戏快连、防火墙修复、常用/最近大厅、公开广场、邀请导入/生成均有明确设置入口，功能状态页仅作能力说明；房主管理、文件夹共享与工具保留大厅入口。头像压缩至最长边 256 像素、JPEG，沿用原版加密头像消息同步；昵称下次进房生效。资料保存在本浏览器。统计展示本次页面消息、信令重连和当前语音 RTP，不包含屏幕/文件流量，不是 EasyTier 总流量。
 
-自动化历史基线：22 个前端测试文件（120 用例）、123 个 Rust 测试通过。本轮新增高级参数、设置分类与启动接续已通过完整 Debug 构建，用户完成当前开发版总体验收；本次发行执行 TypeScript/Vite/Rust release 构建和包体检查，不把历史自动化数量当作本次新增功能覆盖。未进行新的真实联机或系统授权操作。
+本轮 22 个前端测试文件、127 个 Rust 测试通过；TypeScript/Vite/Rust Release 构建、ZIP 内容/权限/校验及隔离配置下的回环监听、安全边界、SIGTERM 退出检查通过。Rust 网络测试需在允许临时回环绑定的环境运行。本轮没有新的真实房间联机、媒体采集、系统授权或实际软件包安装；历史用户验收与本轮自动化分别记录。
+
+## 密钥环报错排查
+
+如果创建/加入提示“本机密钥环已锁定或不可用”或 `Chat identity credential is locked or unavailable`，请在当前用户桌面会话启动 Secret Service（例如 GNOME Keyring），使用“密码和密钥”等密钥环管理器解锁登录密钥环，再重试。终端必须使用同一普通用户的会话 D-Bus，避免用 sudo 启动。自动登录或修改登录密码后，密钥环密码可能与登录密码不同，需要手动解锁；不要删除原有 `MCTier/chat-identity-p256-v1` 身份条目来绕过错误。
 
 ## Arch Linux 安装
 
@@ -81,7 +84,7 @@ mctier
 
 ## 源码构建
 
-需要 Node.js 20+、npm、Rust stable（本次用官方 1.90.0 验证）、C 工具链及 OpenSSL/D-Bus 开发头文件：
+需要 Node.js 20+、npm、Rust stable（本轮系统 Rust/Cargo 1.99.0）、C 工具链及 OpenSSL/D-Bus 开发头文件：
 
 ```bash
 sudo apt install build-essential pkg-config libssl-dev libdbus-1-dev curl unzip zip
@@ -100,14 +103,16 @@ npm ci
 # 自动化检查（不执行真实防火墙或房间联机）
 ./MCTier-Linux-Web/scripts/test.sh
 # 打包可执行程序、EasyTier 和中文使用说明
-./MCTier-Linux-Web/scripts/package-release.sh 3.9.0
+./MCTier-Linux-Web/scripts/package-release.sh 3.10.0
 ```
+
+发行打包会固定通用 x86_64 CPU 编译目标；日常源码构建可使用自己的编译参数。运行库需求仍以发行检查结果为准。
 
 服务产物在 `MCTier-Linux-Web/server/target/release/`；ZIP 与校验文件在 `MCTier-Linux-Web/dist/`。同名压缩包已存在时拒绝覆盖。包内含启动脚本、Linux 服务二进制、EasyTier core/CLI、中文依赖说明及 UFW/P2P 排障手册。
 
 ## 上游和维护
 
-本版基于已同步的官方稳定标签 **v3.10.0**（`d6af338`），Linux Web 发行号 **3.9.0** 与官方源码版本、客户端上报版本分别记录。共享 `package.json` 保持官方 3.10.0，不因发行号变化而降低协议版本。审查记录见 [项目审查](PROJECT-REVIEW-2026-10-04.md)。
+本版基于已同步的官方稳定标签 **v3.10.0**（`d6af338`），Linux Web 发行号 **3.10.0** 与官方源码版本、客户端上报版本分别记录。共享 `package.json` 保持官方 3.10.0，不因发行号变化而降低协议版本。审查记录见 [项目审查](PROJECT-REVIEW-2026-10-04.md)。
 
 以后先检查工作区，运行 `./MCTier-Linux-Web/scripts/sync-upstream.sh --stable` 获取并审查官方最新稳定标签；清晰保存本地修改后才组合 `--stable --merge` 合并。省略 `--stable` 则跟踪 master。不要覆盖 Linux 补丁或手动改坏 Windows/Android 的共享实现。
 
@@ -117,4 +122,4 @@ npm ci
 
 ## 上游 master 同步说明（2026-10-06）
 
-已合并官方 master 的6个后续维护提交至 `61cb9f5`，包括桌面重构、共享信令协议清单及CI配置；官方版本仍为3.10.0。Linux Web改动和首页说明保留。CI检查范围沿用上游，**不包含Linux Web完整构建或真实媒体验收**，详见 [上游架构说明](../docs/architecture.md) 与 [CI配置](../.github/workflows/ci.yml)。Linux Web仍使用上文独立构建流程。已发布3.9.0标签与附件保持原样，本次同步只更新开发分支。
+已合并官方 master 的6个后续维护提交至 `61cb9f5`，包括桌面重构、共享信令协议清单及CI配置；官方版本仍为3.10.0。Linux Web改动和首页说明保留。CI检查范围沿用上游，**不包含Linux Web完整构建或真实媒体验收**，详见 [上游架构说明](../docs/architecture.md) 与 [CI配置](../.github/workflows/ci.yml)。Linux Web仍使用上文独立构建流程。此段记录 2026-10-06 的历史 master 同步；本轮发行见上文。

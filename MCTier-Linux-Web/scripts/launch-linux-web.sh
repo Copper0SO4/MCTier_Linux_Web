@@ -53,7 +53,7 @@ command -v xdg-open >/dev/null || fail "缺少 xdg-open；请安装 xdg-utils。
 command -v awk >/dev/null || fail "缺少 awk。"
 mapfile -t running_pids < <(service_pids)
 ((${#running_pids[@]} == 0)) || fail "MCTier 服务已经在运行（PID: ${running_pids[*]}）。使用 mctier --stop 停止后再启动。"
-if curl --silent --fail --max-time 1 "$URL/healthz" >/dev/null; then
+if curl --noproxy '*' --silent --fail --max-time 1 "$URL/healthz" >/dev/null; then
   fail "端口 14700 已有服务响应；本次没有启动 MCTier。若这是旧版遗留的 MCTier 服务，请先查明并停止它，再重试。"
 fi
 [[ -f "$CORE" && ! -L "$CORE" ]] || fail "未找到随包 EasyTier core。请从压缩包完整解压后运行。"
@@ -97,7 +97,7 @@ child_running() {
 ready=0
 for _ in $(seq 1 40); do
   child_running || { wait "$SERVICE_PID" || true; fail "本地服务启动失败。请从终端查看上方错误信息。"; }
-  if curl --silent --fail --max-time 1 "$URL/healthz" >/dev/null; then
+  if curl --noproxy '*' --silent --fail --max-time 1 "$URL/healthz" >/dev/null; then
     child_running || { wait "$SERVICE_PID" || true; fail "本地服务启动失败；健康检查连接到了其他进程。"; }
     ready=1
     break

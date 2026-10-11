@@ -1,4 +1,4 @@
-MCTier Linux Web 3.9.0 — 中文使用说明
+MCTier Linux Web 3.10.0 — 中文使用说明
 ====================================
 
 【系统和运行依赖】
@@ -16,9 +16,9 @@ polkitd pkexec。另需桌面认证代理、用户 D-Bus/Secret Service 密钥�
 
 【校验、解压、运行】
 在下载目录执行：
-  sha256sum -c mctier-linux-web-linux-x86_64-3.9.0.zip.sha256
-  unzip mctier-linux-web-linux-x86_64-3.9.0.zip
-  cd mctier-linux-web-linux-x86_64-3.9.0
+  sha256sum -c mctier-linux-web-linux-x86_64-3.10.0.zip.sha256
+  unzip mctier-linux-web-linux-x86_64-3.10.0.zip
+  cd mctier-linux-web-linux-x86_64-3.10.0
   ./mctier-linux-web
 
 启动器以普通用户启动本地服务，仅监听 127.0.0.1:14700。
@@ -67,9 +67,19 @@ Firefox、ICE/长期断线恢复、firewalld 实机效果、高级参数各选�
 Linux Web 不支持远程输入操控；系统音频、录屏、托盘尚未开放。
 
 【发行和源码】
-Linux Web 版本 3.9.0 独立于官方 MCTier；源码基于官方稳定版3.10.0
+Linux Web 版本 3.10.0 独立于官方 MCTier；源码基于官方稳定版3.10.0
 （d6af338）。客户端上报版本默认跟随原版检测，可手填；不代表升级软件。
 软件设置采用六个标签页；每个成员卡片支持独立本地音量与静音。
 EasyTier高级设置对照见随包ADVANCED-NETWORK.md。正式发行不表示
 每项实验性功能已完成专项兼容验收。
 源码和构建方式：https://github.com/Copper0SO4/MCTier_Linux_Web
+
+【3.10.0 维护更新】
+发布包使用通用 x86_64 CPU 编译目标，不继承构建机 native 优化；
+本轮使用系统 Rust/Cargo 1.99.0，真实目标机器兼容性仍需实际启动验证。
+启动器健康检查不继承 HTTP 代理，支持 ./mctier-linux-web --stop。
+密钥环错误请用“密码和密钥”等管理器解锁登录密钥环，并确认当前
+用户桌面会话运行 Secret Service（例如 GNOME Keyring）后重试。
+不要用 sudo 启动，不要删除已有 MCTier/chat-identity-p256-v1 身份。
+包内 LICENSE 和 EasyTier-LICENSE 分别为项目及随包核心许可证。
+本轮自动化/构建结果见发行说明；不代表新的跨端真实测试通过。

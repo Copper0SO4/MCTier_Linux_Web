@@ -1,4 +1,5 @@
 mod auto_join;
+mod credential_errors;
 mod attachments;
 mod overlay_http;
 mod binary_response;
@@ -37,7 +38,7 @@ include!(concat!(env!("OUT_DIR"), "/assets.rs"));
 struct ApiError(StatusCode, String);
 impl From<String> for ApiError {
     fn from(message: String) -> Self {
-        Self(StatusCode::BAD_REQUEST, message)
+        Self(StatusCode::BAD_REQUEST, credential_errors::explain(message))
     }
 }
 impl IntoResponse for ApiError {
@@ -551,7 +552,7 @@ async fn run_service() {
             std::process::exit(1);
         }
     };
-    println!("MCTier Linux local service ready. Open http://127.0.0.1:14700 manually in Firefox or Chromium. Startup networking is used only when explicitly enabled in settings.");
+    println!("MCTier Linux local service ready. Open http://127.0.0.1:14700 manually in Chrome or Chromium (Firefox lobby entry remains unavailable). Startup networking is used only when explicitly enabled in settings.");
     let startup = tokio::spawn(auto_join::startup(app.clone()));
     let watchdog = app.clone();
     let worker = tokio::spawn(async move {

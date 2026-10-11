@@ -95,7 +95,10 @@ function fixture(saved, tools = {}, savedRules = [], restartNetwork) {
     activeElement: null,
     createElement: (tag) => new Element(tag),
     querySelector: () => null,
-    querySelectorAll: (s) => [cards.get(s.match(/data-feature="([^"]+)"/)[1])],
+    querySelectorAll: (s) => {
+      const match = s.match(/data-feature="([^"]+)"/);
+      return match ? [cards.get(match[1])].filter(Boolean) : [];
+    },
     getElementById: (id) => all(body).find((n) => n.id === id),
   };
   const store = new Map(saved ? [['mctier-linux-web-network-v1', JSON.stringify(saved)]] : []);
