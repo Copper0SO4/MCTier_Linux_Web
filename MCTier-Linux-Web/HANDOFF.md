@@ -90,7 +90,7 @@ Firefox 曾出现信令 WebSocket 1006 连续断开；一次诊断为单次存�
 
 ## 构建、启动与自动化验证
 
-从宿主仓库根目录执行。目标是 Debian/Ubuntu 系 x86_64；其他发行版没有认证。开发机需要 Node.js 20+、npm、Rust stable、C 工具链及 OpenSSL/D-Bus 开发头文件（Debian 常见包：`build-essential pkg-config libssl-dev libdbus-1-dev`），以及 `curl`、`unzip`、`sha256sum`/`shasum` 用于获取核验 EasyTier。运行时 capability 检查通常需要 `libcap2-bin`；仅在 capability 缺失且用户确认时需要 `pkexec`。
+从宿主仓库根目录执行。目标是 Debian/Ubuntu 系 x86_64；其他发行版没有认证。开发机需要 Node.js 22.12+（或20.x的20.19+）、npm、Rust stable、C 工具链及 OpenSSL/D-Bus 开发头文件（Debian 常见包：`build-essential pkg-config libssl-dev libdbus-1-dev`），以及 `curl`、`unzip`、`sha256sum`/`shasum` 用于获取核验 EasyTier。运行时 capability 检查通常需要 `libcap2-bin`；仅在 capability 缺失且用户确认时需要 `pkexec`。
 
 ```bash
 npm ci
@@ -460,3 +460,4 @@ ZIP SHA-256：88c8d119acf7ef56823bb7db2d62047c3077e3c605c9ec05e27100d2635c60e8�
 - 发布代码提交c3f6a14已推送origin/master。后续文档提交只补发行结果，不更改功能/已生成资产；3.10.0标签与正式Release发布结果待记录。
 - 发布完成：2026-10-11 17:27（Asia/Shanghai），正式Release标记Latest，标签3.10.0指向2a74905808a5fe393b9939c1fe900845c3476043。四个用户下载资产（ZIP、Arch包、两份对应.sha256）均已上传；GitHub公开API确认非draft/非prerelease，服务端ZIP/Arch digest与本地校验值一致。页面：https://github.com/Copper0SO4/MCTier_Linux_Web/releases/tag/3.10.0 。主项目代码/标签与Arch打包源码已推送；此前Arch发布记录401a3c4也已随此次推送。
 - 仅补发布记录，不移动3.10.0标签或替换已发布资产。3.9.0旧r382 Arch资产此前已被通用r383替换，原3.9.0 ZIP保持原样。
+- 收尾核对实际Vite engines为 `^20.19.0 || >=22.12.0`，构建文档据此明确最低版本，推荐Node22.12+；Arch源码包构建依赖同步为nodejs>=22.12。该项只影响后续源码构建，已发布资产使用Node26.11.1构建，无需重打包或移动标签。

@@ -84,7 +84,7 @@ mctier
 
 ## 源码构建
 
-需要 Node.js 20+、npm、Rust stable（本轮系统 Rust/Cargo 1.99.0）、C 工具链及 OpenSSL/D-Bus 开发头文件：
+需要 Node.js 22.12+（Vite 也支持 20.x 的 20.19+）、npm、Rust stable（本轮系统 Rust/Cargo 1.99.0）、C 工具链及 OpenSSL/D-Bus 开发头文件：
 
 ```bash
 sudo apt install build-essential pkg-config libssl-dev libdbus-1-dev curl unzip zip
