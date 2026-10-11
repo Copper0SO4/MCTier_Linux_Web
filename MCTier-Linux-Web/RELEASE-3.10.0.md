@@ -36,3 +36,25 @@ t64系统将 `libssl3` 替换为 `libssl3t64`；有些系统polkit包名为 `pol
 - Magic DNS已全面移除；远程输入不支持；系统音频、录屏、托盘/全局快捷键尚未开放。
 
 构建：`npm ci` → `scripts/fetch-binaries.sh` → `scripts/build-web-server.sh`；以上脚本均位于 `MCTier-Linux-Web/`。自动化为 `scripts/test.sh`，ZIP打包为 `scripts/package-release.sh 3.10.0`。根README含完整依赖、源码维护和Arch安装说明。
+
+## 发行资产和校验
+
+```bash
+# ZIP：下载ZIP和对应.sha256
+sha256sum -c mctier-linux-web-linux-x86_64-3.10.0.zip.sha256
+unzip mctier-linux-web-linux-x86_64-3.10.0.zip
+cd mctier-linux-web-linux-x86_64-3.10.0
+./mctier-linux-web
+
+# Arch：下载软件包和对应.sha256，在下载目录执行
+sha256sum -c mctier-linux-web-git-3.10.0.r384.gc3f6a14-1-x86_64.pkg.tar.zst.sha256
+sudo pacman -U mctier-linux-web-git-3.10.0.r384.gc3f6a14-1-x86_64.pkg.tar.zst
+mctier
+```
+
+| 文件 | SHA-256 |
+| --- | --- |
+| ZIP | `df1f778fb2ffe1db1ecbd4f231f36907cf77802a429dfcfb7752fa4fbca8c0b1` |
+| Arch包 | `f3625a5ec8b830565b43ff3c3be736509fb9940e0dafab11204493086697ce8b` |
+
+Arch包由系统Rust/Cargo通过独立PKGBUILD构建/封包，使用已经准备并验证的源码提交 `c3f6a14`（跳过重新提取/prepare，重新执行完整Linux构建和package）。包体的启动器、服务和核心与此次Arch构建产物逐字节一致；ZIP与Arch独立链接，嵌入的构建路径不同，不宣称两份服务二进制哈希相同。`pacman -Qip`、包体依赖/文件/无desktop校验通过。makepkg仍提示编译路径引用：仅为开发态资源fallback，不依赖临时目录正常运行。实际pacman安装和旧CPU仍待用户验证。

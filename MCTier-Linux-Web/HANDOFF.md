@@ -456,3 +456,5 @@ ZIP SHA-256：88c8d119acf7ef56823bb7db2d62047c3077e3c605c9ec05e27100d2635c60e8�
 - ZIP CRC、9个必需文件字节/许可证和执行权限检查通过；服务ELF最高GLIBC符号2.39，依赖OpenSSL3/D-Bus/systemd等系统库。ZIP SHA-256：`df1f778fb2ffe1db1ecbd4f231f36907cf77802a429dfcfb7752fa4fbca8c0b1`。
 - 使用临时XDG数据/配置/缓存目录运行新服务冒烟测试：页面/healthz 200、CSP正确、外来Host和跨源写请求403；进程只有127.0.0.1:14700监听，未启动EasyTier/注册大厅或访问密钥环。向该测试进程发SIGTERM后10秒内正常退出(code 0)。未打开用户浏览器、不修改用户配置或原有服务。
 - 本轮仍未进行Firefox、跨端双向媒体/ICE/重连、真实CAP/防火墙、实际pacman安装或旧CPU/干净Debian环境验证，原限制不能标记修复。
+- Arch软件包 `mctier-linux-web-git-3.10.0.r384.gc3f6a14-1-x86_64.pkg.tar.zst` 已由独立打包仓库PKGBUILD构建/封包（使用本项目准备好的c3f6a14工作树，--noextract/--holdver/--nodeps，不重新获取或安装依赖；build与package仍完整执行）。软件包SHA-256 `f3625a5ec8b830565b43ff3c3be736509fb9940e0dafab11204493086697ce8b`。pacman元数据、入口/核心/服务字节、无desktop和独立校验清单检查通过。ZIP与Arch服务独立链接且嵌入构建路径不同，不宣称两者二进制哈希相同；Arch包与其本次构建产物一致。makepkg编译路径引用警告为既有开发态fallback，未实际安装。
+- 发布代码提交c3f6a14已推送origin/master。后续文档提交只补发行结果，不更改功能/已生成资产；3.10.0标签与正式Release发布结果待记录。
