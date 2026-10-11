@@ -1,6 +1,6 @@
 # MCTier Linux Web：维护者接手说明
 
-> **当前维护（2026-10-11）：** 准备 Linux Web 3.10.0。官方 latest 非预发行仍为 v3.10.0 / d6af338，本地已包含稳定版和 master 维护提交 61cb9f5。当前构建/发布状态见文末 2026-10-11 章节。
+> **当前维护（2026-10-11）：** Linux Web 3.10.0 已正式发布。官方 latest 非预发行仍为 v3.10.0 / d6af338，本地已包含稳定版和 master 维护提交 61cb9f5。当前构建/发布状态见文末 2026-10-11 章节。
 
 > **当前产品决定：** Magic DNS 已全面移除 Linux Web UI、API 和 hosts 助手；远程输入不支持；Firefox 大厅入口仍封锁。成员本地音量位于各成员卡片，启动自动组网可选且默认关闭。前台启动与 `--stop` 已提交，下面“未提交”表述属于历史状态。
 
@@ -458,3 +458,5 @@ ZIP SHA-256：88c8d119acf7ef56823bb7db2d62047c3077e3c605c9ec05e27100d2635c60e8�
 - 本轮仍未进行Firefox、跨端双向媒体/ICE/重连、真实CAP/防火墙、实际pacman安装或旧CPU/干净Debian环境验证，原限制不能标记修复。
 - Arch软件包 `mctier-linux-web-git-3.10.0.r384.gc3f6a14-1-x86_64.pkg.tar.zst` 已由独立打包仓库PKGBUILD构建/封包（使用本项目准备好的c3f6a14工作树，--noextract/--holdver/--nodeps，不重新获取或安装依赖；build与package仍完整执行）。软件包SHA-256 `f3625a5ec8b830565b43ff3c3be736509fb9940e0dafab11204493086697ce8b`。pacman元数据、入口/核心/服务字节、无desktop和独立校验清单检查通过。ZIP与Arch服务独立链接且嵌入构建路径不同，不宣称两者二进制哈希相同；Arch包与其本次构建产物一致。makepkg编译路径引用警告为既有开发态fallback，未实际安装。
 - 发布代码提交c3f6a14已推送origin/master。后续文档提交只补发行结果，不更改功能/已生成资产；3.10.0标签与正式Release发布结果待记录。
+- 发布完成：2026-10-11 17:27（Asia/Shanghai），正式Release标记Latest，标签3.10.0指向2a74905808a5fe393b9939c1fe900845c3476043。四个用户下载资产（ZIP、Arch包、两份对应.sha256）均已上传；GitHub公开API确认非draft/非prerelease，服务端ZIP/Arch digest与本地校验值一致。页面：https://github.com/Copper0SO4/MCTier_Linux_Web/releases/tag/3.10.0 。主项目代码/标签与Arch打包源码已推送；此前Arch发布记录401a3c4也已随此次推送。
+- 仅补发布记录，不移动3.10.0标签或替换已发布资产。3.9.0旧r382 Arch资产此前已被通用r383替换，原3.9.0 ZIP保持原样。
