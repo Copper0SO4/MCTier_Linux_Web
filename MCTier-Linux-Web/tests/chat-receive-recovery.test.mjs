@@ -4,7 +4,8 @@ import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import ts from 'typescript';
-import { encodeBuiltinEmoji, decodeBuiltinEmoji } from '../frontend-src/services/emoji/builtinEmojiMessage.ts';
+const emojiBundle = await build({ entryPoints: [fileURLToPath(new URL('../frontend-src/services/emoji/builtinEmojiMessage.ts', import.meta.url))], bundle: true, format: 'esm', write: false });
+const { encodeBuiltinEmoji, decodeBuiltinEmoji } = await import(`data:text/javascript,${encodeURIComponent(emojiBundle.outputFiles[0].text)}`);
 
 const entry = fileURLToPath(new URL('../frontend-src/services/chat/P2PChatService.ts', import.meta.url));
 const ast = ts.createSourceFile(entry, fs.readFileSync(entry, 'utf8'), ts.ScriptTarget.Latest, true);

@@ -226,7 +226,13 @@ pub fn execute(plan: &Plan, remove: bool) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::Cell;
+    use std::{cell::Cell, os::unix::fs::PermissionsExt};
+    fn private_tempdir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .permissions(fs::Permissions::from_mode(0o700))
+            .tempdir()
+            .unwrap()
+    }
     struct Fake(Cell<bool>);
     impl Backend for Fake {
         fn active(&self, _: &str) -> Result<bool, String> {
@@ -257,7 +263,7 @@ mod tests {
     #[test]
     fn restore_respects_original_state_and_survives_repeated_pause() {
         for original in [false, true] {
-            let dir = tempfile::tempdir().unwrap();
+            let dir = private_tempdir();
             let root = dir.path().join("journal");
             let backend = Fake(Cell::new(original));
             let plan = plan();
@@ -289,7 +295,7 @@ mod tests {
                 }
             }
         }
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let root = dir.path().join("journal");
         let backend = Partial {
             active: Cell::new(true),
@@ -304,7 +310,7 @@ mod tests {
     }
     #[test]
     fn second_pause_and_symlink_receipt_are_rejected() {
-        let dir = tempfile::tempdir().unwrap();
+        let dir = private_tempdir();
         let root = dir.path().join("journal");
         let backend = Fake(Cell::new(true));
         let mut p = plan();

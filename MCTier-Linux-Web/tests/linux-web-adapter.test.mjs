@@ -64,9 +64,9 @@ test('browser transport boot is read-only and authenticated commands keep creden
 
 test('browser capture uses its picker and releases a stream returned after cancellation', async t => {
   let resolve, options;
-  const previous = Object.getOwnPropertyDescriptor(navigator, 'mediaDevices');
-  Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getDisplayMedia: async value => { options = value; return new Promise(r => { resolve = r; }); } } });
-  t.after(() => { if (previous) Object.defineProperty(navigator, 'mediaDevices', previous); else delete navigator.mediaDevices; });
+  const previous = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { mediaDevices: { getDisplayMedia: async value => { options = value; return new Promise(r => { resolve = r; }); } } } });
+  t.after(() => { if (previous) Object.defineProperty(globalThis, 'navigator', previous); else delete globalThis.navigator; });
   const module = await load('MCTier-Linux-Web/frontend-src/services/screenShare/nativeCapture.ts');
   const controller = new AbortController();
   const pending = module.requestNativeScreen({ resolution: 720, frameRate: 30, bitrateMbps: 0 }, false, controller.signal);

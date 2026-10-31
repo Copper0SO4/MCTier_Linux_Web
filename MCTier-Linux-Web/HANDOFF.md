@@ -1,6 +1,8 @@
 # MCTier Linux Web：维护者接手说明
 
-> **当前维护（2026-10-11）：** Linux Web 3.10.0 已正式发布。官方 latest 非预发行仍为 v3.10.0 / d6af338，本地已包含稳定版和 master 维护提交 61cb9f5。当前构建/发布状态见文末 2026-10-11 章节。
+> **当前维护（2026-10-31）：** 官方 latest 稳定版仍为 v3.10.0 / d6af338；本次合并官方 master ee16e63。验证和环境限制见文末。
+
+> **历史维护（2026-10-11）：** Linux Web 3.10.0 已正式发布。官方 latest 非预发行仍为 v3.10.0 / d6af338，本地已包含稳定版和 master 维护提交 61cb9f5。当前构建/发布状态见文末 2026-10-11 章节。
 
 > **当前产品决定：** Magic DNS 已全面移除 Linux Web UI、API 和 hosts 助手；远程输入不支持；Firefox 大厅入口仍封锁。成员本地音量位于各成员卡片，启动自动组网可选且默认关闭。前台启动与 `--stop` 已提交，下面“未提交”表述属于历史状态。
 
@@ -461,3 +463,10 @@ ZIP SHA-256：88c8d119acf7ef56823bb7db2d62047c3077e3c605c9ec05e27100d2635c60e8�
 - 发布完成：2026-10-11 17:27（Asia/Shanghai），正式Release标记Latest，标签3.10.0指向2a74905808a5fe393b9939c1fe900845c3476043。四个用户下载资产（ZIP、Arch包、两份对应.sha256）均已上传；GitHub公开API确认非draft/非prerelease，服务端ZIP/Arch digest与本地校验值一致。页面：https://github.com/Copper0SO4/MCTier_Linux_Web/releases/tag/3.10.0 。主项目代码/标签与Arch打包源码已推送；此前Arch发布记录401a3c4也已随此次推送。
 - 仅补发布记录，不移动3.10.0标签或替换已发布资产。3.9.0旧r382 Arch资产此前已被通用r383替换，原3.9.0 ZIP保持原样。
 - 收尾核对实际Vite engines为 `^20.19.0 || >=22.12.0`，构建文档据此明确最低版本，推荐Node22.12+；Arch源码包构建依赖同步为nodejs>=22.12。该项只影响后续源码构建，已发布资产使用Node26.11.1构建，无需重打包或移动标签。
+
+## 2026-10-31：上游 master 同步与测试环境兼容
+
+- 克隆用户仓库并配置官方 upstream，重新获取官方 latest：非预发行 v3.10.0 / d6af338，已包含；master 为 ee16e63，包含独立 macOS 源码、平台指南、多平台构建工作流和少量 Windows/Rust 测试更新。合并唯一冲突为根 README，保留 Linux Web 首页并补充上游 macOS 和 CI 说明。四项手工 Rust 适配来源哈希未变；共享 Windows、Android、macOS 和 shared 文件与 upstream/master 一致。上游文件原有空白问题保留，未为格式修改原作者代码。
+- Linux Web 测试修复：Node 20 无内建 navigator，采集测试自行设置并恢复模拟；聊天测试通过 esbuild 加载 TypeScript 表情模块。防火墙暂停测试显式创建 0700 夹具目录，避免依赖 umask；生产权限检查和行为未变。
+- Node 20.19.2、Rust 1.99.1：完整 debug 构建通过（TypeScript、Vite、566 项表情、Rust 服务）；前端 120 项测试及 Rust 127 项测试通过。系统未安装 libdbus-1-dev，验证时仅将 Debian 开发包解压到 /tmp 并通过 PKG_CONFIG_PATH 使用；后续正常构建仍按 README 安装依赖。npm ci 提示 pdfjs-dist 要求 Node 22.13+ 或 24 及 17 项依赖审计问题，未修改上游依赖；本次 Linux Web 构建和测试在 Node 20.19.2 通过，不代表完整桌面构建也支持该版本。
+- 未启动服务、真实入房、触发授权或进行 Windows/Android/macOS 跨端验收；未发版。自动化通过不代表媒体、Firefox 或真实网络回归通过。
