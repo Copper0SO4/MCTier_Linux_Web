@@ -488,3 +488,4 @@ ZIP SHA-256：88c8d119acf7ef56823bb7db2d62047c3077e3c605c9ec05e27100d2635c60e8�
 - tar.gz 启动器由 Debian 启动器生成，仅将服务和核心路径改为压缩包内的相对路径；检查、pkexec 授权、前台运行和无自动开浏览器行为一致。两包包含相同服务、EasyTier v2.5.0 核心和 CLI，包含许可证及说明；基于 Debian 13 amd64 构建，不声明其他系统兼容。Windows/Android 及官方文件没有额外修改。
 - 验证：正式 release 编译通过，两个包解包后服务/core/CLI 逐字节一致，核心校验通过；apt 模拟安装检测到 3.10.0-2 到 3.10.0-1 为降级。免安装包使用隔离 HOME/XDG 和模拟已有 capability 启动，healthz 正常，伪终端 Ctrl+C 后退出码 0、端口不再监听；本轮未触发真实授权或联机。用户报告测试包真实环境运行正常，范围以用户反馈为准。
 - Debian SHA-256 `b5edd6a4a22e5aa5cd3c2d7eb452a6fcec0270b845c7ddcf1eb52bd35e8d060d`；tar.gz SHA-256 `993b086037623b19f0545cc14731ca5a243f214d233a146f36b5655fba726804`。发布与上传结果需要另行核实。
+- 发布完成：GitHub 正式 Release `3.10.0-1` 标记 Latest，标签指向 `6df9552dc94592ac3491e8b18802e92d01bd84d5`。用户仓库 `origin/master` 已推送发行提交；两份资产上传状态为 uploaded，GitHub API 返回的 SHA-256 与上文一致。页面：https://github.com/Copper0SO4/MCTier_Linux_Web/releases/tag/3.10.0-1 。本条文档记录提交不改变已发布标签和资产。
