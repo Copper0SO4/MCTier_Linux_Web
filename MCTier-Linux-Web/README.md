@@ -127,3 +127,13 @@ npm ci
 ## 上游 master 同步（2026-10-31）
 
 官方最新稳定版仍为 v3.10.0；已合并官方 master 至 `ee16e63`，新增独立 macOS 项目、平台指南与多平台构建工作流。Linux Web 继续使用本目录独立构建与测试流程，上游 CI 不代表本项目或真实跨端功能已验收。
+
+## Debian 13 软件包
+
+`mctier-web_3.10.0-1_amd64.deb` 面向 Debian 13 x86_64，内含 EasyTier v2.5.0 core/CLI。用 `sudo apt install ./mctier-web_3.10.0-1_amd64.deb` 安装后，以普通用户运行 `mctier-web`，手动访问 `http://127.0.0.1:14700`；命令在前台运行，按 Ctrl+C 停止，不自动打开浏览器或创建系统服务。默认不自动组网；若用户已在设置中明确启用启动自动组网，启动时仍按该设置尝试连接。
+
+启动时校验 EasyTier 核心并检查网络 capability；缺少时通过 pkexec 请求系统授权，仅为核心设置 `cap_net_admin,cap_net_raw+ep`，授权后重新校验并复核权限。用户取消、授权失败或复核失败时不启动服务；安装或升级可能使核心需要重新授权。详细说明见包内 `/usr/share/doc/mctier-web/README.Debian`。
+
+源码构建前安装本项目已有构建依赖并运行 `npm ci` 与 `./MCTier-Linux-Web/scripts/fetch-binaries.sh`，再执行 `./MCTier-Linux-Web/scripts/package-deb.sh [输出目录]`。脚本校验核心和 CLI 的固定哈希、构建正式版并根据本机动态库生成依赖；同名文件已存在时拒绝覆盖。该包在 Debian 13 amd64 构建，其他发行版或版本未验证。
+
+免安装包 `mctier-web_3.10.0-1_linux-amd64.tar.gz` 解压后运行 `./mctier-web`，使用同样的权限检查及前台退出方式。先执行 Debian 打包脚本生成正式版服务，再执行 `./MCTier-Linux-Web/scripts/package-portable.sh [输出目录]` 生成压缩包。若已安装之前的 3.10.0-2 测试包，Debian 将正式的 3.10.0-1 视为较低版本；使用 `sudo apt install --allow-downgrades ./mctier-web_3.10.0-1_amd64.deb` 安装。

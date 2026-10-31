@@ -1,0 +1,28 @@
+#!/bin/sh
+set -eu
+SERVICE=/usr/lib/mctier-web/mctier-linux-web-service
+CORE=/usr/lib/mctier-web/binaries/easytier-core
+CORE_SHA256=f1bd60be7a50da84f50732ed4b826b70284c84f05dadbd3fe448429dfe184322
+fail() { printf 'MCTier Web: %s\n' "$*" >&2; exit 1; }
+[ "$(id -u)" -ne 0 ] || fail '请以普通用户运行，不要使用 sudo。'
+[ "$#" -eq 0 ] || { echo '用法：mctier-web' >&2; exit 2; }
+[ -x "$SERVICE" ] || fail '找不到本地服务，请重新安装软件包。'
+[ -f "$CORE" ] && [ ! -L "$CORE" ] && [ -x "$CORE" ] || fail 'EasyTier 核心缺失或无效，请重新安装软件包。'
+verify_core() {
+  actual=$(sha256sum -- "$CORE") || return 1
+  [ "${actual%% *}" = "$CORE_SHA256" ]
+}
+verify_core || fail 'EasyTier 核心校验失败，拒绝授权和启动。'
+[ -x /usr/sbin/getcap ] || fail '缺少 getcap，请安装 libcap2-bin。'
+capability_ok() {
+  value=$(/usr/sbin/getcap -- "$CORE") || return 1
+  [ "${value##* }" = 'cap_net_admin,cap_net_raw=ep' ]
+}
+if ! capability_ok; then
+  [ -x /usr/bin/pkexec ] && [ -x /usr/sbin/setcap ] || fail '缺少 pkexec 或 setcap，请安装 pkexec 和 libcap2-bin。'
+  printf 'EasyTier 核心缺少组网权限；即将请求系统授权，仅对随包核心设置网络 capability。\n'
+  /usr/bin/pkexec /usr/sbin/setcap cap_net_admin,cap_net_raw+ep "$CORE" || fail '授权取消或失败，服务未启动。'
+  verify_core || fail '授权后核心校验失败，服务未启动。'
+  capability_ok || fail '授权后权限复核失败，服务未启动。'
+fi
+exec "$SERVICE"

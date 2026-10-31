@@ -470,3 +470,21 @@ ZIP SHA-256：88c8d119acf7ef56823bb7db2d62047c3077e3c605c9ec05e27100d2635c60e8�
 - Linux Web 测试修复：Node 20 无内建 navigator，采集测试自行设置并恢复模拟；聊天测试通过 esbuild 加载 TypeScript 表情模块。防火墙暂停测试显式创建 0700 夹具目录，避免依赖 umask；生产权限检查和行为未变。
 - Node 20.19.2、Rust 1.99.1：完整 debug 构建通过（TypeScript、Vite、566 项表情、Rust 服务）；前端 120 项测试及 Rust 127 项测试通过。系统未安装 libdbus-1-dev，验证时仅将 Debian 开发包解压到 /tmp 并通过 PKG_CONFIG_PATH 使用；后续正常构建仍按 README 安装依赖。npm ci 提示 pdfjs-dist 要求 Node 22.13+ 或 24 及 17 项依赖审计问题，未修改上游依赖；本次 Linux Web 构建和测试在 Node 20.19.2 通过，不代表完整桌面构建也支持该版本。
 - 未启动服务、真实入房、触发授权或进行 Windows/Android/macOS 跨端验收；未发版。自动化通过不代表媒体、Firefox 或真实网络回归通过。
+
+## 2026-10-31：Debian 13 软件包
+
+- 根据用户要求新增 `mctier-web` Debian amd64 包及独立打包脚本，沿用已核验 EasyTier v2.5.0 core/CLI；包内前台命令直接 exec 现有本地服务，不主动打开浏览器，Ctrl+C 触发服务现有正常退出。无安装钩子、系统服务或自动提权。用户若已明确启用启动自动组网，该原有设置仍生效。缺少 TUN capability 时由用户确认后仅授权核心，详见包内 README。未修改上游平台代码，也未改原 ZIP 启动器。
+- Debian 13.7 amd64 本机完成 release Rust、TypeScript/Vite 构建，使用临时解压的 D-Bus 头文件；包依赖由 dpkg-shlibdeps 生成。解包检查确认目录权限 0755、核心/CLI 哈希一致；`apt-get -s install` 可解析依赖。用隔离 HOME/XDG 配置运行解包后的服务（测试启动器仅将安装绝对路径改为解包路径）：healthz 成功，伪终端发送 Ctrl+C 后退出码 0，随后端口不再监听。未实际安装软件包、申请权限、连接真实房间或做跨端验收。
+
+## 2026-10-31：Debian 启动权限检查
+
+按用户要求，Debian `mctier-web` 启动器校验随包核心 SHA-256 和 capability，缺少时调用 pkexec，仅对核心设置 cap_net_admin,cap_net_raw+ep；授权后重新校验核心及权限。拒绝授权、权限复核失败、核心哈希错误均停止启动。pkexec 改为必需依赖，包版本 3.10.0-2；不打开浏览器，服务仍前台运行并由 Ctrl+C 停止。现有 ZIP 启动器和上游源码不变。
+
+使用隔离模拟命令验证已有权限跳过授权、无权限调用固定授权、拒绝授权、虚假授权和核心篡改；解包新版包后模拟已有权限启动真实服务，healthz 正常，伪终端 Ctrl+C 退出码 0 且端口停止监听；apt 模拟安装依赖解析通过。正式版构建通过。未安装包、未弹出真实系统授权、未执行 setcap、未连接真实房间，真实 pkexec 授权仍待用户在机器上验证。上节 3.10.0-1 的手动授权行为为历史记录。
+
+## 2026-10-31：3.10.0-1 发布准备
+
+- 用户确认 3.10.0-2 测试包运行完美，要求正式版本 3.10.0-1，并上传 Debian 包和 tar.gz 免安装包。Debian 版将该正式号视为低于已安装测试包，升级须使用 apt 的 `--allow-downgrades`；包内与 README 均已说明。正式包保留已测启动权限检查及 Ctrl+C 行为。
+- tar.gz 启动器由 Debian 启动器生成，仅将服务和核心路径改为压缩包内的相对路径；检查、pkexec 授权、前台运行和无自动开浏览器行为一致。两包包含相同服务、EasyTier v2.5.0 核心和 CLI，包含许可证及说明；基于 Debian 13 amd64 构建，不声明其他系统兼容。Windows/Android 及官方文件没有额外修改。
+- 验证：正式 release 编译通过，两个包解包后服务/core/CLI 逐字节一致，核心校验通过；apt 模拟安装检测到 3.10.0-2 到 3.10.0-1 为降级。免安装包使用隔离 HOME/XDG 和模拟已有 capability 启动，healthz 正常，伪终端 Ctrl+C 后退出码 0、端口不再监听；本轮未触发真实授权或联机。用户报告测试包真实环境运行正常，范围以用户反馈为准。
+- Debian SHA-256 `b5edd6a4a22e5aa5cd3c2d7eb452a6fcec0270b845c7ddcf1eb52bd35e8d060d`；tar.gz SHA-256 `993b086037623b19f0545cc14731ca5a243f214d233a146f36b5655fba726804`。发布与上传结果需要另行核实。
