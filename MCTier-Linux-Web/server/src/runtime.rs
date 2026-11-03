@@ -22,6 +22,8 @@ use tokio::{
 
 const CORE_HASH: &str = "f1bd60be7a50da84f50732ed4b826b70284c84f05dadbd3fe448429dfe184322";
 pub const LEASE_TTL: Duration = Duration::from_secs(120);
+/// EasyTier removes its TUN device on SIGTERM. Force it only if that exit stalls.
+const CHILD_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -169,9 +171,10 @@ impl App {
         chat.clear_local_messages();
         drop(chat);
         if let Some(mut session) = runtime.session.take() {
+            // Readers stay attached so a graceful exit can flush and is not blocked
+            // on a full pipe. They are joined after the process has been reaped.
+            let _ = shutdown_child(&mut session.child).await;
             finish_readers(&mut session.readers).await;
-            let _ = session.child.kill().await;
-            let _ = session.child.wait().await;
             // This UUID directory is created exclusively by this session.
             let _ = tokio::fs::remove_dir_all(session.config_dir).await;
         }
@@ -324,8 +327,7 @@ impl App {
         let readers = match core_readers(&mut child, status.clone()) {
             Ok(readers) => readers,
             Err(error) => {
-                let _ = child.kill().await;
-                let _ = child.wait().await;
+                let _ = shutdown_child(&mut child).await;
                 let _ = tokio::fs::remove_dir_all(&dir).await;
                 *status.lock().await = NetworkStatus {
                     state: "stopped".into(),
@@ -442,16 +444,9 @@ impl App {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        session
-            .child
-            .kill()
+        shutdown_child(&mut session.child)
             .await
             .map_err(|_| "不能停止当前 EasyTier，未启动第二个实例")?;
-        session
-            .child
-            .wait()
-            .await
-            .map_err(|_| "不能确认当前 EasyTier 已退出")?;
         finish_readers(&mut session.readers).await;
         let result = match reserve_listeners(
             uses_websocket_listener(&session.input.server_node),
@@ -549,6 +544,31 @@ async fn launch_replacement(
     state.state = "interface-ready".into();
     state.virtual_ip = Some(session.virtual_ip.clone());
     Ok(json!({"virtualIp":session.virtual_ip,"listenerPort":session.listener_port}))
+}
+
+/// SIGTERM, then SIGKILL if the child is still alive after [`CHILD_SHUTDOWN_TIMEOUT`].
+/// The child is reaped before this returns Ok. Log readers are left running so they
+/// can drain the pipes; the caller joins them afterwards.
+async fn shutdown_child(child: &mut Child) -> Result<(), String> {
+    if matches!(child.try_wait(), Ok(Some(_))) {
+        return Ok(());
+    }
+    if let Some(pid) = child.id() {
+        // The pid is still our unreaped child, so it cannot have been reused.
+        let signaled = unsafe { libc::kill(pid as i32, libc::SIGTERM) };
+        if signaled != 0 && std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH) {
+            let _ = child.kill().await;
+        }
+    }
+    if let Ok(done) = tokio::time::timeout(CHILD_SHUTDOWN_TIMEOUT, child.wait()).await {
+        return done.map(|_| ()).map_err(|error| error.to_string());
+    }
+    let _ = child.kill().await;
+    match tokio::time::timeout(Duration::from_secs(2), child.wait()).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(error)) => Err(error.to_string()),
+        Err(_) => Err("EasyTier 进程在强制结束后仍未退出".into()),
+    }
 }
 
 async fn finish_readers(readers: &mut Vec<JoinHandle<()>>) {
@@ -1167,6 +1187,111 @@ mod tests {
         assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
         unrelated.kill().await.unwrap();
         unrelated.wait().await.unwrap();
+    }
+
+    async fn wait_until_ready(path: &std::path::Path) {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if tokio::fs::metadata(path).await.is_ok() {
+                return;
+            }
+            assert!(Instant::now() < deadline, "child did not install its signal handler");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
+
+    #[tokio::test]
+    async fn leave_requests_sigterm_and_joins_log_readers() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
+        let marker = dir.path().join("termed");
+        let owned = dir.path().join("core-owned");
+        tokio::fs::create_dir(&owned).await.unwrap();
+        let mut child = Command::new("python3")
+            .arg("-c")
+            .arg(
+                r#"
+import signal, sys, time
+ready, marker = sys.argv[1], sys.argv[2]
+def stop(signum, frame):
+    with open(marker, "w", encoding="utf-8") as handle:
+        handle.write("term")
+    raise SystemExit(0)
+signal.signal(signal.SIGTERM, stop)
+with open(ready, "w", encoding="utf-8") as handle:
+    handle.write("ready")
+print("ready", flush=True)
+time.sleep(60)
+"#,
+            )
+            .arg(&ready)
+            .arg(&marker)
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let status = Arc::new(Mutex::new(NetworkStatus {
+            state: "interface-ready".into(),
+            virtual_ip: Some("10.126.126.2".into()),
+            pid: Some(pid),
+            failure: None,
+        }));
+        let readers = core_readers(&mut child, status).unwrap();
+        assert_eq!(readers.len(), 2);
+        let app = App::new(PathBuf::from("/unused-test-core"));
+        app.runtime.lock().await.session = Some(Session {
+            instance_id: uuid::Uuid::new_v4().to_string(),
+            input: sample_input(),
+            player_id: "a".repeat(64),
+            virtual_ip: "10.126.126.2".into(),
+            rpc_port: 15889,
+            listener_port: 15890,
+            child,
+            readers,
+            config_dir: owned.clone(),
+        });
+        wait_until_ready(&ready).await;
+        app.leave().await;
+        assert_eq!(tokio::fs::read_to_string(&marker).await.unwrap(), "term");
+        assert!(app.runtime.lock().await.session.is_none());
+        assert!(!owned.exists());
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
+    }
+
+    #[tokio::test]
+    async fn shutdown_kills_a_child_that_ignores_sigterm() {
+        let dir = tempfile::tempdir().unwrap();
+        let ready = dir.path().join("ready");
+        let mut child = Command::new("python3")
+            .arg("-c")
+            .arg(
+                r#"
+import signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+with open(sys.argv[1], "w", encoding="utf-8") as handle:
+    handle.write("ready")
+time.sleep(60)
+"#,
+            )
+            .arg(&ready)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        wait_until_ready(&ready).await;
+        let started = Instant::now();
+        shutdown_child(&mut child).await.unwrap();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed + Duration::from_millis(250) >= CHILD_SHUTDOWN_TIMEOUT,
+            "exited in {elapsed:?} without waiting out SIGTERM"
+        );
+        assert!(elapsed < Duration::from_secs(8), "shutdown hung: {elapsed:?}");
+        assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
     }
 }
 
