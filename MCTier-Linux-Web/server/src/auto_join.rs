@@ -37,7 +37,8 @@ pub fn save(mut c: Config) -> Result<Value, String> {
         validate_input(l)?;
         l.password = secret_store::protect_lobby_password(l.password.clone())?;
     } else { c.lobby = None; }
-    let path = path()?; let parent = path.parent().unwrap();
+    let path = path()?;
+    let parent = path.parent().ok_or("自动加入配置路径无效")?;
     std::fs::create_dir_all(parent).map_err(|_| "不能创建自动加入配置目录")?;
     let m = std::fs::symlink_metadata(parent).map_err(|_| "不能检查配置目录")?;
     if !m.is_dir() || m.uid() != unsafe { libc::geteuid() } || m.mode() & 0o022 != 0 { return Err("自动加入目录须属于当前用户且不得为链接".into()); }
@@ -46,9 +47,11 @@ pub fn save(mut c: Config) -> Result<Value, String> {
     if data.len() > 65536 { return Err("自动加入配置过大".into()); }
     let tmp = parent.join(format!(".auto-join-{}.tmp", uuid::Uuid::new_v4().simple()));
     let result: Result<(), String> = (|| {
-        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp).map_err(|_| "配置临时文件创建失败")?;
+        let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).custom_flags(libc::O_NOFOLLOW).open(&tmp).map_err(|_| "配置临时文件创建失败")?;
         file.write_all(&data).and_then(|_| file.sync_all()).map_err(|_| "配置保存失败")?;
         std::fs::rename(&tmp, &path).map_err(|_| "配置替换失败")?;
+        // Same durability as the firewall ledger: the rename is visible after a crash.
+        std::fs::File::open(parent).and_then(|dir| dir.sync_all()).map_err(|_| "配置保存失败")?;
         Ok(())
     })();
     let _ = std::fs::remove_file(&tmp);
@@ -56,7 +59,9 @@ pub fn save(mut c: Config) -> Result<Value, String> {
 }
 pub async fn startup(app: Arc<App>) {
     let result = async {
-        let c = read()?;
+        let c = tokio::task::spawn_blocking(read)
+            .await
+            .map_err(|_| "自动加入配置读取失败".to_string())??;
         if !c.enabled { return Ok(false); }
         *app.auto_startup.lock().await = json!({"state":"starting"});
         let mut input = c.lobby.ok_or("自动加入缺少目标")?;

@@ -35,7 +35,12 @@ DESKTOP_ROOT="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
 TARGET_DIR="${DESKTOP_ROOT}/MCTier-Linux-Web/resources/binaries"
 
 FORCE=0
-if [[ "${1:-}" == "--force" ]]; then FORCE=1; fi
+case "${1:-}" in
+  "") ;;
+  --force) FORCE=1 ;;
+  *) fail "用法: $0 [--force]" ;;
+esac
+if [[ $# -gt 1 ]]; then fail "用法: $0 [--force]"; fi
 
 log()  { printf '%s\n' "$*"; }
 fail() { printf '错误: %s\n' "$*" >&2; exit 1; }
@@ -75,10 +80,15 @@ trap cleanup EXIT
 log "正在下载 EasyTier ${EASYTIER_VERSION} ..."
 log "  ${URL}"
 if command -v curl >/dev/null 2>&1; then
-  curl -fsSL --max-filesize "$MAX_ARCHIVE_BYTES" --proto '=https' --tlsv1.2 \
+  curl -fsSL --retry 3 --retry-delay 2 --max-time 180 --max-filesize "$MAX_ARCHIVE_BYTES" \
+    --proto '=https' --tlsv1.2 \
     -o "${WORK_DIR}/${ARCHIVE}" -- "$URL" || fail "下载失败"
 elif command -v wget >/dev/null 2>&1; then
-  wget -q --https-only -O "${WORK_DIR}/${ARCHIVE}" -- "$URL" || fail "下载失败"
+  # ulimit -f is in 512-byte blocks and stops the fallback download past the cap.
+  (
+    ulimit -f $((MAX_ARCHIVE_BYTES / 512))
+    wget -q --https-only --timeout=30 --tries=3 -O "${WORK_DIR}/${ARCHIVE}" -- "$URL"
+  ) || fail "下载失败"
 else
   fail "需要 curl 或 wget"
 fi

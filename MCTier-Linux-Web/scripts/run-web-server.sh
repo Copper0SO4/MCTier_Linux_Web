@@ -12,5 +12,5 @@ esac
 BIN="$ROOT/MCTier-Linux-Web/server/target/$PROFILE/mctier-linux-web"
 # Source development must embed the current frontend and backend, even when a binary already exists.
 "$ROOT/MCTier-Linux-Web/scripts/build-web-server.sh" "${BUILD_ARGS[@]}"
-printf 'Starting local service as the current user. Open http://127.0.0.1:14700 manually in Firefox or Chromium.\n'
+printf 'Starting local service as the current user. Open http://127.0.0.1:14700 manually in Chrome or Chromium (Firefox lobby entry remains unavailable).\n'
 exec "$BIN"

@@ -85,9 +85,14 @@ async fn boundary(State(app): State<Arc<App>>, request: Request, next: Next) -> 
     response
 }
 
+fn asset_index() -> &'static std::collections::HashMap<&'static str, &'static [u8]> {
+    static MAP: std::sync::OnceLock<std::collections::HashMap<&'static str, &'static [u8]>> =
+        std::sync::OnceLock::new();
+    MAP.get_or_init(|| ASSETS.iter().copied().collect())
+}
 fn asset(url: &str) -> Response {
     let url = if url == "/" { "/index.html" } else { url };
-    let Some((_, bytes)) = ASSETS.iter().find(|(path, _)| *path == url) else {
+    let Some(bytes) = asset_index().get(url).copied() else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let mime = if url.ends_with(".html") {
@@ -107,7 +112,7 @@ fn asset(url: &str) -> Response {
     } else {
         "application/octet-stream"
     };
-    ([(header::CONTENT_TYPE, mime)], *bytes).into_response()
+    ([(header::CONTENT_TYPE, mime)], bytes).into_response()
 }
 async fn index() -> Response {
     asset("/")
@@ -196,8 +201,15 @@ async fn invoke(
 ) -> Result<Json<Value>, ApiError> {
     let control = owner(&app, &headers).await?;
     let result = match input.command.as_str() {
-        "get_auto_join_config" => auto_join::get()?,
-        "save_auto_join_config" => auto_join::save(value(input.args)?)?,
+        "get_auto_join_config" => tokio::task::spawn_blocking(auto_join::get)
+            .await
+            .map_err(|_| "自动加入配置读取失败".to_string())??,
+        "save_auto_join_config" => {
+            let config = value(input.args)?;
+            tokio::task::spawn_blocking(move || auto_join::save(config))
+                .await
+                .map_err(|_| "自动加入配置保存失败".to_string())??
+        }
         "adopt_auto_network" => app.adopt_auto_network(&control).await?,
         "detach_browser" => { app.detach_owned(&control).await?; Value::Null },
         "get_upstream_version_tags" => json!(version_metadata::fetch_tags().await?),
@@ -566,10 +578,15 @@ async fn run_service() {
         .with_graceful_shutdown(async move {
             #[cfg(unix)]
             {
-                let mut terminate =
-                    tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-                        .unwrap();
-                tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
+                match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    Ok(mut terminate) => {
+                        tokio::select! {_=tokio::signal::ctrl_c()=>{},_=terminate.recv()=>{}}
+                    }
+                    Err(error) => {
+                        eprintln!("Cannot listen for SIGTERM ({error}); Ctrl+C still stops the service.");
+                        let _ = tokio::signal::ctrl_c().await;
+                    }
+                }
             }
             #[cfg(not(unix))]
             let _ = tokio::signal::ctrl_c().await;
