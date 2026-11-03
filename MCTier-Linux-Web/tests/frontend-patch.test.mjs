@@ -8,4 +8,6 @@ test('upstream patch context is unique and cannot silently choose the nearest du
   assert.throws(()=>applyUnifiedPatch('other\n',patch,'fixture'), /no longer applies/);
   assert.equal(applyUnifiedPatch('', '@@ -0,0 +1,1 @@\n+new\n','fixture'),'new');
   assert.throws(()=>applyUnifiedPatch('existing','@@ -0,0 +1,1 @@\n+new\n','fixture'), /without context/);
+  assert.throws(()=>applyUnifiedPatch('x\n','@@ -1,2 +1,1 @@\n-x\n+y\n','fixture'), /hunk length/);
+  assert.equal(applyUnifiedPatch('x\n','@@ -1,1 +1,1 @@\r\n-x\r\n+y\r\n','fixture'), 'y\n');
 });

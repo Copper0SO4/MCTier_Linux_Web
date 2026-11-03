@@ -296,16 +296,19 @@ pub(crate) fn trusted(path: &str) -> Result<(), String> {
     }
     Ok(())
 }
-pub(crate) fn command(path: &str, args: &[String]) -> Result<String, String> {
+fn run_tool(path: &str, args: &[String]) -> Result<std::process::Output, String> {
     trusted(path)?;
-    let out = Command::new(path)
+    Command::new(path)
         .args(args)
         .env_clear()
         .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
         .env("LC_ALL", "C")
         .stdin(Stdio::null())
         .output()
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())
+}
+pub(crate) fn command(path: &str, args: &[String]) -> Result<String, String> {
+    let out = run_tool(path, args)?;
     if !out.status.success() {
         return Err(format!(
             "系统工具返回失败：{}",
@@ -321,7 +324,9 @@ pub(crate) fn command(path: &str, args: &[String]) -> Result<String, String> {
         .collect())
 }
 fn ufw_marked(args: &[String], output: &str) -> bool {
-    let marker = args.last().unwrap();
+    let Some(marker) = args.last() else {
+        return false;
+    };
     output.lines().any(|line| {
         line.ends_with(&format!("comment '{marker}'"))
             || line.ends_with(&format!("comment {marker}"))
@@ -390,15 +395,7 @@ fn normalize_ufw(tokens: &[String]) -> Vec<String> {
 }
 
 fn firewalld_query(args: &[String]) -> Result<bool, String> {
-    trusted(FIREWALL)?;
-    let out = Command::new(FIREWALL)
-        .args(args)
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .env("LC_ALL", "C")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| e.to_string())?;
+    let out = run_tool(FIREWALL, args)?;
     match (
         out.status.code(),
         String::from_utf8_lossy(&out.stdout).trim(),

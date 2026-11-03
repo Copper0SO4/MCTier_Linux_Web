@@ -138,6 +138,9 @@ fn read_ledger_at(path: &std::path::Path) -> Result<Vec<firewall::Plan>, String>
 fn write_ledger(plans: &[firewall::Plan]) -> Result<(), String> {
     write_ledger_at(&ledger_path()?, plans)
 }
+async fn write_ledger_off_thread(plans: Vec<firewall::Plan>) -> Result<(), String> {
+    blocking(move || write_ledger(&plans)).await?
+}
 fn write_ledger_at(path: &std::path::Path, plans: &[firewall::Plan]) -> Result<(), String> {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
@@ -173,19 +176,40 @@ fn write_ledger_at(path: &std::path::Path, plans: &[firewall::Plan]) -> Result<(
     }
     result
 }
+async fn blocking<T: Send + 'static>(
+    job: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    tokio::task::spawn_blocking(job)
+        .await
+        .map_err(|_| "后台文件操作失败".to_string())
+}
 pub async fn firewall_status(app: &App) -> Result<Value, String> {
     let socket_status = {
         let runtime = app.runtime.lock().await;
-        runtime.session.as_ref().map(
-            |s| json!({
-                "listenerPort":s.listener_port,
-                "configuredListenerProtocols":if crate::runtime::uses_websocket_listener(&s.input.server_node) {vec!["tcp"]} else {vec!["udp", "tcp"]},
-                "sockets":firewall_sockets(s.child.id())
-            }),
-        )
+        if let Some(session) = runtime.session.as_ref() {
+            let listener_port = session.listener_port;
+            let protocols = if crate::runtime::uses_websocket_listener(&session.input.server_node) {
+                vec!["tcp"]
+            } else {
+                vec!["udp", "tcp"]
+            };
+            let pid = session.child.id();
+            // Keep the runtime lock so maintenance cannot reap this pid mid-scan.
+            let sockets = blocking(move || firewall_sockets(pid))
+                .await
+                .unwrap_or_else(|_| json!({"error":"不能读取核心 socket"}));
+            Some(json!({
+                "listenerPort": listener_port,
+                "configuredListenerProtocols": protocols,
+                "sockets": sockets,
+            }))
+        } else {
+            None
+        }
     };
+    let saved = blocking(read_ledger).await??;
     Ok(
-        json!({"tools":firewall::detect().await,"savedRules":read_ledger()?,"currentCore":socket_status}),
+        json!({"tools":firewall::detect().await,"savedRules":saved,"currentCore":socket_status}),
     )
 }
 fn socket_ports(content: &str, owned: &BTreeSet<u64>) -> Vec<u16> {
@@ -270,15 +294,20 @@ pub async fn prepare_firewall(app: &App, args: FirewallArgs) -> Result<Value, St
     } else {
         None
     };
+    let saved = if remove || args.pause {
+        blocking(read_ledger).await??
+    } else {
+        Vec::new()
+    };
     let rt = app.runtime.lock().await;
     let expected_session = rt.session.as_ref().map(|s| s.instance_id.clone());
     let plan = if let Some(token) = args.remove_token {
-        read_ledger()?
+        saved
             .into_iter()
             .find(|p| p.token == token)
             .ok_or("没有本次规则记录，不能撤销")?
     } else if args.pause {
-        if read_ledger()?
+        if saved
             .iter()
             .any(|p| p.pause && p.backend == args.backend)
         {
@@ -307,6 +336,13 @@ pub async fn prepare_firewall(app: &App, args: FirewallArgs) -> Result<Value, St
         if rt.status.lock().await.state != "interface-ready" {
             return Err("EasyTier 尚未就绪".into());
         }
+        let want_tcp = args.ephemeral_udp
+            && (s.input.network_settings.tcp_hole_punching || args.allow_outgoing);
+        let range = if args.ephemeral_udp {
+            blocking(firewall::ephemeral_range).await?
+        } else {
+            None
+        };
         firewall::Plan {
             backend: args.backend,
             zone: args.zone,
@@ -332,15 +368,13 @@ pub async fn prepare_firewall(app: &App, args: FirewallArgs) -> Result<Value, St
             token: uuid::Uuid::new_v4().simple().to_string(),
             pause: false,
             allow_outgoing: args.allow_outgoing,
-            ephemeral_tcp: if args.ephemeral_udp
-                && (s.input.network_settings.tcp_hole_punching || args.allow_outgoing)
-            {
-                Some(firewall::ephemeral_range().ok_or("不能读取安全的动态 TCP 范围")?)
+            ephemeral_tcp: if want_tcp {
+                Some(range.ok_or("不能读取安全的动态 TCP 范围")?)
             } else {
                 None
             },
             ephemeral_udp: if args.ephemeral_udp {
-                Some(firewall::ephemeral_range().ok_or("不能读取安全的动态 UDP 范围")?)
+                Some(range.ok_or("不能读取安全的动态 UDP 范围")?)
             } else {
                 None
             },
@@ -386,7 +420,9 @@ pub async fn apply(app: &App, args: Confirm) -> Result<Value, String> {
             p.action.confirmation_text()
         ));
     }
-    let p = lock.take().unwrap();
+    let Some(p) = lock.take() else {
+        return Err("请先预览操作".into());
+    };
     drop(lock);
     match p.action {
         Action::Firewall { plan, remove, restart_network, expected_session } => {
@@ -398,13 +434,14 @@ pub async fn apply(app: &App, args: Confirm) -> Result<Value, String> {
                 }
             }
             // Save before applying so a partial failure remains reversible.
-            let mut plans = read_ledger()?;
+            let mut plans = blocking(read_ledger).await??;
             if !remove && !plans.iter().any(|p| p.token == plan.token) {
                 if plans.len() >= 32 {
                     return Err("请先撤销过往规则".into());
                 }
                 plans.push(plan.clone());
-                write_ledger(&plans)?;
+                let saved = plans.clone();
+                write_ledger_off_thread(saved).await?;
             }
             let helper = firewall::authorize(&mut cancel).await?;
             if !remove && !plan.pause {
@@ -417,7 +454,7 @@ pub async fn apply(app: &App, args: Confirm) -> Result<Value, String> {
             let mut report = firewall::apply(helper, plan.clone(), remove, &mut cancel).await?;
             if remove {
                 plans.retain(|p| p.token != plan.token);
-                write_ledger(&plans)?;
+                write_ledger_off_thread(plans).await?;
             }
 
             let mut restart = json!({"state":"not-requested"});

@@ -11,7 +11,11 @@ for option in "$@"; do
     *) echo "Usage: $0 [--stable] [--merge]" >&2; exit 2 ;;
   esac
 done
-url="$(git config --get remote.upstream.url)"
+url="$(git config --get remote.upstream.url || true)"
+if [[ -z "$url" ]]; then
+  echo "upstream must point directly to official pmh1314520/MCTier. Current remote is not configured." >&2
+  exit 1
+fi
 official="https://github.com/pmh1314520/MCTier.git"
 git_args=()
 if [[ "$url" == "$official" ]]; then
@@ -30,9 +34,13 @@ effective="$(git "${git_args[@]}" remote get-url upstream)"
 printf 'Fetching official upstream: %s\n' "$effective"
 ref=upstream/master
 if [[ "$stable" == true ]]; then
+  command -v node >/dev/null || { echo "node is required to parse official release metadata" >&2; exit 1; }
+  command -v curl >/dev/null || { echo "curl is required to read official release metadata" >&2; exit 1; }
   metadata="$(mktemp)"
   trap 'rm -f -- "$metadata"' EXIT
-  curl --fail --silent --show-error --location https://api.github.com/repos/pmh1314520/MCTier/releases/latest -o "$metadata"
+  curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 --max-time 30 --max-filesize 2097152 \
+    -o "$metadata" https://api.github.com/repos/pmh1314520/MCTier/releases/latest \
+    || { echo "Failed to read official stable release metadata" >&2; exit 1; }
   tag="$(node -e 'const d=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); if(d.draft || d.prerelease || !/^v?[0-9]+\.[0-9]+\.[0-9]+$/.test(d.tag_name)) throw Error("Invalid stable release metadata"); process.stdout.write(d.tag_name)' "$metadata")"
   git "${git_args[@]}" fetch upstream "refs/tags/$tag:refs/tags/$tag"
   ref="refs/tags/$tag"

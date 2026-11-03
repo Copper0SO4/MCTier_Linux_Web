@@ -636,6 +636,19 @@ impl ChatService {
             .collect()
     }
 
+    /// Status polling only needs the remote count. Cloning the history on every
+    /// request retains every message body for the lifetime of the response.
+    pub fn stored_remote_message_count(&self) -> usize {
+        let Some(me) = self.get_local_identity() else {
+            return 0;
+        };
+        self.local_messages
+            .read()
+            .iter()
+            .filter(|message| message.player_id != me.player_id)
+            .count()
+    }
+
     /// Application-local subscription; remote subscriptions continue to use
     /// the authenticated virtual-interface HTTP endpoint.
     pub fn subscribe_local_messages(&self) -> broadcast::Receiver<ChatMessage> {

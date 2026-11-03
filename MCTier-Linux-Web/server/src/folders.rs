@@ -20,11 +20,33 @@ pub struct Snapshot {
     expires: Option<u64>,
     published: bool,
     touched: std::time::Instant,
+    /// Set once an async cleanup task owns the directory. Drop remains the
+    /// synchronous fallback for cancelled requests and tests.
+    released: bool,
+}
+impl Snapshot {
+    fn release_root(&mut self) -> PathBuf {
+        self.released = true;
+        self.root.clone()
+    }
 }
 impl Drop for Snapshot {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.root);
+        if !self.released {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
     }
+}
+async fn remove_roots(roots: Vec<PathBuf>) {
+    if roots.is_empty() {
+        return;
+    }
+    let _ = tokio::task::spawn_blocking(move || {
+        for root in roots {
+            let _ = std::fs::remove_dir_all(root);
+        }
+    })
+    .await;
 }
 pub struct Folders {
     pub server: FileTransferService,
@@ -44,14 +66,25 @@ impl Folders {
             let _ = self.server.remove_share(&share.id);
         }
         self.server.cleanup_expired_shares();
-        self.snapshots.clear();
+        let roots = self
+            .snapshots
+            .drain()
+            .map(|(_, mut snapshot)| snapshot.release_root())
+            .collect();
+        remove_roots(roots).await;
     }
-    pub fn collect(&mut self) {
+    pub async fn collect(&mut self) {
         self.server.cleanup_expired_shares();
-        self.snapshots.retain(|_, s| {
-            let expired = s.expires.is_some_and(|v| v <= now());
-            !expired && (s.published || s.touched.elapsed() < Duration::from_secs(300))
+        let mut roots = Vec::new();
+        self.snapshots.retain(|_, snapshot| {
+            let expired = snapshot.expires.is_some_and(|v| v <= now());
+            let keep = !expired && (snapshot.published || snapshot.touched.elapsed() < Duration::from_secs(300));
+            if !keep {
+                roots.push(snapshot.release_root());
+            }
+            keep
         });
+        remove_roots(roots).await;
     }
     pub fn local(&self) -> Vec<SharedFolderSummary> {
         self.server
@@ -113,7 +146,10 @@ fn destination(root: &std::path::Path, path: &str) -> Result<PathBuf, String> {
             Err(_) => return Err("共享目录不可用".into()),
         }
     }
-    Ok(parent.join(parts.last().unwrap()))
+    let Some(name) = parts.last() else {
+        return Err("共享相对路径无效".into());
+    };
+    Ok(parent.join(name))
 }
 fn id(s: &str) -> Result<(), String> {
     if !s.is_empty()
@@ -150,18 +186,20 @@ pub async fn create(app: &App, args: Create) -> Result<Value, String> {
         return Err("请先加入大厅".into());
     }
     let mut folders = app.folders.lock().await;
-    folders.collect();
+    folders.collect().await;
     if folders.snapshots.len() >= 16 {
         return Err("最多保留 16 个共享快照".into());
     }
     let key = uuid::Uuid::new_v4().to_string();
     let root = std::env::temp_dir().join(format!("mctier-folder-{key}"));
-    let mut builder = std::fs::DirBuilder::new();
-    use std::os::unix::fs::DirBuilderExt;
-    builder
-        .mode(0o700)
-        .create(&root)
-        .map_err(|_| "创建共享快照失败")?;
+    let created = root.clone();
+    tokio::task::spawn_blocking(move || {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new().mode(0o700).create(created)
+    })
+    .await
+    .map_err(|_| "创建共享快照失败".to_string())?
+    .map_err(|_| "创建共享快照失败")?;
     let expires = (args.lifetime_minutes > 0).then(|| now() + args.lifetime_minutes * 60);
     folders.snapshots.insert(
         key.clone(),
@@ -174,6 +212,7 @@ pub async fn create(app: &App, args: Create) -> Result<Value, String> {
             expires,
             published: false,
             touched: std::time::Instant::now(),
+            released: false,
         },
     );
     Ok(json!({"id":key}))
@@ -212,20 +251,26 @@ pub async fn upload(
     if *app.chat_generation.borrow() != generation {
         return Err("大厅会话已变更，请重新选择目录".to_string().into());
     }
-    folders.collect();
+    folders.collect().await;
     if folders.bytes().saturating_add(bytes.len() as u64) > MAX_TOTAL
         || folders.count() >= MAX_FILES
     {
         return Err("共享总量超过 256 MiB 或 1024 个文件".to_string().into());
     }
-    let snapshot = folders
-        .snapshots
-        .get_mut(&args.id)
-        .ok_or("共享上传已失效".to_string())?;
-    if snapshot.published {
-        return Err("已发布快照不能修改，请重新选择目录".to_string().into());
-    }
-    let path = destination(&snapshot.root, &args.path)?;
+    let root = {
+        let snapshot = folders
+            .snapshots
+            .get(&args.id)
+            .ok_or("共享上传已失效".to_string())?;
+        if snapshot.published {
+            return Err("已发布快照不能修改，请重新选择目录".to_string().into());
+        }
+        snapshot.root.clone()
+    };
+    let relative_path = args.path.clone();
+    let path = tokio::task::spawn_blocking(move || destination(&root, &relative_path))
+        .await
+        .map_err(|_| "共享目录不可用".to_string())??;
     // Only server-created UUID roots exist here; path segments are strict and
     // never come from absolute OS paths. Reject existing files and symlinks.
     let mut file = tokio::fs::OpenOptions::new()
@@ -240,6 +285,10 @@ pub async fn upload(
         let _ = tokio::fs::remove_file(path).await;
         return Err("写入共享文件失败".to_string().into());
     }
+    let snapshot = folders
+        .snapshots
+        .get_mut(&args.id)
+        .ok_or("共享上传已失效".to_string())?;
     snapshot.files += 1;
     snapshot.bytes += bytes.len() as u64;
     snapshot.touched = std::time::Instant::now();
@@ -252,7 +301,7 @@ pub async fn publish(app: &App, key: String) -> Result<Value, String> {
     let chat = app.chat.lock().await;
     let token = chat.get_chat_token().ok_or("大厅凭据未就绪")?;
     let mut folders = app.folders.lock().await;
-    folders.collect();
+    folders.collect().await;
     let s = folders.snapshots.get(&key).ok_or("共享上传已失效")?;
     if s.files == 0 || s.published {
         return Err("目录为空或快照已发布".into());
@@ -275,9 +324,16 @@ pub async fn remove(app: &App, key: String) -> Result<(), String> {
     id(&key)?;
     let mut folders = app.folders.lock().await;
     let _ = folders.server.remove_share(&key);
-    folders.snapshots.remove(&key);
+    let root = folders
+        .snapshots
+        .remove(&key)
+        .map(|mut snapshot| snapshot.release_root());
     if folders.snapshots.values().all(|s| !s.published) {
         folders.server.stop_server().await;
+    }
+    drop(folders);
+    if let Some(root) = root {
+        remove_roots(vec![root]).await;
     }
     Ok(())
 }
@@ -427,6 +483,7 @@ mod tests {
             expires: None,
             published: false,
             touched: std::time::Instant::now(),
+            released: false,
         });
         assert!(!root.exists());
     }
@@ -484,6 +541,7 @@ mod api_tests {
                 expires: None,
                 published: false,
                 touched: std::time::Instant::now(),
+                released: false,
             },
         );
         (app, key, root)
@@ -664,7 +722,7 @@ mod api_tests {
             .get_mut(&key)
             .unwrap()
             .expires = Some(now() - 1);
-        app.folders.lock().await.collect();
+        app.folders.lock().await.collect().await;
         assert!(!root.exists());
         app.leave().await;
     }
